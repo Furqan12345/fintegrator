@@ -1,0 +1,64 @@
+@inherits LayoutComponentBase
+
+<div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="app-sidebar">
+        <div class="sidebar-brand">
+            <span class="brand-icon">⚡</span>
+            <span class="brand-text">SimpleIPaaS</span>
+        </div>
+
+        <nav class="sidebar-nav">
+            <NavLink class="sidebar-link" href="" Match="NavLinkMatch.All">
+                <span class="sidebar-icon">🔗</span>
+                <span>Integrations</span>
+            </NavLink>
+            <NavLink class="sidebar-link" href="connections">
+                <span class="sidebar-icon">🔌</span>
+                <span>Connections</span>
+            </NavLink>
+            <NavLink class="sidebar-link" href="activity-log">
+                <span class="sidebar-icon">📊</span>
+                <span>Activity Log</span>
+            </NavLink>
+            <NavLink class="sidebar-link" href="settings">
+                <span class="sidebar-icon">⚙️</span>
+                <span>Settings</span>
+            </NavLink>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-env-badge">Development</div>
+        </div>
+    </aside>
+
+    <!-- Main content area -->
+    <div class="app-main">
+        <!-- Top bar -->
+        <header class="app-topbar">
+            <div class="topbar-left">
+                <h1 class="topbar-title">Integration Builder</h1>
+            </div>
+            <div class="topbar-right">
+                <span class="topbar-status">● Connected</span>
+                <div class="topbar-avatar">U</div>
+            </div>
+        </header>
+
+        <!-- Page content -->
+        <div class="app-content">
+            <ErrorBoundary>
+                <ChildContent>
+                    @Body
+                </ChildContent>
+                <ErrorContent>
+                    <div style="padding: 2rem; text-align: center; color: #ef4444;">
+                        <h3>Something went wrong</h3>
+                        <p>@context.Message</p>
+                        <button class="btn" onclick="location.reload()">Reload Page</button>
+                    </div>
+                </ErrorContent>
+            </ErrorBoundary>
+        </div>
+    </div>
+</div>

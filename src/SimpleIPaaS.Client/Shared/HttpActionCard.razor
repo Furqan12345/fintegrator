@@ -1,0 +1,72 @@
+@using SimpleIPaaS.Shared.Models
+
+<div class="card-header" style="background: var(--primary);">
+    <h3 class="card-title" style="color: white;">🌐 HTTP Action</h3>
+</div>
+<div class="card-body">
+    <div class="form-group" style="margin-bottom: 8px;">
+        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. FetchUsers" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+    </div>
+
+    <div class="form-group" style="margin-bottom: 8px;">
+        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Method & URL</label>
+        <div style="display: flex; gap: 4px;">
+            <select class="form-control" @bind="Step.HttpMethod" style="width: 80px; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="PATCH">PATCH</option>
+                <option value="DELETE">DELETE</option>
+            </select>
+            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="https://api..." style="flex: 1; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 8px;">
+        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Auth Type</label>
+        <select class="form-control" @bind="Step.AuthType" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+            <option value="None">None</option>
+            <option value="Basic">Basic Auth</option>
+            <option value="Bearer">Bearer Token</option>
+            <option value="Connection">Connection (OAuth)</option>
+        </select>
+    </div>
+
+    @if (Step.AuthType == "Basic")
+    {
+        <div class="form-group" style="margin-bottom: 8px; display: flex; gap: 4px;">
+            <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="User" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Pass" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        </div>
+    }
+    else if (Step.AuthType == "Bearer")
+    {
+        <div class="form-group" style="margin-bottom: 8px;">
+            <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        </div>
+    }
+
+    <div class="script-buttons" style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px;">
+        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 2px;">Scripts (C#)</label>
+        <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("UrlCode")'>
+            @(string.IsNullOrWhiteSpace(Step.UrlCode) ? "➕ Dynamic URL Script" : "✏️ Dynamic URL Script")
+        </button>
+        <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("PreFlightCode")'>
+            @(string.IsNullOrWhiteSpace(Step.PreFlightCode) ? "➕ Pre-Request Body Script" : "✏️ Pre-Request Body Script")
+        </button>
+        <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("PostFlightCode")'>
+            @(string.IsNullOrWhiteSpace(Step.PostFlightCode) ? "➕ Post-Response Script" : "✏️ Post-Response Script")
+        </button>
+    </div>
+</div>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+    [CascadingParameter] public SimpleIPaaS.Client.Pages.FlowDesigner Designer { get; set; } = default!;
+
+    private void OpenEditor(string target)
+    {
+        Designer?.OpenMapperModal(Step, target);
+    }
+}

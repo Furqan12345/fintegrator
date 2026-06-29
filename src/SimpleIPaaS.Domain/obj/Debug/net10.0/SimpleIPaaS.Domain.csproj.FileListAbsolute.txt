@@ -1,0 +1,11 @@
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\bin\Debug\net10.0\SimpleIPaaS.Domain.deps.json
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\bin\Debug\net10.0\SimpleIPaaS.Domain.dll
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\bin\Debug\net10.0\SimpleIPaaS.Domain.pdb
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\SimpleIPaaS.Domain.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\SimpleIPaaS.Domain.AssemblyInfoInputs.cache
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\SimpleIPaaS.Domain.AssemblyInfo.cs
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\SimpleIPaaS.Domain.csproj.CoreCompileInputs.cache
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\SimpleIPaaS.Domain.dll
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\refint\SimpleIPaaS.Domain.dll
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\SimpleIPaaS.Domain.pdb
+C:\Users\furqa\Documents\antigravity\agitated-goodall\src\SimpleIPaaS.Domain\obj\Debug\net10.0\ref\SimpleIPaaS.Domain.dll

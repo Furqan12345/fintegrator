@@ -1,0 +1,274 @@
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+
+@if (IsVisible)
+{
+    <div class="modal-overlay" @onclick="Close" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+        <div class="modal-container" @onclick:stopPropagation="true" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+            <!-- Header -->
+            <div class="modal-header">
+                <h2 class="modal-title">⚙️ @ModalTitle</h2>
+                <button class="modal-close-btn" @onclick="Close">✕</button>
+            </div>
+
+            <!-- Body: 3-panel layout -->
+            <div class="modal-body">
+                <!-- Panel 1: Code Editor -->
+                <div class="editor-panel">
+                    <div class="panel-header">
+                        <span class="panel-label">C# Script</span>
+                        <span class="panel-hint">@ScriptHint</span>
+                    </div>
+                    <textarea class="code-textarea" @bind="Code" spellcheck="false"></textarea>
+                </div>
+
+                <!-- Bottom half: Input + Output side by side -->
+                <div class="io-panels">
+                    <!-- Panel 2: Sample Input -->
+                    <div class="editor-panel">
+                        <div class="panel-header">
+                            <span class="panel-label">Sample Input JSON</span>
+                        </div>
+                        <textarea class="code-textarea io-textarea" @bind="SampleInput" spellcheck="false"
+                            placeholder='{ "name": "John", "age": 30 }'></textarea>
+                    </div>
+
+                    <!-- Panel 3: Output -->
+                    <div class="editor-panel">
+                        <div class="panel-header">
+                            <span class="panel-label">Output</span>
+                            @if (_isRunning)
+                            {
+                                <span class="panel-hint" style="color: var(--primary);">Running...</span>
+                            }
+                            else if (_hasError)
+                            {
+                                <span class="panel-hint" style="color: var(--danger);">Error</span>
+                            }
+                            else if (_hasResult)
+                            {
+                                <span class="panel-hint" style="color: var(--success);">Success</span>
+                            }
+                        </div>
+                        <textarea class="code-textarea io-textarea output-textarea" readonly
+                            value="@Output" placeholder="Click 'Test Run' to see output..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="modal-footer">
+                <button class="btn btn-outline" @onclick="ResetToSample">↻ Reset to Sample</button>
+                <div style="flex: 1;"></div>
+                <button class="btn" @onclick="TestRun" disabled="@_isRunning">
+                    @(_isRunning ? "⏳ Running..." : "▶ Test Run")
+                </button>
+                <button class="btn btn-success" @onclick="SaveAndClose">Save & Close</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public EventCallback<bool> IsVisibleChanged { get; set; }
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+    [Parameter] public string TargetProperty { get; set; } = "MappingCode";
+
+    private string Code { get; set; } = string.Empty;
+    private string SampleInput { get; set; } = string.Empty;
+    private string Output { get; set; } = string.Empty;
+
+    private string ModalTitle => Step?.StepType == "Branch" ? "Branch Condition Script" : (TargetProperty switch
+    {
+        "UrlCode" => "Dynamic URL Script",
+        "PreFlightCode" => "Pre-Request Body Script",
+        "PostFlightCode" => "Post-Response Script",
+        _ => "Mapping Function Editor"
+    });
+
+    private string ScriptHint => Step?.StepType == "Branch" ? "Use 'FlowStateJson'. Return a boolean value." : (TargetProperty switch
+    {
+        "UrlCode" => "Use 'FlowStateJson' to access state. Return a string URL.",
+        "PreFlightCode" => "Use 'FlowStateJson' to build request body. Return a JSON string.",
+        "PostFlightCode" => "Use 'FlowStateJson' and 'HttpResponseJson'. Return a JSON string.",
+        _ => "Use 'FlowStateJson' to access state. Return a JSON string."
+    });
+
+    private bool _isRunning;
+    private bool _hasError;
+    private bool _hasResult;
+
+    private string GetDefaultCode()
+    {
+        if (Step?.StepType == "Branch")
+        {
+            return @"// Example: Branch based on a condition
+using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+// Modify NodeName and property to match your pipeline flow state
+var status = (string)state[""GetUsers""][""status""];
+
+return status == ""active"";";
+        }
+
+        return TargetProperty switch
+        {
+            "UrlCode" => @"// Example: Construct a dynamic URL using preceding flow states
+// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
+using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+var userId = (string)state[""GetUsers""][""id""];
+
+return $""https://api.example.com/users/{userId}"";",
+
+            "PreFlightCode" => @"// Example: Construct request body using preceding flow states
+// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+var requestBody = new {
+    name = (string)state[""GetUsers""][""name""]
+};
+
+return JsonConvert.SerializeObject(requestBody);",
+
+            "PostFlightCode" => @"// Example: Transform response before saving to state
+// - HttpResponseJson: Raw response payload from the API (read-only)
+// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+var response = JObject.Parse(HttpResponseJson);
+// var state = JObject.Parse(FlowStateJson); // if needed
+
+var result = new {
+    processedData = response[""data""]
+};
+
+return JsonConvert.SerializeObject(result);",
+
+            _ => @"// Example: Map state data
+// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+
+var result = new {
+    mappedValue = (string)state[""NodeName""][""value""]
+};
+
+return JsonConvert.SerializeObject(result);"
+        };
+    }
+
+    private const string DefaultSampleInput = @"{
+  ""GetUsers"": {
+    ""id"": ""123"",
+    ""name"": ""John Doe""
+  }
+}";
+
+    private const string DefaultResponseInput = @"{
+  ""data"": [
+    { ""id"": ""1"", ""role"": ""admin"" }
+  ]
+}";
+
+    private bool _wasVisible;
+
+    protected override void OnParametersSet()
+    {
+        // Only initialize when modal transitions from hidden to visible
+        if (IsVisible && !_wasVisible)
+        {
+            string existingCode = TargetProperty switch
+            {
+                "UrlCode" => Step.UrlCode,
+                "PreFlightCode" => Step.PreFlightCode,
+                "PostFlightCode" => Step.PostFlightCode,
+                _ => Step.MappingCode
+            };
+
+            Code = string.IsNullOrWhiteSpace(existingCode) ? GetDefaultCode() : existingCode;
+            SampleInput = DefaultSampleInput;
+            Output = string.Empty;
+            _hasError = false;
+            _hasResult = false;
+        }
+        _wasVisible = IsVisible;
+    }
+
+    private async Task TestRun()
+    {
+        _isRunning = true;
+        _hasError = false;
+        _hasResult = false;
+        Output = string.Empty;
+
+        try
+        {
+            var request = new TestMappingRequestDto
+            {
+                MappingCode = Code,
+                FlowStateJson = SampleInput,
+                HttpResponseJson = TargetProperty == "PostFlightCode" ? DefaultResponseInput : "{}",
+                TargetProperty = TargetProperty,
+                StepType = Step?.StepType ?? string.Empty
+            };
+
+            var response = await Http.PostAsJsonAsync("api/integrationflow/test-mapping", request);
+            var result = await response.Content.ReadFromJsonAsync<TestMappingResponseDto>();
+
+            if (result != null && result.Success)
+            {
+                Output = result.Result;
+                _hasResult = true;
+            }
+            else
+            {
+                Output = "ERROR: " + (result?.Error ?? "Unknown error");
+                _hasError = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Output = "REQUEST FAILED: " + ex.Message;
+            _hasError = true;
+        }
+        finally
+        {
+            _isRunning = false;
+        }
+    }
+
+    private void ResetToSample()
+    {
+        Code = GetDefaultCode();
+        SampleInput = DefaultSampleInput;
+        Output = string.Empty;
+        _hasError = false;
+        _hasResult = false;
+    }
+
+    private async Task SaveAndClose()
+    {
+        switch (TargetProperty)
+        {
+            case "UrlCode": Step.UrlCode = Code; break;
+            case "PreFlightCode": Step.PreFlightCode = Code; break;
+            case "PostFlightCode": Step.PostFlightCode = Code; break;
+            default: Step.MappingCode = Code; break;
+        }
+        await Close();
+    }
+
+    private async Task Close()
+    {
+        await IsVisibleChanged.InvokeAsync(false);
+    }
+}

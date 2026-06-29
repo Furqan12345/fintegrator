@@ -1,0 +1,235 @@
+@page "/flow-designer"
+@page "/flow-designer/{FlowId:guid}"
+@using Blazor.Diagrams.Core
+@using Blazor.Diagrams.Core.Models
+@using Blazor.Diagrams.Core.PathGenerators
+@using Blazor.Diagrams.Core.Routers
+@using Blazor.Diagrams.Components
+@using Blazor.Diagrams
+@using Blazor.Diagrams.Options
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@using SimpleIPaaS.Client.Components.Nodes
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<FlowState> FlowState
+@inject IDispatcher Dispatcher
+
+<PageTitle>Flow Designer — SimpleIPaaS</PageTitle>
+
+<div class="diagram-container">
+    <!-- Toolbar -->
+    <div class="diagram-toolbar">
+        <input class="toolbar-input" type="text" @bind="FlowName" placeholder="Integration Name" />
+        <div class="toolbar-divider"></div>
+        <button class="btn btn-outline" @onclick="() => AddNode(StepType.HttpAction)">+ HTTP Action</button>
+        <button class="btn btn-outline" @onclick="() => AddNode(StepType.Mapping)">+ Mapper</button>
+        <button class="btn btn-outline" @onclick="() => AddNode(StepType.Branch)">+ Branch</button>
+        <div class="toolbar-divider"></div>
+        <button class="btn" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
+            @(FlowState.Value.IsLoading ? "Saving..." : "💾 Save")
+        </button>
+        <button class="btn btn-success" @onclick="RunFlow" disabled="@(FlowState.Value.IsLoading || FlowState.Value.CurrentFlow?.Id == Guid.Empty)">
+            ▶ Run
+        </button>
+    </div>
+
+    <!-- Diagram Canvas -->
+    <CascadingValue Value="Diagram">
+        <CascadingValue Value="this">
+            <DiagramCanvas></DiagramCanvas>
+        </CascadingValue>
+    </CascadingValue>
+
+    <!-- Zoom Controls -->
+    <div class="zoom-controls">
+        <button class="btn btn-icon" @onclick="ZoomIn" title="Zoom In">+</button>
+        <button class="btn btn-icon" @onclick="ZoomOut" title="Zoom Out">−</button>
+        <button class="btn btn-icon" @onclick="() => Diagram.ZoomToFit(10)" title="Fit to Screen">⊡</button>
+    </div>
+
+    <!-- Run Result Panel -->
+    @if (!string.IsNullOrWhiteSpace(FlowState.Value.RunResult))
+    {
+        <div class="run-result-panel">
+            <h4>Execution Result</h4>
+            <div class="run-result">@FlowState.Value.RunResult</div>
+            <button class="btn btn-outline" style="margin-top: 8px; width: 100%;" @onclick="ClearResult">Dismiss</button>
+        </div>
+    }
+
+    <!-- Generalized Mapper Modal -->
+    @if (_editingStep != null)
+    {
+        <MapperModal @bind-IsVisible="_showMapperModal" Step="_editingStep" TargetProperty="@_editingProperty" />
+    }
+</div>
+
+@code {
+    [Parameter]
+    public Guid? FlowId { get; set; }
+
+    private BlazorDiagram Diagram { get; set; } = null!;
+    private string FlowName { get; set; } = "My Integration";
+    private bool _isLoaded = false;
+
+    public bool _showMapperModal;
+    public IntegrationStepDto? _editingStep;
+    public string _editingProperty = "MappingCode";
+
+    public void OpenMapperModal(IntegrationStepDto step, string targetProperty)
+    {
+        _editingStep = step;
+        _editingProperty = targetProperty;
+        _showMapperModal = true;
+        StateHasChanged();
+    }
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        SetupDiagram();
+        if (FlowId.HasValue)
+        {
+            Dispatcher.Dispatch(new LoadFlowAction { Id = FlowId.Value });
+        }
+        else
+        {
+            Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = new IntegrationFlowDto { Name = "New Integration" } });
+        }
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (FlowState.Value.CurrentFlow != null && !_isLoaded && FlowState.Value.CurrentFlow.Id == FlowId)
+        {
+            FlowName = FlowState.Value.CurrentFlow.Name;
+            
+            foreach (var step in FlowState.Value.CurrentFlow.Nodes)
+            {
+                var node = new IntegrationNodeModel(step)
+                {
+                    Title = step.StepType
+                };
+                node.SetPosition(step.PositionX, step.PositionY);
+                Diagram.Nodes.Add(node);
+            }
+
+            foreach (var edge in FlowState.Value.CurrentFlow.Edges)
+            {
+                var sourceNode = Diagram.Nodes.FirstOrDefault(n => ((IntegrationNodeModel)n).StepConfig.Id == edge.SourceNodeId) as IntegrationNodeModel;
+                var targetNode = Diagram.Nodes.FirstOrDefault(n => ((IntegrationNodeModel)n).StepConfig.Id == edge.TargetNodeId) as IntegrationNodeModel;
+                if (sourceNode != null && targetNode != null)
+                {
+                    var sourcePort = sourceNode.Ports.FirstOrDefault(p => p.Id == edge.SourcePortId);
+                    var targetPort = targetNode.Ports.FirstOrDefault(p => p.Id == edge.TargetPortId);
+                    if (sourcePort != null && targetPort != null)
+                    {
+                        Diagram.Links.Add(new LinkModel(sourcePort, targetPort));
+                    }
+                    else 
+                    {
+                        // Fallback if ports aren't properly mapped
+                        Diagram.Links.Add(new LinkModel(sourceNode, targetNode));
+                    }
+                }
+            }
+
+            _isLoaded = true;
+            StateHasChanged();
+        }
+    }
+
+    private void SetupDiagram()
+    {
+        var options = new BlazorDiagramOptions
+        {
+            AllowMultiSelection = true,
+            Zoom =
+            {
+                Enabled = true,
+                ScaleFactor = 1.1
+            },
+            Links =
+            {
+                DefaultRouter = new NormalRouter(),
+                DefaultPathGenerator = new SmoothPathGenerator()
+            }
+        };
+
+        Diagram = new BlazorDiagram(options);
+        Diagram.RegisterComponent<IntegrationNodeModel, IntegrationNodeWidget>();
+    }
+
+    private void AddNode(StepType type)
+    {
+        var step = new IntegrationStepDto { StepType = type.ToString() };
+        var node = new IntegrationNodeModel(step)
+        {
+            Title = type.ToString()
+        };
+        Diagram.Nodes.Add(node);
+    }
+
+    private void SaveFlow()
+    {
+        if (FlowState.Value.CurrentFlow == null) return;
+
+        var flow = FlowState.Value.CurrentFlow;
+        flow.Name = FlowName;
+        flow.Nodes.Clear();
+        flow.Edges.Clear();
+
+        foreach (var node in Diagram.Nodes)
+        {
+            if (node is IntegrationNodeModel intNode)
+            {
+                var step = intNode.StepConfig;
+                step.PositionX = intNode.Position.X;
+                step.PositionY = intNode.Position.Y;
+                flow.Nodes.Add(step);
+            }
+        }
+
+        foreach (var baseLink in Diagram.Links)
+        {
+            if (baseLink is LinkModel link)
+            {
+                var sourcePort = link.Source.Model as PortModel;
+                var targetPort = link.Target.Model as PortModel;
+
+                if (sourcePort?.Parent is IntegrationNodeModel sourceNode &&
+                    targetPort?.Parent is IntegrationNodeModel targetNode)
+                {
+                    flow.Edges.Add(new IntegrationEdgeDto
+                    {
+                        SourceNodeId = sourceNode.StepConfig.Id,
+                        TargetNodeId = targetNode.StepConfig.Id,
+                        SourcePortId = sourcePort.Id,
+                        TargetPortId = targetPort.Id
+                    });
+                }
+            }
+        }
+
+        Dispatcher.Dispatch(new SaveFlowAction { Flow = flow });
+    }
+
+    private void RunFlow()
+    {
+        if (FlowState.Value.CurrentFlow?.Id != Guid.Empty)
+        {
+            Dispatcher.Dispatch(new RunFlowAction { Id = FlowState.Value.CurrentFlow!.Id });
+        }
+    }
+
+    private void ClearResult()
+    {
+        Dispatcher.Dispatch(new RunFlowResultAction { Result = string.Empty });
+    }
+
+    private void ZoomIn() => Diagram.SetZoom(Diagram.Zoom * 1.2);
+    private void ZoomOut() => Diagram.SetZoom(Diagram.Zoom / 1.2);
+
+    public enum StepType { HttpAction, Mapping, Branch }
+}

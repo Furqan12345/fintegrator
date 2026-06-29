@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SimpleIPaaS.Api/SimpleIPaaS.Api.csproj" />
+    <Project Path="src/SimpleIPaaS.Application/SimpleIPaaS.Application.csproj" />
+    <Project Path="src/SimpleIPaaS.Client/SimpleIPaaS.Client.csproj" />
+    <Project Path="src/SimpleIPaaS.Domain/SimpleIPaaS.Domain.csproj" />
+    <Project Path="src/SimpleIPaaS.Infrastructure/SimpleIPaaS.Infrastructure.csproj" />
+    <Project Path="src/SimpleIPaaS.Shared/SimpleIPaaS.Shared.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "dgSpecHash": "c99y0Y0GQPs=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\furqa\\Documents\\antigravity\\agitated-goodall\\src\\SimpleIPaaS.Application\\SimpleIPaaS.Application.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\furqa\\.nuget\\packages\\cronos\\0.8.4\\cronos.0.8.4.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\mediatr\\14.1.0\\mediatr.14.1.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\mediatr.contracts\\2.0.1\\mediatr.contracts.2.0.1.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\microsoft.extensions.dependencyinjection.abstractions\\10.0.0\\microsoft.extensions.dependencyinjection.abstractions.10.0.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\microsoft.extensions.logging.abstractions\\10.0.0\\microsoft.extensions.logging.abstractions.10.0.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\microsoft.identitymodel.abstractions\\8.14.0\\microsoft.identitymodel.abstractions.8.14.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\microsoft.identitymodel.jsonwebtokens\\8.14.0\\microsoft.identitymodel.jsonwebtokens.8.14.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\microsoft.identitymodel.logging\\8.14.0\\microsoft.identitymodel.logging.8.14.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\microsoft.identitymodel.tokens\\8.14.0\\microsoft.identitymodel.tokens.8.14.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\newtonsoft.json\\13.0.4\\newtonsoft.json.13.0.4.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\polly\\8.5.0\\polly.8.5.0.nupkg.sha512",
+    "C:\\Users\\furqa\\.nuget\\packages\\polly.core\\8.5.0\\polly.core.8.5.0.nupkg.sha512"
+  ],
+  "logs": []
+}

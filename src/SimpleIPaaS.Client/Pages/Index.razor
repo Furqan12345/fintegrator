@@ -1,0 +1,81 @@
+@page "/"
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<FlowState> FlowState
+@inject IDispatcher Dispatcher
+@inject NavigationManager NavigationManager
+
+<PageTitle>Integrations — SimpleIPaaS</PageTitle>
+
+<div class="page-header">
+    <div class="header-left">
+        <h2>Integrations</h2>
+        <p class="subtitle">Manage and monitor your integration flows</p>
+    </div>
+    <div class="header-right">
+        <button class="btn btn-primary" @onclick="CreateNewFlow">+ New Integration</button>
+    </div>
+</div>
+
+<div class="integrations-grid">
+    @if (FlowState.Value.IsLoading && !FlowState.Value.Flows.Any())
+    {
+        <div class="loading-state">Loading flows...</div>
+    }
+    else if (!FlowState.Value.Flows.Any())
+    {
+        <div class="empty-state">
+            <span class="empty-icon">📂</span>
+            <h3>No integrations yet</h3>
+            <p>Create your first integration flow to get started.</p>
+            <button class="btn btn-primary" @onclick="CreateNewFlow">Create Integration</button>
+        </div>
+    }
+    else
+    {
+        @foreach (var flow in FlowState.Value.Flows)
+        {
+            <div class="integration-card" @onclick="() => EditFlow(flow.Id)">
+                <div class="card-header">
+                    <h3 class="card-title">@flow.Name</h3>
+                    <span class="status-badge @(flow.Status.ToLower())">@flow.Status</span>
+                </div>
+                <div class="card-body">
+                    <p class="card-desc">@(string.IsNullOrEmpty(flow.Description) ? "No description provided." : flow.Description)</p>
+                    <div class="card-meta">
+                        <span>Trigger: @flow.TriggerType</span>
+                        <span>Steps: @flow.Nodes.Count</span>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <span class="text-muted">Updated @flow.UpdatedAt.ToShortDateString()</span>
+                    <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">▶</button>
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        Dispatcher.Dispatch(new LoadFlowsAction());
+    }
+
+    private void CreateNewFlow()
+    {
+        NavigationManager.NavigateTo("/flow-designer");
+    }
+
+    private void EditFlow(Guid flowId)
+    {
+        NavigationManager.NavigateTo($"/flow-designer/{flowId}");
+    }
+
+    private void RunFlow(Guid flowId)
+    {
+        Dispatcher.Dispatch(new RunFlowAction { Id = flowId });
+    }
+}
