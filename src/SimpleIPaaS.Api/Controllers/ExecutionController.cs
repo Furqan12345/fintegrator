@@ -11,7 +11,7 @@ using SimpleIPaaS.Shared.Models;
 namespace SimpleIPaaS.Api.Controllers;
 
 [ApiController]
-[Route("api/executions")]
+[Route("api/[controller]")]
 public class ExecutionController : ControllerBase
 {
     private readonly IExecutionRepository _repository;
@@ -94,7 +94,7 @@ public class ExecutionController : ControllerBase
     }
 
     // Matches SimpleIPaaS.Client/Store/ExecutionEffects.cs
-    [HttpGet("")]
+    [HttpGet("executions")]
     public async Task<IActionResult> GetExecutions()
     {
         var executions = await _repository.GetFlowExecutionsAsync();
@@ -117,7 +117,7 @@ public class ExecutionController : ControllerBase
     }
 
     // Matches SimpleIPaaS.Client/Store/ExecutionEffects.cs
-    [HttpGet("{id}/steps")]
+    [HttpGet("executions/{id}/steps")]
     public async Task<IActionResult> GetExecutionSteps(Guid id)
     {
         var steps = await _repository.GetStepExecutionsAsync(id);
@@ -134,28 +134,6 @@ public class ExecutionController : ControllerBase
             ErrorMessage = s.ErrorMessage,
             RequestPayload = s.RequestPayload,
             ResponsePayload = s.ResponsePayload
-        });
-
-        return Ok(dto);
-    }
-
-    // Dead Letter Queue endpoint for ActivityLog
-    [HttpGet("deadletters")]
-    public async Task<IActionResult> GetDeadLetters()
-    {
-        var deadLetters = await _repository.GetAllDeadLettersAsync();
-
-        var dto = deadLetters.Select(d => new DeadLetterEntryDto
-        {
-            Id = d.Id,
-            FlowExecutionId = d.FlowExecutionId,
-            StepId = d.StepId,
-            Payload = d.Payload,
-            ErrorMessage = d.ErrorMessage,
-            RetryCount = d.RetryCount,
-            CreatedAt = d.CreatedAt,
-            LastRetriedAt = d.LastRetriedAt,
-            Status = d.Status
         });
 
         return Ok(dto);

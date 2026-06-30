@@ -127,11 +127,9 @@ public class IntegrationFlowController : ControllerBase
     {
         if (id != dto.Id) return BadRequest("ID mismatch");
 
-        var existingFlow = await _repository.GetByIdAsync(id);
-        if (existingFlow == null) return NotFound();
-
-        var updatedFlow = MapFromDto(dto);
-        await _repository.UpdateAsync(updatedFlow);
+        await _repository.DeleteAsync(id);
+        var flow = MapFromDto(dto);
+        await _repository.AddAsync(flow);
         
         return NoContent();
     }
