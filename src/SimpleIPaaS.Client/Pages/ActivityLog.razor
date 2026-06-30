@@ -1,0 +1,76 @@
+@page "/activity-log"
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<ExecutionState> ExecutionState
+@inject IDispatcher Dispatcher
+@inject NavigationManager NavigationManager
+
+<PageTitle>Activity Log — SimpleIPaaS</PageTitle>
+
+<div class="page-header">
+    <div class="header-left">
+        <h2>Activity Log</h2>
+        <p class="subtitle">Monitor integration execution history and status</p>
+    </div>
+</div>
+
+<div class="activity-log-container">
+    @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
+    {
+        <div class="loading-state">Loading activity log...</div>
+    }
+    else if (!ExecutionState.Value.Executions.Any())
+    {
+        <div class="empty-state">
+            <span class="empty-icon">📈</span>
+            <h3>No executions yet</h3>
+            <p>Run an integration flow to see activity here.</p>
+        </div>
+    }
+    else
+    {
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Flow ID</th>
+                    <th>Status</th>
+                    <th>Started At</th>
+                    <th>Completed At</th>
+                    <th>Records (Success/Fail)</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var exec in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
+                {
+                    <tr>
+                        <td>@exec.FlowId.ToString().Substring(0, 8)...</td>
+                        <td>
+                            <span class="status-badge @(exec.Status.ToLower())">@exec.Status</span>
+                        </td>
+                        <td>@exec.StartedAt.ToLocalTime()</td>
+                        <td>@(exec.CompletedAt?.ToLocalTime().ToString() ?? "-")</td>
+                        <td>@exec.TotalRecords (@exec.SuccessRecords / @exec.FailedRecords)</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline" @onclick="() => ViewDetails(exec.Id)">Details</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        Dispatcher.Dispatch(new LoadExecutionsAction());
+    }
+
+    private void ViewDetails(Guid executionId)
+    {
+        NavigationManager.NavigateTo($"/execution-detail/{executionId}");
+    }
+}

@@ -1,0 +1,74 @@
+@page "/connections"
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<ConnectionState> ConnectionState
+@inject IDispatcher Dispatcher
+@inject NavigationManager NavigationManager
+
+<PageTitle>Connections — SimpleIPaaS</PageTitle>
+
+<div class="page-header">
+    <div class="header-left">
+        <h2>Connections</h2>
+        <p class="subtitle">Manage authentication and endpoints for your integrations</p>
+    </div>
+    <div class="header-right">
+        <button class="btn btn-primary" @onclick="CreateNewConnection">+ New Connection</button>
+    </div>
+</div>
+
+<div class="connections-grid">
+    @if (ConnectionState.Value.IsLoading && !ConnectionState.Value.Connections.Any())
+    {
+        <div class="loading-state">Loading connections...</div>
+    }
+    else if (!ConnectionState.Value.Connections.Any())
+    {
+        <div class="empty-state">
+            <span class="empty-icon">🔌</span>
+            <h3>No connections yet</h3>
+            <p>Create a connection to authenticate with external APIs.</p>
+            <button class="btn btn-primary" @onclick="CreateNewConnection">Create Connection</button>
+        </div>
+    }
+    else
+    {
+        @foreach (var conn in ConnectionState.Value.Connections)
+        {
+            <div class="connection-card" @onclick="() => EditConnection(conn.Id)">
+                <div class="card-header">
+                    <h3 class="card-title">@conn.Name</h3>
+                    <span class="status-badge @(conn.Status.ToLower())">@conn.Status</span>
+                </div>
+                <div class="card-body">
+                    <p class="card-desc">@conn.BaseUrl</p>
+                    <div class="card-meta">
+                        <span>Auth: @conn.AuthType</span>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <span class="text-muted">Updated @conn.UpdatedAt.ToShortDateString()</span>
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        Dispatcher.Dispatch(new LoadConnectionsAction());
+    }
+
+    private void CreateNewConnection()
+    {
+        NavigationManager.NavigateTo("/connection-wizard");
+    }
+
+    private void EditConnection(Guid connectionId)
+    {
+        NavigationManager.NavigateTo($"/connection-wizard/{connectionId}");
+    }
+}

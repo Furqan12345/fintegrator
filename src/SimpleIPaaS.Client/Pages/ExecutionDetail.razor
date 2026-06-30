@@ -1,0 +1,76 @@
+@page "/execution-detail/{ExecutionId:guid}"
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<ExecutionState> ExecutionState
+@inject IDispatcher Dispatcher
+@inject NavigationManager NavigationManager
+
+<PageTitle>Execution Details — SimpleIPaaS</PageTitle>
+
+<div class="page-header">
+    <div class="header-left">
+        <h2>Execution Details</h2>
+        <p class="subtitle">Execution ID: @ExecutionId</p>
+    </div>
+    <div class="header-right">
+        <button class="btn btn-outline" @onclick="GoBack">Back to Log</button>
+    </div>
+</div>
+
+<div class="execution-detail-container">
+    @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.CurrentStepExecutions.Any())
+    {
+        <div class="loading-state">Loading step details...</div>
+    }
+    else if (!ExecutionState.Value.CurrentStepExecutions.Any())
+    {
+        <div class="empty-state">
+            <span class="empty-icon">ℹ️</span>
+            <h3>No steps recorded</h3>
+        </div>
+    }
+    else
+    {
+        <div class="steps-timeline">
+            @foreach (var step in ExecutionState.Value.CurrentStepExecutions.OrderBy(s => s.StartedAt))
+            {
+                <div class="step-card">
+                    <div class="step-header">
+                        <h4>Step ID: @step.StepId.ToString().Substring(0, 8)...</h4>
+                        <span class="status-badge @(step.Status.ToLower())">@step.Status</span>
+                    </div>
+                    <div class="step-body">
+                        <div class="step-meta">
+                            <span>Started: @step.StartedAt.ToLocalTime()</span>
+                            <span>Completed: @(step.CompletedAt?.ToLocalTime().ToString() ?? "-")</span>
+                            <span>Status Code: @step.HttpStatusCode</span>
+                        </div>
+                        @if (!string.IsNullOrEmpty(step.ErrorMessage))
+                        {
+                            <div class="step-error">
+                                <strong>Error:</strong> @step.ErrorMessage
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public Guid ExecutionId { get; set; }
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        Dispatcher.Dispatch(new LoadExecutionDetailsAction { ExecutionId = ExecutionId });
+    }
+
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo("/activity-log");
+    }
+}

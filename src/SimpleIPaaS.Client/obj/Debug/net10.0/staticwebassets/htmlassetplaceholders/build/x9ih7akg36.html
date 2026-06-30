@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SimpleIPaaS — Integration Builder</title>
+    <base href="/" />
+    <link href="_framework/dotnet.vn83fnq3kz.js" rel="preload" as="script" fetchpriority="high" crossorigin="anonymous" integrity="sha256-ZSY2daJuSWqaqKzmMPMkJ3qz+ZhYXsk5mbaTqWOGBMU=" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="_content/Z.Blazor.Diagrams/style.css" rel="stylesheet" />
+    <link href="_content/Z.Blazor.Diagrams/default.styles.css" rel="stylesheet" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link href="SimpleIPaaS.Client.styles.css" rel="stylesheet" />
+    <script type="importmap">{
+  "imports": {
+    "./_content/Z.Blazor.Diagrams/script.js": "./_content/Z.Blazor.Diagrams/script.gd8b3shkm2.js",
+    "./_content/Z.Blazor.Diagrams/script.min.js": "./_content/Z.Blazor.Diagrams/script.min.8l02e235tj.js",
+    "./_framework/Microsoft.DotNet.HotReload.WebAssembly.Browser.lib.module.js": "./_framework/Microsoft.DotNet.HotReload.WebAssembly.Browser.99zm1jdh75.lib.module.js",
+    "./_framework/blazor.webassembly.js": "./_framework/blazor.webassembly.958z1vx7fr.js",
+    "./_framework/dotnet.native.js": "./_framework/dotnet.native.ikrs475e5v.js",
+    "./_framework/dotnet.runtime.js": "./_framework/dotnet.runtime.a6jcqbs390.js",
+    "./_framework/dotnet.js": "./_framework/dotnet.vn83fnq3kz.js",
+    "./lib/bootstrap/dist/js/bootstrap.bundle.js": "./lib/bootstrap/dist/js/bootstrap.bundle.cdsrh5sa9z.js",
+    "./lib/bootstrap/dist/js/bootstrap.bundle.min.js": "./lib/bootstrap/dist/js/bootstrap.bundle.min.493y06b0oq.js",
+    "./lib/bootstrap/dist/js/bootstrap.esm.js": "./lib/bootstrap/dist/js/bootstrap.esm.lsuwl9qjzl.js",
+    "./lib/bootstrap/dist/js/bootstrap.esm.min.js": "./lib/bootstrap/dist/js/bootstrap.esm.min.jj8uyg4cgr.js",
+    "./lib/bootstrap/dist/js/bootstrap.js": "./lib/bootstrap/dist/js/bootstrap.eyamqmezx5.js",
+    "./lib/bootstrap/dist/js/bootstrap.min.js": "./lib/bootstrap/dist/js/bootstrap.min.63fj8s7r0e.js"
+  },
+  "scopes": {},
+  "integrity": {
+    "./_content/Z.Blazor.Diagrams/script.gd8b3shkm2.js": "sha256-JOLpZRGjCLhxymxEneS0YcmDu2u5TLQVgnEmu0ujdn0=",
+    "./_content/Z.Blazor.Diagrams/script.js": "sha256-JOLpZRGjCLhxymxEneS0YcmDu2u5TLQVgnEmu0ujdn0=",
+    "./_content/Z.Blazor.Diagrams/script.min.8l02e235tj.js": "sha256-fPUqIj7jmA95o8LYGeWd3ccScqIqRgC4QmP0dvNe/Do=",
+    "./_content/Z.Blazor.Diagrams/script.min.js": "sha256-fPUqIj7jmA95o8LYGeWd3ccScqIqRgC4QmP0dvNe/Do=",
+    "./_framework/Microsoft.DotNet.HotReload.WebAssembly.Browser.99zm1jdh75.lib.module.js": "sha256-A8e6zZwhOqf7lDQqbbCYcAUv4wGE9aQxOo4WyYxR//0=",
+    "./_framework/Microsoft.DotNet.HotReload.WebAssembly.Browser.lib.module.js": "sha256-A8e6zZwhOqf7lDQqbbCYcAUv4wGE9aQxOo4WyYxR//0=",
+    "./_framework/blazor.webassembly.958z1vx7fr.js": "sha256-A59Tr9HqEhHMu8kU7kruLI9ayw5MRS6Lvc6z7jCbghk=",
+    "./_framework/blazor.webassembly.js": "sha256-A59Tr9HqEhHMu8kU7kruLI9ayw5MRS6Lvc6z7jCbghk=",
+    "./_framework/dotnet.js": "sha256-ZSY2daJuSWqaqKzmMPMkJ3qz+ZhYXsk5mbaTqWOGBMU=",
+    "./_framework/dotnet.native.ikrs475e5v.js": "sha256-kkp5wX0htwkBcZt5WmEiKmhBqjqdCJtGc+koldfyoDQ=",
+    "./_framework/dotnet.native.js": "sha256-kkp5wX0htwkBcZt5WmEiKmhBqjqdCJtGc+koldfyoDQ=",
+    "./_framework/dotnet.runtime.a6jcqbs390.js": "sha256-7i3usfTrnzC/9qWO4si5Bw4w7D9fUSnSBdhQ47blX2M=",
+    "./_framework/dotnet.runtime.js": "sha256-7i3usfTrnzC/9qWO4si5Bw4w7D9fUSnSBdhQ47blX2M=",
+    "./_framework/dotnet.vn83fnq3kz.js": "sha256-ZSY2daJuSWqaqKzmMPMkJ3qz+ZhYXsk5mbaTqWOGBMU=",
+    "./lib/bootstrap/dist/js/bootstrap.bundle.cdsrh5sa9z.js": "sha256-YO31dVzu2nkBYc0IZk5PZAGDJ1UHhWw/qbuN2KhU2Qg=",
+    "./lib/bootstrap/dist/js/bootstrap.bundle.js": "sha256-YO31dVzu2nkBYc0IZk5PZAGDJ1UHhWw/qbuN2KhU2Qg=",
+    "./lib/bootstrap/dist/js/bootstrap.bundle.min.493y06b0oq.js": "sha256-CDOy6cOibCWEdsRiZuaHf8dSGGJRYuBGC+mjoJimHGw=",
+    "./lib/bootstrap/dist/js/bootstrap.bundle.min.js": "sha256-CDOy6cOibCWEdsRiZuaHf8dSGGJRYuBGC+mjoJimHGw=",
+    "./lib/bootstrap/dist/js/bootstrap.esm.js": "sha256-G0NR9bA4e3venmLvR7qYozO0d7ZnzcRzWT9IOhk/sD4=",
+    "./lib/bootstrap/dist/js/bootstrap.esm.lsuwl9qjzl.js": "sha256-G0NR9bA4e3venmLvR7qYozO0d7ZnzcRzWT9IOhk/sD4=",
+    "./lib/bootstrap/dist/js/bootstrap.esm.min.jj8uyg4cgr.js": "sha256-QZdFT1ZNdly4rmgUBtXmXFS9BU1FTa+sPe6h794sFRQ=",
+    "./lib/bootstrap/dist/js/bootstrap.esm.min.js": "sha256-QZdFT1ZNdly4rmgUBtXmXFS9BU1FTa+sPe6h794sFRQ=",
+    "./lib/bootstrap/dist/js/bootstrap.eyamqmezx5.js": "sha256-Cg3R9HMBPGa4dpplwKBv4WvfS7aOLiRtmsws8G50hws=",
+    "./lib/bootstrap/dist/js/bootstrap.js": "sha256-Cg3R9HMBPGa4dpplwKBv4WvfS7aOLiRtmsws8G50hws=",
+    "./lib/bootstrap/dist/js/bootstrap.min.63fj8s7r0e.js": "sha256-3gQJhtmj7YnV1fmtbVcnAV6eI4ws0Tr48bVZCThtCGQ=",
+    "./lib/bootstrap/dist/js/bootstrap.min.js": "sha256-3gQJhtmj7YnV1fmtbVcnAV6eI4ws0Tr48bVZCThtCGQ="
+  }
+}</script>
+    <script src="_content/Z.Blazor.Diagrams/script.min.js"></script>
+</head>
+
+<body>
+    <div id="app">
+        <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;color:#94a3b8;font-family:Inter,system-ui,sans-serif;">
+            <div style="text-align:center;">
+                <div style="width:40px;height:40px;border:3px solid #334155;border-top:3px solid #3b82f6;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;"></div>
+                <p>Loading iPaaS Builder...</p>
+            </div>
+        </div>
+        <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    </div>
+
+    <div id="blazor-error-ui" style="display:none;position:fixed;bottom:0;left:0;right:0;padding:12px 20px;background:#dc2626;color:white;z-index:9999;font-family:Inter,system-ui,sans-serif;font-size:14px;">
+        An unhandled error has occurred.
+        <a href="." style="color:white;font-weight:600;margin-left:8px;">Reload</a>
+        <span class="dismiss" style="cursor:pointer;margin-left:12px;">✕</span>
+    </div>
+
+    <script src="_framework/blazor.webassembly.js"></script>
+</body>
+
+</html>

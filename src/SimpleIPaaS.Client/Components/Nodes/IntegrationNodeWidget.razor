@@ -1,0 +1,33 @@
+@using Blazor.Diagrams.Components.Renderers;
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Client.Components
+@using SimpleIPaaS.Client.Components.Nodes
+
+<div class="custom-node @Node.StepConfig.StepType?.ToLower()">
+    @if (Node.StepConfig.StepType == "HttpAction")
+    {
+        <HttpActionCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "Mapping")
+    {
+        <MappingCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "Branch")
+    {
+        <BranchCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "Debug")
+    {
+        <DebugCard Step="Node.StepConfig" />
+    }
+
+    @foreach (var port in Node.Ports)
+    {
+        <!-- Render ports for connections -->
+        <PortRenderer Port="port" />
+    }
+</div>
+
+@code {
+    [Parameter] public IntegrationNodeModel Node { get; set; } = null!;
+}
