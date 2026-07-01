@@ -5,7 +5,7 @@ namespace SimpleIPaaS.Shared.Models;
 
 public class IntegrationFlowDto
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid Id { get; set; } = Guid.Empty;
     public Guid TenantId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
@@ -25,7 +25,7 @@ public class IntegrationFlowDto
 public class IntegrationStepDto
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public string StepType { get; set; } = string.Empty; // HttpAction, Mapping, Branch
+    public string StepType { get; set; } = string.Empty; // HttpAction, Mapping, Branch, Debug
     public string NodeName { get; set; } = string.Empty;
     
     // UI Properties

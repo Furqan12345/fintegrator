@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SimpleIPaaS.Shared")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+836329a64d173a4436bc8d8785091c705ba127b9")]
 [assembly: System.Reflection.AssemblyProductAttribute("SimpleIPaaS.Shared")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SimpleIPaaS.Shared")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SimpleIPaaS.Client")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b3b6466195c64311f26c42e24231e9800488e8c7")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+836329a64d173a4436bc8d8785091c705ba127b9")]
 [assembly: System.Reflection.AssemblyProductAttribute("SimpleIPaaS.Client")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SimpleIPaaS.Client")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

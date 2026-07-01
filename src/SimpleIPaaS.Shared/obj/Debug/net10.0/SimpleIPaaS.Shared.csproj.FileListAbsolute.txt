@@ -20,3 +20,4 @@ C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS
 C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Shared\obj\Debug\net10.0\refint\SimpleIPaaS.Shared.dll
 C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Shared\obj\Debug\net10.0\SimpleIPaaS.Shared.pdb
 C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Shared\obj\Debug\net10.0\ref\SimpleIPaaS.Shared.dll
+C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Shared\obj\Debug\net10.0\SimpleIPaaS.Shared.sourcelink.json

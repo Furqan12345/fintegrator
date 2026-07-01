@@ -19,7 +19,7 @@
                         <span class="panel-label">C# Script</span>
                         <span class="panel-hint">@ScriptHint</span>
                     </div>
-                    <textarea class="code-textarea" @bind="Code" spellcheck="false"></textarea>
+                    <textarea class="code-textarea" @bind="Code" @bind:event="oninput" spellcheck="false"></textarea>
                 </div>
 
                 <!-- Bottom half: Input + Output side by side -->
@@ -27,9 +27,9 @@
                     <!-- Panel 2: Sample Input -->
                     <div class="editor-panel">
                         <div class="panel-header">
-                            <span class="panel-label">Sample Input JSON</span>
+                            <span class="panel-label">@SampleInputLabel</span>
                         </div>
-                        <textarea class="code-textarea io-textarea" @bind="SampleInput" spellcheck="false"
+                        <textarea class="code-textarea io-textarea" @bind="SampleInput" @bind:event="oninput" spellcheck="false"
                             placeholder='{ "name": "John", "age": 30 }'></textarea>
                     </div>
 
@@ -94,6 +94,10 @@
         "PostFlightCode" => "Use 'FlowStateJson' and 'HttpResponseJson'. Return a JSON string.",
         _ => "Use 'FlowStateJson' to access state. Return a JSON string."
     });
+
+    private string SampleInputLabel => TargetProperty == "PostFlightCode"
+        ? "Sample HTTP Response JSON"
+        : "Sample Flow State JSON";
 
     private bool _isRunning;
     private bool _hasError;
@@ -195,7 +199,7 @@ return JsonConvert.SerializeObject(result);"
             };
 
             Code = string.IsNullOrWhiteSpace(existingCode) ? GetDefaultCode() : existingCode;
-            SampleInput = DefaultSampleInput;
+            SampleInput = TargetProperty == "PostFlightCode" ? DefaultResponseInput : DefaultSampleInput;
             Output = string.Empty;
             _hasError = false;
             _hasResult = false;
@@ -215,8 +219,8 @@ return JsonConvert.SerializeObject(result);"
             var request = new TestMappingRequestDto
             {
                 MappingCode = Code,
-                FlowStateJson = SampleInput,
-                HttpResponseJson = TargetProperty == "PostFlightCode" ? DefaultResponseInput : "{}",
+                FlowStateJson = TargetProperty == "PostFlightCode" ? "{}" : SampleInput,
+                HttpResponseJson = TargetProperty == "PostFlightCode" ? SampleInput : "{}",
                 TargetProperty = TargetProperty,
                 StepType = Step?.StepType ?? string.Empty
             };
@@ -249,7 +253,7 @@ return JsonConvert.SerializeObject(result);"
     private void ResetToSample()
     {
         Code = GetDefaultCode();
-        SampleInput = DefaultSampleInput;
+        SampleInput = TargetProperty == "PostFlightCode" ? DefaultResponseInput : DefaultSampleInput;
         Output = string.Empty;
         _hasError = false;
         _hasResult = false;

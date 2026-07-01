@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Fluxor;
 using SimpleIPaaS.Shared.Models;
@@ -11,6 +12,7 @@ public class FlowState
     public IReadOnlyList<IntegrationFlowDto> Flows { get; }
     public IntegrationFlowDto? CurrentFlow { get; }
     public string RunResult { get; }
+    public Guid? LastExecutionId { get; }
 
     private FlowState() 
     { 
@@ -18,13 +20,20 @@ public class FlowState
         Flows = new List<IntegrationFlowDto>();
         CurrentFlow = new IntegrationFlowDto();
         RunResult = string.Empty;
+        LastExecutionId = null;
     } 
 
-    public FlowState(bool isLoading, IReadOnlyList<IntegrationFlowDto> flows, IntegrationFlowDto? currentFlow, string runResult)
+    public FlowState(
+        bool isLoading,
+        IReadOnlyList<IntegrationFlowDto> flows,
+        IntegrationFlowDto? currentFlow,
+        string runResult,
+        Guid? lastExecutionId = null)
     {
         IsLoading = isLoading;
         Flows = flows;
         CurrentFlow = currentFlow;
         RunResult = runResult;
+        LastExecutionId = lastExecutionId;
     }
 }

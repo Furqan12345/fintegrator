@@ -177,9 +177,12 @@ public class FlowExecutor
                     }
                     else if (node.StepType == StepType.Debug)
                     {
-                        // Debug node: display the flow state context
+                        var inspectedAtUtc = DateTime.UtcNow;
                         stepExecution.ResponsePayload = flowStateContext.ToString(Newtonsoft.Json.Formatting.Indented);
-                        currentPayload = stepExecution.ResponsePayload;
+                        currentPayload = new JObject
+                        {
+                            ["inspectedAtUtc"] = inspectedAtUtc
+                        }.ToString(Newtonsoft.Json.Formatting.None);
 
                         // Activate all outgoing links
                         var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);

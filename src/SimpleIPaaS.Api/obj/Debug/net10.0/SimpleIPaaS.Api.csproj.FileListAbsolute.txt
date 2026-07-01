@@ -390,3 +390,4 @@ C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS
 C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Api\obj\Debug\net10.0\SimpleIPaaS.Api.pdb
 C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Api\obj\Debug\net10.0\SimpleIPaaS.Api.genruntimeconfig.cache
 C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Api\obj\Debug\net10.0\ref\SimpleIPaaS.Api.dll
+C:\Users\FurqanIrfan\Documents\fintegrator-main\fintegrator-main\src\SimpleIPaaS.Api\obj\Debug\net10.0\SimpleIPaaS.Api.sourcelink.json

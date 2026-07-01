@@ -11,7 +11,7 @@ using SimpleIPaaS.Shared.Models;
 namespace SimpleIPaaS.Api.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/executions")]
 public class ExecutionController : ControllerBase
 {
     private readonly IExecutionRepository _repository;
@@ -94,7 +94,7 @@ public class ExecutionController : ControllerBase
     }
 
     // Matches SimpleIPaaS.Client/Store/ExecutionEffects.cs
-    [HttpGet("executions")]
+    [HttpGet("")]
     public async Task<IActionResult> GetExecutions()
     {
         var executions = await _repository.GetFlowExecutionsAsync();
@@ -117,7 +117,7 @@ public class ExecutionController : ControllerBase
     }
 
     // Matches SimpleIPaaS.Client/Store/ExecutionEffects.cs
-    [HttpGet("executions/{id}/steps")]
+    [HttpGet("{id}/steps")]
     public async Task<IActionResult> GetExecutionSteps(Guid id)
     {
         var steps = await _repository.GetStepExecutionsAsync(id);

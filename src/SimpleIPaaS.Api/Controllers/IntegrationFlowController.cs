@@ -122,24 +122,23 @@ public class IntegrationFlowController : ControllerBase
         return CreatedAtAction(nameof(Get), new { id = flow.Id }, dto);
     }
 
-    [HttpPut("{id}")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] IntegrationFlowDto dto)
+    [HttpPut("{flowId}")]
+    public async Task<IActionResult> Update([FromRoute] Guid flowId, [FromBody] IntegrationFlowDto dto)
     {
-        if (id != dto.Id) return BadRequest("ID mismatch");
+        if (flowId != dto.Id) return BadRequest("ID mismatch");
 
-        await _repository.DeleteAsync(id);
         var flow = MapFromDto(dto);
-        await _repository.AddAsync(flow);
+        await _repository.UpdateAsync(flow);
         
-        return NoContent();
+        return Ok(dto);
     }
 
-    [HttpPost("{id}/run")]
-    public async Task<IActionResult> Run(Guid id)
+    [HttpPost("{flowId}/run")]
+    public async Task<IActionResult> Run([FromRoute] Guid flowId)
     {
         try
         {
-            var result = await _runner.ExecuteFlowAsync(id);
+            var result = await _runner.ExecuteFlowAsync(flowId);
             return Ok(new { success = true, executionId = result.Id, status = result.Status.ToString() });
         }
         catch (Exception ex)
@@ -197,7 +196,7 @@ public class IntegrationFlowController : ControllerBase
             Description = dto.Description,
             Nodes = dto.Nodes.Select(n => new IntegrationStep
             {
-                Id = n.Id,
+                Id = n.Id == Guid.Empty ? Guid.NewGuid() : n.Id,
                 StepType = Enum.Parse<StepType>(n.StepType),
                 PositionX = n.PositionX,
                 PositionY = n.PositionY,

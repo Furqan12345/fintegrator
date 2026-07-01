@@ -1,0 +1,95 @@
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<FlowState> FlowState
+@inject HttpClient Http
+
+<div class="card-header" style="background: #334155;">
+    <h3 class="card-title" style="color: white;">Debug / Inspect</h3>
+</div>
+<div class="card-body">
+    <div class="form-group" style="margin-bottom: 8px;">
+        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. InspectPayload" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+    </div>
+
+    <div style="padding: 8px; background: var(--bg-app); border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 8px;">View Incoming Data</div>
+        <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick="ViewState" disabled="@_isLoading">
+            @(_isLoading ? "Loading..." : "View State")
+        </button>
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <div style="margin-top: 8px; color: var(--danger); font-size: 0.75rem;">@_error</div>
+        }
+        else if (!string.IsNullOrWhiteSpace(_stateJson))
+        {
+            <pre style="margin: 8px 0 0 0; max-height: 220px; overflow: auto; background: #0f172a; color: #e2e8f0; padding: 8px; border-radius: var(--radius-sm); font-size: 0.7rem; line-height: 1.4;"><code>@_stateJson</code></pre>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+
+    private bool _isLoading;
+    private string _stateJson = string.Empty;
+    private string _error = string.Empty;
+
+    private async Task ViewState()
+    {
+        _error = string.Empty;
+        _stateJson = string.Empty;
+
+        if (FlowState.Value.LastExecutionId is not { } executionId)
+        {
+            _error = "Run the flow before viewing state.";
+            return;
+        }
+
+        _isLoading = true;
+
+        try
+        {
+            var steps = await Http.GetFromJsonAsync<StepExecutionDto[]>($"api/executions/{executionId}/steps");
+            var debugStep = steps?.FirstOrDefault(step => step.StepId == Step.Id);
+
+            if (debugStep == null)
+            {
+                _error = "No state was captured for this debug card in the latest run.";
+                return;
+            }
+
+            _stateJson = FormatJson(debugStep.ResponsePayload);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private static string FormatJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "{}";
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+    }
+}
