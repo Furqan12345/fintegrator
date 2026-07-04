@@ -9,16 +9,21 @@ namespace SimpleIPaaS.Infrastructure.Services;
 public class AdvancedScriptGlobals
 {
     public string FlowStateJson { get; set; } = "{}";
+    public string PersistedStateJson { get; set; } = "{}";
     public string HttpResponseJson { get; set; } = string.Empty;
 }
 
 public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
 {
-    public async Task<string> ExecuteMappingAsync(string csharpCode, string flowStateJson)
+    public async Task<string> ExecuteMappingAsync(string csharpCode, string flowStateJson, string persistedStateJson)
     {
         try
         {
-            var globals = new AdvancedScriptGlobals { FlowStateJson = flowStateJson };
+            var globals = new AdvancedScriptGlobals
+            {
+                FlowStateJson = flowStateJson,
+                PersistedStateJson = persistedStateJson
+            };
             var options = ScriptOptions.Default
                 .AddReferences(
                     typeof(object).Assembly,
@@ -45,13 +50,14 @@ public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
         }
     }
 
-    public async Task<string> ExecutePostFlightAsync(string csharpCode, string flowStateJson, string httpResponseJson)
+    public async Task<string> ExecutePostFlightAsync(string csharpCode, string flowStateJson, string persistedStateJson, string httpResponseJson)
     {
         try
         {
             var globals = new AdvancedScriptGlobals 
             { 
                 FlowStateJson = flowStateJson,
+                PersistedStateJson = persistedStateJson,
                 HttpResponseJson = httpResponseJson
             };
             var options = ScriptOptions.Default
@@ -80,16 +86,20 @@ public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
         }
     }
 
-    public async Task<string> ExecuteUrlAsync(string csharpCode, string flowStateJson)
+    public async Task<string> ExecuteUrlAsync(string csharpCode, string flowStateJson, string persistedStateJson)
     {
-        return await ExecuteMappingAsync(csharpCode, flowStateJson);
+        return await ExecuteMappingAsync(csharpCode, flowStateJson, persistedStateJson);
     }
 
-    public async Task<bool> ExecuteBranchAsync(string csharpCode, string flowStateJson)
+    public async Task<bool> ExecuteBranchAsync(string csharpCode, string flowStateJson, string persistedStateJson)
     {
         try
         {
-            var globals = new AdvancedScriptGlobals { FlowStateJson = flowStateJson };
+            var globals = new AdvancedScriptGlobals
+            {
+                FlowStateJson = flowStateJson,
+                PersistedStateJson = persistedStateJson
+            };
             var options = ScriptOptions.Default
                 .AddReferences(
                     typeof(object).Assembly,

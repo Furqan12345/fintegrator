@@ -1,13 +1,16 @@
 @page "/connection-wizard"
 @page "/connection-wizard/{ConnectionId:guid}"
+@using System.Net.Http.Json
+@using System.Text.Json
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
 @inject IState<ConnectionState> ConnectionState
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
+@inject HttpClient Http
 
-<PageTitle>Connection Wizard — SimpleIPaaS</PageTitle>
+<PageTitle>Connection Wizard - SimpleIPaaS</PageTitle>
 
 <div class="wizard-container">
     <div class="page-header">
@@ -35,7 +38,8 @@
                 <option value="None">None</option>
                 <option value="Basic">Basic Auth</option>
                 <option value="Bearer">Bearer Token</option>
-                <option value="OAuth2">OAuth 2.0</option>
+                <option value="ApiKey">API Key</option>
+                <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
             </select>
         </div>
 
@@ -43,68 +47,98 @@
         {
             <div class="form-group">
                 <label>Username</label>
-                <input type="text" class="form-control" />
+                <input type="text" class="form-control" @bind="_basicUsername" />
             </div>
             <div class="form-group">
                 <label>Password</label>
-                <input type="password" class="form-control" />
+                <input type="password" class="form-control" @bind="_basicPassword" />
             </div>
         }
         else if (_connection.AuthType == "Bearer")
         {
             <div class="form-group">
                 <label>Token</label>
-                <input type="password" class="form-control" />
+                <input type="password" class="form-control" @bind="_bearerToken" />
             </div>
         }
-        else if (_connection.AuthType == "OAuth2")
+        else if (_connection.AuthType == "ApiKey")
         {
             <div class="form-group">
-                <label>Client ID</label>
-                <input type="text" class="form-control" />
+                <label>Header Name</label>
+                <input type="text" class="form-control" @bind="_apiKeyHeaderName" />
             </div>
             <div class="form-group">
-                <label>Client Secret</label>
-                <input type="password" class="form-control" />
+                <label>API Key</label>
+                <input type="password" class="form-control" @bind="_apiKeyValue" />
             </div>
+        }
+        else if (_connection.AuthType == "OAuth2RefreshToken")
+        {
             <div class="form-group">
                 <label>Token URL</label>
-                <input type="text" class="form-control" />
+                <input type="text" class="form-control" @bind="_oauthTokenUrl" />
+            </div>
+            <div class="form-group">
+                <label>Refresh Token</label>
+                <input type="password" class="form-control" @bind="_oauthRefreshToken" />
+            </div>
+            <div class="form-group">
+                <label>Access Token (optional)</label>
+                <input type="password" class="form-control" @bind="_oauthAccessToken" />
             </div>
         }
     </div>
 </div>
 
 @code {
-    [Parameter]
-    public Guid? ConnectionId { get; set; }
+    [Parameter] public Guid? ConnectionId { get; set; }
 
-    private ConnectionDto _connection = new ConnectionDto();
+    private ConnectionDto _connection = new() { Status = "Active" };
+    private string _basicUsername = string.Empty;
+    private string _basicPassword = string.Empty;
+    private string _bearerToken = string.Empty;
+    private string _apiKeyHeaderName = "X-Api-Key";
+    private string _apiKeyValue = string.Empty;
+    private string _oauthTokenUrl = string.Empty;
+    private string _oauthRefreshToken = string.Empty;
+    private string _oauthAccessToken = string.Empty;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
-        base.OnInitialized();
-        if (ConnectionId.HasValue)
+        await base.OnInitializedAsync();
+        if (!ConnectionId.HasValue)
         {
-            var existing = ConnectionState.Value.Connections.FirstOrDefault(c => c.Id == ConnectionId.Value);
-            if (existing != null)
-            {
-                _connection = new ConnectionDto
-                {
-                    Id = existing.Id,
-                    Name = existing.Name,
-                    BaseUrl = existing.BaseUrl,
-                    AuthType = existing.AuthType,
-                    TenantId = existing.TenantId,
-                    AuthConfigJson = existing.AuthConfigJson,
-                    Status = existing.Status
-                };
-            }
+            return;
         }
+
+        var existing = ConnectionState.Value.Connections.FirstOrDefault(connection => connection.Id == ConnectionId.Value);
+        if (existing == null)
+        {
+            existing = await Http.GetFromJsonAsync<ConnectionDto>($"api/connections/{ConnectionId.Value}");
+        }
+
+        if (existing == null)
+        {
+            return;
+        }
+
+        _connection = new ConnectionDto
+        {
+            Id = existing.Id,
+            Name = existing.Name,
+            BaseUrl = existing.BaseUrl,
+            AuthType = existing.AuthType,
+            TenantId = existing.TenantId,
+            AuthConfigJson = existing.AuthConfigJson,
+            Status = existing.Status
+        };
+
+        HydrateAuthFields(existing.AuthConfigJson);
     }
 
     private void SaveConnection()
     {
+        _connection.AuthConfigJson = BuildAuthConfigJson();
         Dispatcher.Dispatch(new SaveConnectionAction { Connection = _connection });
         GoBack();
     }
@@ -112,5 +146,38 @@
     private void GoBack()
     {
         NavigationManager.NavigateTo("/connections");
+    }
+
+    private string BuildAuthConfigJson()
+    {
+        object payload = _connection.AuthType switch
+        {
+            "Basic" => new { username = _basicUsername, password = _basicPassword },
+            "Bearer" => new { token = _bearerToken },
+            "ApiKey" => new { headerName = _apiKeyHeaderName, apiKey = _apiKeyValue },
+            "OAuth2RefreshToken" => new { tokenUrl = _oauthTokenUrl, refreshToken = _oauthRefreshToken, accessToken = _oauthAccessToken },
+            _ => new { }
+        };
+
+        return JsonSerializer.Serialize(payload);
+    }
+
+    private void HydrateAuthFields(string authConfigJson)
+    {
+        if (string.IsNullOrWhiteSpace(authConfigJson))
+        {
+            return;
+        }
+
+        using var document = JsonDocument.Parse(authConfigJson);
+        var root = document.RootElement;
+        _basicUsername = root.TryGetProperty("username", out var username) ? username.GetString() ?? string.Empty : string.Empty;
+        _basicPassword = root.TryGetProperty("password", out var password) ? password.GetString() ?? string.Empty : string.Empty;
+        _bearerToken = root.TryGetProperty("token", out var token) ? token.GetString() ?? string.Empty : string.Empty;
+        _apiKeyHeaderName = root.TryGetProperty("headerName", out var headerName) ? headerName.GetString() ?? "X-Api-Key" : "X-Api-Key";
+        _apiKeyValue = root.TryGetProperty("apiKey", out var apiKey) ? apiKey.GetString() ?? string.Empty : string.Empty;
+        _oauthTokenUrl = root.TryGetProperty("tokenUrl", out var tokenUrl) ? tokenUrl.GetString() ?? string.Empty : string.Empty;
+        _oauthRefreshToken = root.TryGetProperty("refreshToken", out var refreshToken) ? refreshToken.GetString() ?? string.Empty : string.Empty;
+        _oauthAccessToken = root.TryGetProperty("accessToken", out var accessToken) ? accessToken.GetString() ?? string.Empty : string.Empty;
     }
 }

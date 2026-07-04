@@ -5,15 +5,12 @@
 {
     <div class="modal-overlay" @onclick="Close" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
         <div class="modal-container" @onclick:stopPropagation="true" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
-            <!-- Header -->
             <div class="modal-header">
-                <h2 class="modal-title">⚙️ @ModalTitle</h2>
-                <button class="modal-close-btn" @onclick="Close">✕</button>
+                <h2 class="modal-title">@ModalTitle</h2>
+                <button class="modal-close-btn" @onclick="Close">X</button>
             </div>
 
-            <!-- Body: 3-panel layout -->
             <div class="modal-body">
-                <!-- Panel 1: Code Editor -->
                 <div class="editor-panel">
                     <div class="panel-header">
                         <span class="panel-label">C# Script</span>
@@ -22,18 +19,21 @@
                     <textarea class="code-textarea" @bind="Code" @bind:event="oninput" spellcheck="false"></textarea>
                 </div>
 
-                <!-- Bottom half: Input + Output side by side -->
                 <div class="io-panels">
-                    <!-- Panel 2: Sample Input -->
                     <div class="editor-panel">
                         <div class="panel-header">
                             <span class="panel-label">@SampleInputLabel</span>
                         </div>
-                        <textarea class="code-textarea io-textarea" @bind="SampleInput" @bind:event="oninput" spellcheck="false"
-                            placeholder='{ "name": "John", "age": 30 }'></textarea>
+                        <textarea class="code-textarea io-textarea" @bind="SampleInput" @bind:event="oninput" spellcheck="false"></textarea>
                     </div>
 
-                    <!-- Panel 3: Output -->
+                    <div class="editor-panel">
+                        <div class="panel-header">
+                            <span class="panel-label">Sample Persisted State JSON</span>
+                        </div>
+                        <textarea class="code-textarea io-textarea" @bind="PersistedStateInput" @bind:event="oninput" spellcheck="false"></textarea>
+                    </div>
+
                     <div class="editor-panel">
                         <div class="panel-header">
                             <span class="panel-label">Output</span>
@@ -50,20 +50,18 @@
                                 <span class="panel-hint" style="color: var(--success);">Success</span>
                             }
                         </div>
-                        <textarea class="code-textarea io-textarea output-textarea" readonly
-                            value="@Output" placeholder="Click 'Test Run' to see output..."></textarea>
+                        <textarea class="code-textarea io-textarea output-textarea" readonly value="@Output"></textarea>
                     </div>
                 </div>
             </div>
 
-            <!-- Footer -->
             <div class="modal-footer">
-                <button class="btn btn-outline" @onclick="ResetToSample">↻ Reset to Sample</button>
+                <button class="btn btn-outline" @onclick="ResetToSample">Reset to Sample</button>
                 <div style="flex: 1;"></div>
                 <button class="btn" @onclick="TestRun" disabled="@_isRunning">
-                    @(_isRunning ? "⏳ Running..." : "▶ Test Run")
+                    @(_isRunning ? "Running..." : "Test Run")
                 </button>
-                <button class="btn btn-success" @onclick="SaveAndClose">Save & Close</button>
+                <button class="btn btn-success" @onclick="SaveAndClose">Save and Close</button>
             </div>
         </div>
     </div>
@@ -77,23 +75,26 @@
 
     private string Code { get; set; } = string.Empty;
     private string SampleInput { get; set; } = string.Empty;
+    private string PersistedStateInput { get; set; } = string.Empty;
     private string Output { get; set; } = string.Empty;
 
-    private string ModalTitle => Step?.StepType == "Branch" ? "Branch Condition Script" : (TargetProperty switch
+    private string ModalTitle => Step?.StepType == "Branch" ? "Branch Condition Script" : TargetProperty switch
     {
         "UrlCode" => "Dynamic URL Script",
         "PreFlightCode" => "Pre-Request Body Script",
         "PostFlightCode" => "Post-Response Script",
+        _ when Step?.StepType == "PersistedState" => "Persisted State Script",
         _ => "Mapping Function Editor"
-    });
+    };
 
-    private string ScriptHint => Step?.StepType == "Branch" ? "Use 'FlowStateJson'. Return a boolean value." : (TargetProperty switch
+    private string ScriptHint => Step?.StepType == "Branch" ? "Use FlowStateJson and PersistedStateJson. Return a boolean value." : TargetProperty switch
     {
-        "UrlCode" => "Use 'FlowStateJson' to access state. Return a string URL.",
-        "PreFlightCode" => "Use 'FlowStateJson' to build request body. Return a JSON string.",
-        "PostFlightCode" => "Use 'FlowStateJson' and 'HttpResponseJson'. Return a JSON string.",
-        _ => "Use 'FlowStateJson' to access state. Return a JSON string."
-    });
+        "UrlCode" => "Use FlowStateJson and PersistedStateJson. Return a string URL or relative path.",
+        "PreFlightCode" => "Use FlowStateJson and PersistedStateJson to build a request body. Return a JSON string.",
+        "PostFlightCode" => "Use FlowStateJson, PersistedStateJson, and HttpResponseJson. Return a JSON string.",
+        _ when Step?.StepType == "PersistedState" => "Return the full updated persisted state JSON object.",
+        _ => "Use FlowStateJson and PersistedStateJson. Return a JSON string."
+    };
 
     private string SampleInputLabel => TargetProperty == "PostFlightCode"
         ? "Sample HTTP Response JSON"
@@ -102,79 +103,20 @@
     private bool _isRunning;
     private bool _hasError;
     private bool _hasResult;
-
-    private string GetDefaultCode()
-    {
-        if (Step?.StepType == "Branch")
-        {
-            return @"// Example: Branch based on a condition
-using Newtonsoft.Json.Linq;
-
-var state = JObject.Parse(FlowStateJson);
-// Modify NodeName and property to match your pipeline flow state
-var status = (string)state[""GetUsers""][""status""];
-
-return status == ""active"";";
-        }
-
-        return TargetProperty switch
-        {
-            "UrlCode" => @"// Example: Construct a dynamic URL using preceding flow states
-// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
-using Newtonsoft.Json.Linq;
-
-var state = JObject.Parse(FlowStateJson);
-var userId = (string)state[""GetUsers""][""id""];
-
-return $""https://api.example.com/users/{userId}"";",
-
-            "PreFlightCode" => @"// Example: Construct request body using preceding flow states
-// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-
-var state = JObject.Parse(FlowStateJson);
-var requestBody = new {
-    name = (string)state[""GetUsers""][""name""]
-};
-
-return JsonConvert.SerializeObject(requestBody);",
-
-            "PostFlightCode" => @"// Example: Transform response before saving to state
-// - HttpResponseJson: Raw response payload from the API (read-only)
-// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-
-var response = JObject.Parse(HttpResponseJson);
-// var state = JObject.Parse(FlowStateJson); // if needed
-
-var result = new {
-    processedData = response[""data""]
-};
-
-return JsonConvert.SerializeObject(result);",
-
-            _ => @"// Example: Map state data
-// - FlowStateJson: Contains cumulative JSON data from all previous steps (read-only)
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-
-var state = JObject.Parse(FlowStateJson);
-
-var result = new {
-    mappedValue = (string)state[""NodeName""][""value""]
-};
-
-return JsonConvert.SerializeObject(result);"
-        };
-    }
+    private bool _wasVisible;
 
     private const string DefaultSampleInput = @"{
   ""GetUsers"": {
     ""id"": ""123"",
-    ""name"": ""John Doe""
+    ""name"": ""John Doe"",
+    ""status"": ""active""
   }
+}";
+
+    private const string DefaultPersistedStateInput = @"{
+  ""cursor"": ""page-2"",
+  ""tenant"": ""northwind"",
+  ""isEnabled"": true
 }";
 
     private const string DefaultResponseInput = @"{
@@ -183,14 +125,11 @@ return JsonConvert.SerializeObject(result);"
   ]
 }";
 
-    private bool _wasVisible;
-
     protected override void OnParametersSet()
     {
-        // Only initialize when modal transitions from hidden to visible
         if (IsVisible && !_wasVisible)
         {
-            string existingCode = TargetProperty switch
+            var existingCode = TargetProperty switch
             {
                 "UrlCode" => Step.UrlCode,
                 "PreFlightCode" => Step.PreFlightCode,
@@ -200,11 +139,89 @@ return JsonConvert.SerializeObject(result);"
 
             Code = string.IsNullOrWhiteSpace(existingCode) ? GetDefaultCode() : existingCode;
             SampleInput = TargetProperty == "PostFlightCode" ? DefaultResponseInput : DefaultSampleInput;
+            PersistedStateInput = DefaultPersistedStateInput;
             Output = string.Empty;
             _hasError = false;
             _hasResult = false;
         }
+
         _wasVisible = IsVisible;
+    }
+
+    private string GetDefaultCode()
+    {
+        if (Step?.StepType == "Branch")
+        {
+            return @"using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+var persisted = JObject.Parse(PersistedStateJson);
+var status = (string)state[""GetUsers""][""status""];
+
+return status == ""active"" && persisted[""isEnabled""]?.Value<bool>() != false;";
+        }
+
+        if (Step?.StepType == "PersistedState")
+        {
+            return @"using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+var persisted = JObject.Parse(PersistedStateJson);
+
+persisted[""cursor""] = state[""GetUsers""]?[""id""] ?? persisted[""cursor""];
+persisted[""updatedAtUtc""] = DateTime.UtcNow.ToString(""O"");
+
+return JsonConvert.SerializeObject(persisted);";
+        }
+
+        return TargetProperty switch
+        {
+            "UrlCode" => @"using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+var persisted = JObject.Parse(PersistedStateJson);
+var userId = (string)state[""GetUsers""][""id""];
+var tenant = (string?)persisted[""tenant""] ?? ""default"";
+
+return $""/tenants/{tenant}/users/{userId}"";",
+            "PreFlightCode" => @"using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+var persisted = JObject.Parse(PersistedStateJson);
+
+var requestBody = new {
+    name = (string)state[""GetUsers""][""name""],
+    cursor = (string?)persisted[""cursor""]
+};
+
+return JsonConvert.SerializeObject(requestBody);",
+            "PostFlightCode" => @"using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+var response = JObject.Parse(HttpResponseJson);
+var persisted = JObject.Parse(PersistedStateJson);
+
+var result = new {
+    processedData = response[""data""],
+    cursor = persisted[""cursor""]
+};
+
+return JsonConvert.SerializeObject(result);",
+            _ => @"using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+var state = JObject.Parse(FlowStateJson);
+var persisted = JObject.Parse(PersistedStateJson);
+
+var result = new {
+    mappedValue = (string)state[""GetUsers""][""name""],
+    lastCursor = (string?)persisted[""cursor""]
+};
+
+return JsonConvert.SerializeObject(result);"
+        };
     }
 
     private async Task TestRun()
@@ -220,6 +237,7 @@ return JsonConvert.SerializeObject(result);"
             {
                 MappingCode = Code,
                 FlowStateJson = TargetProperty == "PostFlightCode" ? "{}" : SampleInput,
+                PersistedStateJson = PersistedStateInput,
                 HttpResponseJson = TargetProperty == "PostFlightCode" ? SampleInput : "{}",
                 TargetProperty = TargetProperty,
                 StepType = Step?.StepType ?? string.Empty
@@ -254,6 +272,7 @@ return JsonConvert.SerializeObject(result);"
     {
         Code = GetDefaultCode();
         SampleInput = TargetProperty == "PostFlightCode" ? DefaultResponseInput : DefaultSampleInput;
+        PersistedStateInput = DefaultPersistedStateInput;
         Output = string.Empty;
         _hasError = false;
         _hasResult = false;
@@ -263,11 +282,20 @@ return JsonConvert.SerializeObject(result);"
     {
         switch (TargetProperty)
         {
-            case "UrlCode": Step.UrlCode = Code; break;
-            case "PreFlightCode": Step.PreFlightCode = Code; break;
-            case "PostFlightCode": Step.PostFlightCode = Code; break;
-            default: Step.MappingCode = Code; break;
+            case "UrlCode":
+                Step.UrlCode = Code;
+                break;
+            case "PreFlightCode":
+                Step.PreFlightCode = Code;
+                break;
+            case "PostFlightCode":
+                Step.PostFlightCode = Code;
+                break;
+            default:
+                Step.MappingCode = Code;
+                break;
         }
+
         await Close();
     }
 

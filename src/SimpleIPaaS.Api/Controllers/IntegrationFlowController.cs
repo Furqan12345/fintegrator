@@ -1,11 +1,9 @@
 using System;
-using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using SimpleIPaaS.Api.Mappings;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Services;
-using SimpleIPaaS.Domain;
-using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Shared.Models;
 
 namespace SimpleIPaaS.Api.Controllers;
@@ -32,41 +30,7 @@ public class IntegrationFlowController : ControllerBase
     public async Task<IActionResult> GetAll()
     {
         var flows = await _repository.GetAllAsync();
-        var dtos = flows.Select(flow => new IntegrationFlowDto
-        {
-            Id = flow.Id,
-            Name = flow.Name,
-            Description = flow.Description,
-            Nodes = flow.Nodes.Select(n => new IntegrationStepDto
-            {
-                Id = n.Id,
-                StepType = n.StepType.ToString(),
-                PositionX = n.PositionX,
-                PositionY = n.PositionY,
-                EndpointUrl = n.EndpointUrl,
-                HttpMethod = n.HttpMethod,
-                AuthType = n.AuthType.ToString(),
-                AuthToken = n.AuthToken,
-                AuthUsername = n.AuthUsername,
-                AuthPassword = n.AuthPassword,
-                MappingCode = n.MappingCode,
-                ConnectionId = n.ConnectionId,
-                NodeName = n.NodeName,
-                UrlCode = n.UrlCode,
-                PreFlightCode = n.PreFlightCode,
-                PostFlightCode = n.PostFlightCode
-            }).ToList(),
-            Edges = flow.Edges.Select(e => new IntegrationEdgeDto
-            {
-                Id = e.Id,
-                SourceNodeId = e.SourceNodeId,
-                TargetNodeId = e.TargetNodeId,
-                SourcePortId = e.SourcePortId,
-                TargetPortId = e.TargetPortId
-            }).ToList()
-        }).ToArray();
-
-        return Ok(dtos);
+        return Ok(flows.Select(flow => flow.ToDto()));
     }
 
     [HttpGet("{id}")]
@@ -75,51 +39,16 @@ public class IntegrationFlowController : ControllerBase
         var flow = await _repository.GetByIdAsync(id);
         if (flow == null) return NotFound();
 
-        var dto = new IntegrationFlowDto
-        {
-            Id = flow.Id,
-            Name = flow.Name,
-            Description = flow.Description,
-            Nodes = flow.Nodes.Select(n => new IntegrationStepDto
-            {
-                Id = n.Id,
-                StepType = n.StepType.ToString(),
-                PositionX = n.PositionX,
-                PositionY = n.PositionY,
-                EndpointUrl = n.EndpointUrl,
-                HttpMethod = n.HttpMethod,
-                AuthType = n.AuthType.ToString(),
-                AuthToken = n.AuthToken,
-                AuthUsername = n.AuthUsername,
-                AuthPassword = n.AuthPassword,
-                MappingCode = n.MappingCode,
-                ConnectionId = n.ConnectionId,
-                NodeName = n.NodeName,
-                UrlCode = n.UrlCode,
-                PreFlightCode = n.PreFlightCode,
-                PostFlightCode = n.PostFlightCode
-            }).ToList(),
-            Edges = flow.Edges.Select(e => new IntegrationEdgeDto
-            {
-                Id = e.Id,
-                SourceNodeId = e.SourceNodeId,
-                TargetNodeId = e.TargetNodeId,
-                SourcePortId = e.SourcePortId,
-                TargetPortId = e.TargetPortId
-            }).ToList()
-        };
-
-        return Ok(dto);
+        return Ok(flow.ToDto());
     }
 
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] IntegrationFlowDto dto)
     {
-        var flow = MapFromDto(dto);
+        var flow = dto.ToEntity();
         flow.Id = Guid.NewGuid();
         await _repository.AddAsync(flow);
-        dto.Id = flow.Id;
-        return CreatedAtAction(nameof(Get), new { id = flow.Id }, dto);
+        return CreatedAtAction(nameof(Get), new { id = flow.Id }, flow.ToDto());
     }
 
     [HttpPut("{flowId}")]
@@ -127,10 +56,10 @@ public class IntegrationFlowController : ControllerBase
     {
         if (flowId != dto.Id) return BadRequest("ID mismatch");
 
-        var flow = MapFromDto(dto);
+        var flow = dto.ToEntity();
         await _repository.UpdateAsync(flow);
         
-        return Ok(dto);
+        return Ok(flow.ToDto());
     }
 
     [HttpPost("{flowId}/run")]
@@ -155,20 +84,20 @@ public class IntegrationFlowController : ControllerBase
             string result;
             if (request.StepType == "Branch")
             {
-                var branchResult = await _codeExecutionService.ExecuteBranchAsync(request.MappingCode, request.FlowStateJson);
+                var branchResult = await _codeExecutionService.ExecuteBranchAsync(request.MappingCode, request.FlowStateJson, request.PersistedStateJson);
                 result = branchResult.ToString().ToLower();
             }
             else if (request.TargetProperty == "PostFlightCode")
             {
-                result = await _codeExecutionService.ExecutePostFlightAsync(request.MappingCode, request.FlowStateJson, request.HttpResponseJson);
+                result = await _codeExecutionService.ExecutePostFlightAsync(request.MappingCode, request.FlowStateJson, request.PersistedStateJson, request.HttpResponseJson);
             }
             else if (request.TargetProperty == "UrlCode")
             {
-                result = await _codeExecutionService.ExecuteUrlAsync(request.MappingCode, request.FlowStateJson);
+                result = await _codeExecutionService.ExecuteUrlAsync(request.MappingCode, request.FlowStateJson, request.PersistedStateJson);
             }
             else
             {
-                result = await _codeExecutionService.ExecuteMappingAsync(request.MappingCode, request.FlowStateJson);
+                result = await _codeExecutionService.ExecuteMappingAsync(request.MappingCode, request.FlowStateJson, request.PersistedStateJson);
             }
 
             return Ok(new TestMappingResponseDto
@@ -187,40 +116,24 @@ public class IntegrationFlowController : ControllerBase
         }
     }
 
-    private IntegrationFlow MapFromDto(IntegrationFlowDto dto)
+    [HttpGet("{flowId}/persisted-state")]
+    public async Task<IActionResult> GetPersistedState([FromRoute] Guid flowId)
     {
-        return new IntegrationFlow
-        {
-            Id = dto.Id,
-            Name = dto.Name,
-            Description = dto.Description,
-            Nodes = dto.Nodes.Select(n => new IntegrationStep
-            {
-                Id = n.Id == Guid.Empty ? Guid.NewGuid() : n.Id,
-                StepType = Enum.Parse<StepType>(n.StepType),
-                PositionX = n.PositionX,
-                PositionY = n.PositionY,
-                EndpointUrl = n.EndpointUrl,
-                HttpMethod = n.HttpMethod,
-                AuthType = Enum.Parse<AuthType>(n.AuthType),
-                AuthToken = n.AuthToken,
-                AuthUsername = n.AuthUsername,
-                AuthPassword = n.AuthPassword,
-                MappingCode = n.MappingCode,
-                ConnectionId = n.ConnectionId,
-                NodeName = n.NodeName,
-                UrlCode = n.UrlCode,
-                PreFlightCode = n.PreFlightCode,
-                PostFlightCode = n.PostFlightCode
-            }).ToList(),
-            Edges = dto.Edges.Select(e => new IntegrationEdge
-            {
-                Id = e.Id,
-                SourceNodeId = e.SourceNodeId,
-                TargetNodeId = e.TargetNodeId,
-                SourcePortId = e.SourcePortId,
-                TargetPortId = e.TargetPortId
-            }).ToList()
-        };
+        var persistedStateJson = await _repository.GetPersistedStateAsync(flowId);
+        return Ok(new PersistedStateDto { FlowId = flowId, PersistedStateJson = persistedStateJson });
+    }
+
+    [HttpPut("{flowId}/persisted-state")]
+    public async Task<IActionResult> UpdatePersistedState([FromRoute] Guid flowId, [FromBody] PersistedStateDto dto)
+    {
+        await _repository.UpdatePersistedStateAsync(flowId, dto.PersistedStateJson);
+        return Ok(new PersistedStateDto { FlowId = flowId, PersistedStateJson = dto.PersistedStateJson });
+    }
+
+    [HttpDelete("{flowId}/persisted-state")]
+    public async Task<IActionResult> ResetPersistedState([FromRoute] Guid flowId)
+    {
+        await _repository.UpdatePersistedStateAsync(flowId, "{}");
+        return NoContent();
     }
 }

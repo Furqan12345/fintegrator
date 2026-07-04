@@ -20,6 +20,10 @@
     {
         <DebugNodeCard Step="Node.StepConfig" />
     }
+    else if (Node.StepConfig.StepType == "PersistedState")
+    {
+        <PersistedStateCard Step="Node.StepConfig" />
+    }
 
     @foreach (var port in Node.Ports)
     {

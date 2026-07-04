@@ -1,4 +1,5 @@
 using System;
+using SimpleIPaaS.Domain;
 
 namespace SimpleIPaaS.Domain.Entities;
 
@@ -16,6 +17,7 @@ public class IntegrationStep
     // API Config
     public string EndpointUrl { get; set; } = string.Empty;
     public string HttpMethod { get; set; } = "GET"; 
+    public UrlMode UrlMode { get; set; } = UrlMode.Manual;
     
     // Auth Config (Legacy/Inline)
     public AuthType AuthType { get; set; } = AuthType.None;

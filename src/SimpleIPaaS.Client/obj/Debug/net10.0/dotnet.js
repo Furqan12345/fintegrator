@@ -5,7 +5,7 @@ var e=!1;const t=async()=>WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,
   "mainAssemblyName": "SimpleIPaaS.Client",
   "applicationEnvironment": "Development",
   "resources": {
-    "hash": "sha256-SrceqMg5RcTpcg0izGNb7Bqld1AmBMsAr/PaI/aXuAE=",
+    "hash": "sha256-q/GBHU3KsgwACtt0qE9LuWes8PtFkY+mf2/3VUpdJGI=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.ikrs475e5v.js"
@@ -1272,8 +1272,8 @@ var e=!1;const t=async()=>WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,
       },
       {
         "virtualPath": "SimpleIPaaS.Shared.wasm",
-        "name": "SimpleIPaaS.Shared.y3xk5md9l7.wasm",
-        "hash": "sha256-Ys7h/lZb2ZiQPuzIXGybRYmu9Eb2I6DLY19+jA8us2g=",
+        "name": "SimpleIPaaS.Shared.ke10abdtho.wasm",
+        "hash": "sha256-5JK4o91YGpn4oJCQm3XH8F4tebTts0ayb9oZSut0co4=",
         "cache": "force-cache"
       },
       {
@@ -1284,22 +1284,22 @@ var e=!1;const t=async()=>WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,
       },
       {
         "virtualPath": "SimpleIPaaS.Client.wasm",
-        "name": "SimpleIPaaS.Client.e70jrqcgbb.wasm",
-        "hash": "sha256-yurldk1FEgo4NK79gp6T8Yad100lQ3cRDUooCL3ILgk=",
+        "name": "SimpleIPaaS.Client.me3um078gz.wasm",
+        "hash": "sha256-vrLgmc4mkudINBm8g6Y7uHjZpmx7W4UbagZDZr9svk8=",
         "cache": "force-cache"
       }
     ],
     "pdb": [
       {
         "virtualPath": "SimpleIPaaS.Shared.pdb",
-        "name": "SimpleIPaaS.Shared.2wsoozhmw4.pdb",
-        "hash": "sha256-vkNJ/liNXFOmheGayWNhNXw3wsieRv+l0726jdZZFtc=",
+        "name": "SimpleIPaaS.Shared.0nvobhchkr.pdb",
+        "hash": "sha256-1HpoGTX6bq+WXxFc7YvR9HsuSEQ/tDBy6C77pqyygUU=",
         "cache": "force-cache"
       },
       {
         "virtualPath": "SimpleIPaaS.Client.pdb",
-        "name": "SimpleIPaaS.Client.nx40kl8q78.pdb",
-        "hash": "sha256-+yCCDfTy8FdxA8WbaFhKaN45RryjemzJwlnHXlMyoAs=",
+        "name": "SimpleIPaaS.Client.rgu737zj0m.pdb",
+        "hash": "sha256-BRsNxoScWOrwO8mDxKMsduu7uzcldFrHlhHf8l7xXlA=",
         "cache": "force-cache"
       }
     ],

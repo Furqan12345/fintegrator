@@ -18,7 +18,7 @@ public class IntegrationNodeModel : NodeModel
             AddPort(new PortModel("true", this, PortAlignment.Right));
             AddPort(new PortModel("false", this, PortAlignment.Bottom));
         }
-        else // HttpAction, Mapping
+        else // HttpAction, Mapping, Debug, PersistedState
         {
             AddPort(new PortModel("left", this, PortAlignment.Left));
             AddPort(new PortModel("right", this, PortAlignment.Right));

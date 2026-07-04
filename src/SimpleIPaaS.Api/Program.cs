@@ -36,6 +36,7 @@ builder.Services.AddScoped<ITenantContext, TenantContext>();
 // Dependency Injection
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<IIntegrationRepository, IntegrationRepository>();
+builder.Services.AddScoped<IIntegrationCatalogRepository, IntegrationCatalogRepository>();
 builder.Services.AddScoped<IConnectionRepository, ConnectionRepository>();
 builder.Services.AddScoped<IExecutionRepository, ExecutionRepository>();
 
@@ -85,13 +86,11 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-// Apply migrations automatically
+// Ensure the SQLite database exists without wiping persisted local data.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<IPaaSContext>();
-    // Drop and Recreate for MVP phase upgrades to avoid migration errors if entities changed
-    db.Database.EnsureDeleted();
-    db.Database.EnsureCreated(); 
+    DatabaseSchemaInitializer.EnsureUpToDate(db);
 }
 
 app.Run();

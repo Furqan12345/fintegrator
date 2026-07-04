@@ -1,55 +1,61 @@
 @page "/flow-designer"
 @page "/flow-designer/{FlowId:guid}"
+@using System.Net.Http.Json
+@using Blazor.Diagrams
+@using Blazor.Diagrams.Components
 @using Blazor.Diagrams.Core
 @using Blazor.Diagrams.Core.Models
 @using Blazor.Diagrams.Core.PathGenerators
 @using Blazor.Diagrams.Core.Routers
-@using Blazor.Diagrams.Components
-@using Blazor.Diagrams
 @using Blazor.Diagrams.Options
+@using SimpleIPaaS.Client.Components.Nodes
 @using SimpleIPaaS.Client.Shared
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
-@using SimpleIPaaS.Client.Components.Nodes
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
 @inject IState<FlowState> FlowState
 @inject IDispatcher Dispatcher
+@inject HttpClient Http
 
-<PageTitle>Flow Designer — SimpleIPaaS</PageTitle>
+<PageTitle>Flow Designer - SimpleIPaaS</PageTitle>
 
 <div class="diagram-container">
-    <!-- Toolbar -->
     <div class="diagram-toolbar">
-        <input class="toolbar-input" type="text" @bind="FlowName" placeholder="Integration Name" />
+        <input class="toolbar-input" type="text" @bind="FlowName" placeholder="Flow Name" />
+        <select class="toolbar-input" value="@IntegrationValue" @onchange="OnIntegrationChanged" style="min-width: 220px;">
+            <option value="">Unassigned flow</option>
+            @foreach (var integration in AvailableIntegrations)
+            {
+                <option value="@integration.Id">@integration.Name</option>
+            }
+        </select>
         <div class="toolbar-divider"></div>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.HttpAction)">+ HTTP Action</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.Mapping)">+ Mapper</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.Branch)">+ Branch</button>
+        <button class="btn btn-outline" @onclick="() => AddNode(StepType.PersistedState)">+ Persisted State</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.Debug)">+ Debug</button>
         <div class="toolbar-divider"></div>
         <button class="btn" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
-            @(FlowState.Value.IsLoading ? "Saving..." : "💾 Save")
+            @(FlowState.Value.IsLoading ? "Saving..." : "Save")
         </button>
         <button class="btn btn-success" @onclick="RunFlow" disabled="@(FlowState.Value.IsLoading || FlowState.Value.CurrentFlow == null)">
-            ▶ Run
+            Run
         </button>
     </div>
 
-    <!-- Diagram Canvas -->
     <CascadingValue Value="Diagram">
         <CascadingValue Value="this">
             <DiagramCanvas></DiagramCanvas>
         </CascadingValue>
     </CascadingValue>
 
-    <!-- Zoom Controls -->
     <div class="zoom-controls">
         <button class="btn btn-icon" @onclick="ZoomIn" title="Zoom In">+</button>
-        <button class="btn btn-icon" @onclick="ZoomOut" title="Zoom Out">−</button>
-        <button class="btn btn-icon" @onclick="() => Diagram.ZoomToFit(10)" title="Fit to Screen">⊡</button>
+        <button class="btn btn-icon" @onclick="ZoomOut" title="Zoom Out">-</button>
+        <button class="btn btn-icon" @onclick="() => Diagram.ZoomToFit(10)" title="Fit to Screen">Fit</button>
     </div>
 
-    <!-- Run Result Panel -->
     @if (!string.IsNullOrWhiteSpace(FlowState.Value.RunResult))
     {
         <div class="run-result-panel">
@@ -58,25 +64,37 @@
             <button class="btn btn-outline" style="margin-top: 8px; width: 100%;" @onclick="ClearResult">Dismiss</button>
         </div>
     }
-
-    <!-- Generalized Mapper Modal -->
-    @if (_editingStep != null)
-    {
-        <MapperModal @bind-IsVisible="_showMapperModal" Step="_editingStep" TargetProperty="@_editingProperty" />
-    }
 </div>
 
+@if (_editingStep != null)
+{
+    <MapperModal @bind-IsVisible="_showMapperModal" Step="_editingStep" TargetProperty="@_editingProperty" />
+}
+
+<DebugJsonModal @bind-IsVisible="_showDebugJsonModal" JsonContent="@_debugJsonContent" ErrorMessage="@_debugJsonError" />
+
 @code {
-    [Parameter]
-    public Guid? FlowId { get; set; }
+    [Parameter] public Guid? FlowId { get; set; }
+
+    public IEnumerable<ConnectionDto> AvailableConnections => _connections;
+
+    [SupplyParameterFromQuery(Name = "integrationId")]
+    public Guid? IntegrationIdQuery { get; set; }
 
     private BlazorDiagram Diagram { get; set; } = null!;
-    private string FlowName { get; set; } = "My Integration";
-    private bool _isLoaded = false;
+    private string FlowName { get; set; } = "New Flow";
+    private bool _isLoaded;
+    private bool _showMapperModal;
+    private IntegrationStepDto? _editingStep;
+    private string _editingProperty = "MappingCode";
+    private bool _showDebugJsonModal;
+    private string _debugJsonContent = string.Empty;
+    private string _debugJsonError = string.Empty;
+    private List<IntegrationDto> _integrations = new();
+    private List<ConnectionDto> _connections = new();
 
-    public bool _showMapperModal;
-    public IntegrationStepDto? _editingStep;
-    public string _editingProperty = "MappingCode";
+    private IEnumerable<IntegrationDto> AvailableIntegrations => _integrations;
+    private string IntegrationValue => FlowState.Value.CurrentFlow?.IntegrationId?.ToString() ?? IntegrationIdQuery?.ToString() ?? string.Empty;
 
     public void OpenMapperModal(IntegrationStepDto step, string targetProperty)
     {
@@ -86,58 +104,92 @@
         StateHasChanged();
     }
 
-    protected override void OnInitialized()
+    public void OpenDebugJsonModal(string jsonContent, string errorMessage)
     {
-        base.OnInitialized();
+        _debugJsonContent = jsonContent;
+        _debugJsonError = errorMessage;
+        _showDebugJsonModal = true;
+        StateHasChanged();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
         SetupDiagram();
+        await LoadLookupsAsync();
+
         if (FlowId.HasValue)
         {
             Dispatcher.Dispatch(new LoadFlowAction { Id = FlowId.Value });
         }
         else
         {
-            Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = new IntegrationFlowDto { Name = "New Integration" } });
+            Dispatcher.Dispatch(new UpdateFlowStateAction
+            {
+                Flow = new IntegrationFlowDto
+                {
+                    Name = "New Flow",
+                    IntegrationId = IntegrationIdQuery
+                }
+            });
+            _isLoaded = true;
         }
     }
 
     protected override void OnAfterRender(bool firstRender)
     {
-        if (FlowState.Value.CurrentFlow != null && !_isLoaded && FlowState.Value.CurrentFlow.Id == FlowId)
+        if (FlowState.Value.CurrentFlow == null)
+        {
+            return;
+        }
+
+        if (FlowId.HasValue && !_isLoaded && FlowState.Value.CurrentFlow.Id == FlowId)
         {
             FlowName = FlowState.Value.CurrentFlow.Name;
-            
-            foreach (var step in FlowState.Value.CurrentFlow.Nodes)
-            {
-                var node = new IntegrationNodeModel(step)
-                {
-                    Title = step.StepType
-                };
-                node.SetPosition(step.PositionX, step.PositionY);
-                Diagram.Nodes.Add(node);
-            }
-
-            foreach (var edge in FlowState.Value.CurrentFlow.Edges)
-            {
-                var sourceNode = Diagram.Nodes.FirstOrDefault(n => ((IntegrationNodeModel)n).StepConfig.Id == edge.SourceNodeId) as IntegrationNodeModel;
-                var targetNode = Diagram.Nodes.FirstOrDefault(n => ((IntegrationNodeModel)n).StepConfig.Id == edge.TargetNodeId) as IntegrationNodeModel;
-                if (sourceNode != null && targetNode != null)
-                {
-                    var sourcePort = sourceNode.Ports.FirstOrDefault(p => p.Id == edge.SourcePortId);
-                    var targetPort = targetNode.Ports.FirstOrDefault(p => p.Id == edge.TargetPortId);
-                    if (sourcePort != null && targetPort != null)
-                    {
-                        Diagram.Links.Add(new LinkModel(sourcePort, targetPort));
-                    }
-                    else 
-                    {
-                        // Fallback if ports aren't properly mapped
-                        Diagram.Links.Add(new LinkModel(sourceNode, targetNode));
-                    }
-                }
-            }
-
+            LoadDiagramFromCurrentFlow();
             _isLoaded = true;
             StateHasChanged();
+        }
+    }
+
+    private async Task LoadLookupsAsync()
+    {
+        _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+        _connections = await Http.GetFromJsonAsync<List<ConnectionDto>>("api/connections") ?? new List<ConnectionDto>();
+    }
+
+    private void LoadDiagramFromCurrentFlow()
+    {
+        Diagram.Nodes.Clear();
+        Diagram.Links.Clear();
+
+        if (FlowState.Value.CurrentFlow == null)
+        {
+            return;
+        }
+
+        foreach (var step in FlowState.Value.CurrentFlow.Nodes)
+        {
+            var node = new IntegrationNodeModel(step) { Title = step.StepType };
+            node.SetPosition(step.PositionX, step.PositionY);
+            Diagram.Nodes.Add(node);
+        }
+
+        foreach (var edge in FlowState.Value.CurrentFlow.Edges)
+        {
+            var sourceNode = Diagram.Nodes.FirstOrDefault(node => ((IntegrationNodeModel)node).StepConfig.Id == edge.SourceNodeId) as IntegrationNodeModel;
+            var targetNode = Diagram.Nodes.FirstOrDefault(node => ((IntegrationNodeModel)node).StepConfig.Id == edge.TargetNodeId) as IntegrationNodeModel;
+            if (sourceNode == null || targetNode == null)
+            {
+                continue;
+            }
+
+            var sourcePort = sourceNode.Ports.FirstOrDefault(port => port.Id == edge.SourcePortId);
+            var targetPort = targetNode.Ports.FirstOrDefault(port => port.Id == edge.TargetPortId);
+            if (sourcePort != null && targetPort != null)
+            {
+                Diagram.Links.Add(new LinkModel(sourcePort, targetPort));
+            }
         }
     }
 
@@ -164,58 +216,57 @@
 
     private void AddNode(StepType type)
     {
-        var step = new IntegrationStepDto { StepType = type.ToString() };
-        var node = new IntegrationNodeModel(step)
+        var step = new IntegrationStepDto
         {
-            Title = type.ToString()
+            StepType = type.ToString(),
+            UrlMode = "Manual"
         };
+        var node = new IntegrationNodeModel(step) { Title = type.ToString() };
         Diagram.Nodes.Add(node);
     }
 
     private void SaveFlow()
     {
-        SaveFlow(runAfterSave: false);
+        SaveFlow(false);
     }
 
     private void SaveFlow(bool runAfterSave)
     {
-        if (FlowState.Value.CurrentFlow == null) return;
+        if (FlowState.Value.CurrentFlow == null)
+        {
+            return;
+        }
 
         var flow = FlowState.Value.CurrentFlow;
         flow.Name = FlowName;
+        flow.IntegrationId = GetSelectedIntegrationId();
         flow.Nodes.Clear();
         flow.Edges.Clear();
 
-        foreach (var node in Diagram.Nodes)
+        foreach (var node in Diagram.Nodes.OfType<IntegrationNodeModel>())
         {
-            if (node is IntegrationNodeModel intNode)
-            {
-                var step = intNode.StepConfig;
-                step.PositionX = intNode.Position.X;
-                step.PositionY = intNode.Position.Y;
-                flow.Nodes.Add(step);
-            }
+            var step = node.StepConfig;
+            step.PositionX = node.Position.X;
+            step.PositionY = node.Position.Y;
+            flow.Nodes.Add(step);
         }
 
-        foreach (var baseLink in Diagram.Links)
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
         {
-            if (baseLink is LinkModel link)
+            var sourcePort = link.Source.Model as PortModel;
+            var targetPort = link.Target.Model as PortModel;
+            if (sourcePort?.Parent is not IntegrationNodeModel sourceNode || targetPort?.Parent is not IntegrationNodeModel targetNode)
             {
-                var sourcePort = link.Source.Model as PortModel;
-                var targetPort = link.Target.Model as PortModel;
-
-                if (sourcePort?.Parent is IntegrationNodeModel sourceNode &&
-                    targetPort?.Parent is IntegrationNodeModel targetNode)
-                {
-                    flow.Edges.Add(new IntegrationEdgeDto
-                    {
-                        SourceNodeId = sourceNode.StepConfig.Id,
-                        TargetNodeId = targetNode.StepConfig.Id,
-                        SourcePortId = sourcePort.Id,
-                        TargetPortId = targetPort.Id
-                    });
-                }
+                continue;
             }
+
+            flow.Edges.Add(new IntegrationEdgeDto
+            {
+                SourceNodeId = sourceNode.StepConfig.Id,
+                TargetNodeId = targetNode.StepConfig.Id,
+                SourcePortId = sourcePort.Id,
+                TargetPortId = targetPort.Id
+            });
         }
 
         Dispatcher.Dispatch(new SaveFlowAction { Flow = flow, RunAfterSave = runAfterSave });
@@ -223,7 +274,7 @@
 
     private void RunFlow()
     {
-        SaveFlow(runAfterSave: true);
+        SaveFlow(true);
     }
 
     private void ClearResult()
@@ -231,8 +282,42 @@
         Dispatcher.Dispatch(new RunFlowResultAction { Result = string.Empty });
     }
 
+    private void OnIntegrationChanged(ChangeEventArgs args)
+    {
+        if (FlowState.Value.CurrentFlow == null)
+        {
+            return;
+        }
+
+        if (Guid.TryParse(args.Value?.ToString(), out var integrationId))
+        {
+            FlowState.Value.CurrentFlow.IntegrationId = integrationId;
+        }
+        else
+        {
+            FlowState.Value.CurrentFlow.IntegrationId = null;
+        }
+    }
+
+    private Guid? GetSelectedIntegrationId()
+    {
+        if (FlowState.Value.CurrentFlow?.IntegrationId != null)
+        {
+            return FlowState.Value.CurrentFlow.IntegrationId;
+        }
+
+        return IntegrationIdQuery;
+    }
+
     private void ZoomIn() => Diagram.SetZoom(Diagram.Zoom * 1.2);
     private void ZoomOut() => Diagram.SetZoom(Diagram.Zoom / 1.2);
 
-    public enum StepType { HttpAction, Mapping, Branch, Debug }
+    public enum StepType
+    {
+        HttpAction,
+        Mapping,
+        Branch,
+        Debug,
+        PersistedState
+    }
 }

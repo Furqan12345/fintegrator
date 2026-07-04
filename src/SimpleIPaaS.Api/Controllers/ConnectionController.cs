@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using SimpleIPaaS.Application.Interfaces;
@@ -9,7 +10,7 @@ using SimpleIPaaS.Shared.Models;
 namespace SimpleIPaaS.Api.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/connections")]
 public class ConnectionController : ControllerBase
 {
     private readonly IConnectionRepository _repository;
@@ -28,22 +29,47 @@ public class ConnectionController : ControllerBase
     // - PUT    api/connections/{id}
     // - DELETE api/connections/{id}
 
-    [HttpGet("connections")]
+    [HttpGet("")]
     public async Task<IActionResult> GetAll()
     {
         var connections = await _repository.GetAllAsync();
-        return Ok(connections);
+        var dtos = connections.Select(connection => new ConnectionDto
+        {
+            Id = connection.Id,
+            TenantId = connection.TenantId,
+            Name = connection.Name,
+            BaseUrl = connection.BaseUrl,
+            AuthType = connection.AuthType.ToString(),
+            Status = connection.Status.ToString(),
+            CreatedAt = connection.CreatedAt,
+            UpdatedAt = connection.UpdatedAt,
+            AuthConfigJson = string.Empty
+        });
+        return Ok(dtos);
     }
 
-    [HttpGet("connections/{id}")]
+    [HttpGet("{id}")]
     public async Task<IActionResult> Get(Guid id)
     {
         var connection = await _repository.GetByIdAsync(id);
         if (connection == null) return NotFound();
-        return Ok(connection);
+        return Ok(new ConnectionDto
+        {
+            Id = connection.Id,
+            TenantId = connection.TenantId,
+            Name = connection.Name,
+            BaseUrl = connection.BaseUrl,
+            AuthType = connection.AuthType.ToString(),
+            Status = connection.Status.ToString(),
+            CreatedAt = connection.CreatedAt,
+            UpdatedAt = connection.UpdatedAt,
+            AuthConfigJson = string.IsNullOrWhiteSpace(connection.AuthConfigJson)
+                ? string.Empty
+                : await _encryptionService.DecryptAsync(connection.AuthConfigJson)
+        });
     }
 
-    [HttpPost("connections")]
+    [HttpPost("")]
     public async Task<IActionResult> Create([FromBody] ConnectionDto dto)
     {
         var authConfigJson = await _encryptionService.EncryptAsync(dto.AuthConfigJson);
@@ -61,10 +87,21 @@ public class ConnectionController : ControllerBase
         };
 
         await _repository.AddAsync(connection);
-        return CreatedAtAction(nameof(Get), new { id = connection.Id }, connection);
+        return CreatedAtAction(nameof(Get), new { id = connection.Id }, new ConnectionDto
+        {
+            Id = connection.Id,
+            TenantId = connection.TenantId,
+            Name = connection.Name,
+            BaseUrl = connection.BaseUrl,
+            AuthType = connection.AuthType.ToString(),
+            Status = connection.Status.ToString(),
+            CreatedAt = connection.CreatedAt,
+            UpdatedAt = connection.UpdatedAt,
+            AuthConfigJson = dto.AuthConfigJson
+        });
     }
 
-    [HttpPut("connections/{id}")]
+    [HttpPut("{id}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] ConnectionDto dto)
     {
         var connection = await _repository.GetByIdAsync(id);
@@ -83,10 +120,21 @@ public class ConnectionController : ControllerBase
         connection.Status = Enum.Parse<ConnectionStatus>(dto.Status);
 
         await _repository.UpdateAsync(connection);
-        return NoContent();
+        return Ok(new ConnectionDto
+        {
+            Id = connection.Id,
+            TenantId = connection.TenantId,
+            Name = connection.Name,
+            BaseUrl = connection.BaseUrl,
+            AuthType = connection.AuthType.ToString(),
+            Status = connection.Status.ToString(),
+            CreatedAt = connection.CreatedAt,
+            UpdatedAt = connection.UpdatedAt,
+            AuthConfigJson = dto.AuthConfigJson
+        });
     }
 
-    [HttpDelete("connections/{id}")]
+    [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(Guid id)
     {
         await _repository.DeleteAsync(id);

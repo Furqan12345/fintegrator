@@ -1,7 +1,7 @@
 @using SimpleIPaaS.Shared.Models
 
 <div class="card-header" style="background: var(--primary);">
-    <h3 class="card-title" style="color: white;">🌐 HTTP Action</h3>
+    <h3 class="card-title" style="color: white;">HTTP Action</h3>
 </div>
 <div class="card-body">
     <div class="form-group" style="margin-bottom: 8px;">
@@ -10,72 +10,109 @@
     </div>
 
     <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Method & URL</label>
-        <div style="display: flex; gap: 4px;">
-            <select class="form-control" @bind="Step.HttpMethod" style="width: 80px; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-                <option value="PUT">PUT</option>
-                <option value="PATCH">PATCH</option>
-                <option value="DELETE">DELETE</option>
-            </select>
-            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="https://api..." style="flex: 1; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
-        </div>
-    </div>
-
-    <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Auth Type</label>
-        <select class="form-control" @bind="Step.AuthType" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
-            <option value="None">None</option>
-            <option value="Basic">Basic Auth</option>
-            <option value="Bearer">Bearer Token</option>
-            <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
-            <option value="Connection">Connection (OAuth)</option>
+        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Method</label>
+        <select class="form-control" @bind="Step.HttpMethod" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+            <option value="GET">GET</option>
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+            <option value="DELETE">DELETE</option>
         </select>
     </div>
 
-    @if (Step.AuthType == "Basic")
+    <div class="form-group" style="margin-bottom: 8px;">
+        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">URL Source</label>
+        <select class="form-control" value="@Step.UrlMode" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" @onchange="OnUrlModeChanged">
+            <option value="Manual">Manual Full URL</option>
+            <option value="Connection">Predefined Connection</option>
+        </select>
+    </div>
+
+    @if (Step.UrlMode == "Connection")
     {
-        <div class="form-group" style="margin-bottom: 8px; display: flex; gap: 4px;">
-            <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="User" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
-            <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Pass" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Connection</label>
+            <select class="form-control" value="@ConnectionValue" @onchange="OnConnectionChanged" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+                <option value="">Select connection</option>
+                @foreach (var connection in AvailableConnections)
+                {
+                    <option value="@connection.Id">@connection.Name</option>
+                }
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Base URL</label>
+            <input type="text" class="form-control" value="@SelectedConnectionBaseUrl" readonly style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-app);" />
+        </div>
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Remaining URL / Path</label>
+            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="/users/123 or users?status=active" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
         </div>
     }
-    else if (Step.AuthType == "Bearer")
+    else
     {
         <div class="form-group" style="margin-bottom: 8px;">
-            <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Full URL</label>
+            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="https://api.example.com/users" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
         </div>
-    }
-    else if (Step.AuthType == "OAuth2RefreshToken")
-    {
+
         <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.7rem; color: var(--text-secondary); display: block; margin-bottom: 2px;">Token URL</label>
-            <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="https://oauth.example.com/token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Auth Type</label>
+            <select class="form-control" @bind="Step.AuthType" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+                <option value="None">None</option>
+                <option value="Basic">Basic Auth</option>
+                <option value="Bearer">Bearer Token</option>
+                <option value="ApiKey">API Key</option>
+                <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
+            </select>
         </div>
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.7rem; color: var(--text-secondary); display: block; margin-bottom: 2px;">Refresh Token</label>
-            <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Your refresh token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
-        </div>
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.7rem; color: var(--text-secondary); display: block; margin-bottom: 2px;">Access Token (optional)</label>
-            <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Cached access token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
-        </div>
-        <div style="font-size: 0.65rem; color: var(--text-secondary); margin-top: 4px;">
-            ℹ️ Access token will be appended as query parameter
-        </div>
+
+        @if (Step.AuthType == "Basic")
+        {
+            <div class="form-group" style="margin-bottom: 8px; display: flex; gap: 4px;">
+                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Username" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+                <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Password" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            </div>
+        }
+        else if (Step.AuthType == "Bearer")
+        {
+            <div class="form-group" style="margin-bottom: 8px;">
+                <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Bearer token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            </div>
+        }
+        else if (Step.AuthType == "ApiKey")
+        {
+            <div class="form-group" style="margin-bottom: 8px;">
+                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Header name (e.g. X-Api-Key)" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            </div>
+            <div class="form-group" style="margin-bottom: 8px;">
+                <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="API key value" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            </div>
+        }
+        else if (Step.AuthType == "OAuth2RefreshToken")
+        {
+            <div class="form-group" style="margin-bottom: 8px;">
+                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Token URL" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            </div>
+            <div class="form-group" style="margin-bottom: 8px;">
+                <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Refresh token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            </div>
+            <div class="form-group" style="margin-bottom: 8px;">
+                <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Access token (optional)" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            </div>
+        }
     }
 
     <div class="script-buttons" style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px;">
         <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 2px;">Scripts (C#)</label>
         <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("UrlCode")'>
-            @(string.IsNullOrWhiteSpace(Step.UrlCode) ? "➕ Dynamic URL Script" : "✏️ Dynamic URL Script")
+            @(string.IsNullOrWhiteSpace(Step.UrlCode) ? "Dynamic URL Script" : "Edit Dynamic URL Script")
         </button>
         <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("PreFlightCode")'>
-            @(string.IsNullOrWhiteSpace(Step.PreFlightCode) ? "➕ Pre-Request Body Script" : "✏️ Pre-Request Body Script")
+            @(string.IsNullOrWhiteSpace(Step.PreFlightCode) ? "Pre-Request Body Script" : "Edit Pre-Request Body Script")
         </button>
         <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("PostFlightCode")'>
-            @(string.IsNullOrWhiteSpace(Step.PostFlightCode) ? "➕ Post-Response Script" : "✏️ Post-Response Script")
+            @(string.IsNullOrWhiteSpace(Step.PostFlightCode) ? "Post-Response Script" : "Edit Post-Response Script")
         </button>
     </div>
 </div>
@@ -84,8 +121,40 @@
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;
     [CascadingParameter] public SimpleIPaaS.Client.Pages.FlowDesigner Designer { get; set; } = default!;
 
+    private IEnumerable<ConnectionDto> AvailableConnections => Designer?.AvailableConnections ?? Enumerable.Empty<ConnectionDto>();
+    private string SelectedConnectionBaseUrl => AvailableConnections.FirstOrDefault(connection => connection.Id == Step.ConnectionId)?.BaseUrl ?? string.Empty;
+    private string ConnectionValue => Step.ConnectionId?.ToString() ?? string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        Step.UrlMode = string.IsNullOrWhiteSpace(Step.UrlMode)
+            ? (Step.ConnectionId.HasValue ? "Connection" : "Manual")
+            : Step.UrlMode;
+    }
+
     private void OpenEditor(string target)
     {
         Designer?.OpenMapperModal(Step, target);
+    }
+
+    private void OnUrlModeChanged(ChangeEventArgs _)
+    {
+        Step.UrlMode = _.Value?.ToString() ?? "Manual";
+        if (Step.UrlMode == "Manual")
+        {
+            Step.ConnectionId = null;
+        }
+    }
+
+    private void OnConnectionChanged(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var connectionId))
+        {
+            Step.ConnectionId = connectionId;
+        }
+        else
+        {
+            Step.ConnectionId = null;
+        }
     }
 }

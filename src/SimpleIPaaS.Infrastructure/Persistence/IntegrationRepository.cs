@@ -22,12 +22,23 @@ public class IntegrationRepository : IIntegrationRepository
     public async Task<IEnumerable<IntegrationFlow>> GetAllAsync()
     {
         return await _context.IntegrationFlows
+            .OrderByDescending(f => f.UpdatedAt)
             .Include(f => f.Nodes)
             .Include(f => f.Edges)
             .ToListAsync();
     }
 
-    public async Task<IntegrationFlow> GetByIdAsync(Guid id)
+    public async Task<IEnumerable<IntegrationFlow>> GetByIntegrationIdAsync(Guid integrationId)
+    {
+        return await _context.IntegrationFlows
+            .Where(flow => flow.IntegrationId == integrationId)
+            .OrderByDescending(flow => flow.UpdatedAt)
+            .Include(flow => flow.Nodes)
+            .Include(flow => flow.Edges)
+            .ToListAsync();
+    }
+
+    public async Task<IntegrationFlow?> GetByIdAsync(Guid id)
     {
         return await _context.IntegrationFlows
             .Include(f => f.Nodes)
@@ -60,10 +71,12 @@ public class IntegrationRepository : IIntegrationRepository
 
         existing.Name = flow.Name;
         existing.Description = flow.Description;
+        existing.IntegrationId = flow.IntegrationId;
         existing.Status = flow.Status;
         existing.TriggerType = flow.TriggerType;
         existing.CronExpression = flow.CronExpression;
         existing.WebhookSecret = flow.WebhookSecret;
+        existing.PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson;
         existing.TenantId = existing.TenantId == Guid.Empty ? _tenantContext.TenantId : existing.TenantId;
         existing.UpdatedAt = DateTime.UtcNow;
 
@@ -96,9 +109,34 @@ public class IntegrationRepository : IIntegrationRepository
         }
     }
 
+    public async Task UpdatePersistedStateAsync(Guid flowId, string persistedStateJson)
+    {
+        var flow = await _context.IntegrationFlows
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId);
+
+        if (flow == null)
+        {
+            return;
+        }
+
+        flow.PersistedStateJson = string.IsNullOrWhiteSpace(persistedStateJson) ? "{}" : persistedStateJson;
+        flow.UpdatedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task<string> GetPersistedStateAsync(Guid flowId)
+    {
+        var flow = await _context.IntegrationFlows
+            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId);
+
+        return flow?.PersistedStateJson ?? "{}";
+    }
+
     private static void StampTenant(IntegrationFlow flow, Guid tenantId)
     {
         flow.TenantId = tenantId;
+        flow.PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson;
 
         foreach (var node in flow.Nodes)
         {

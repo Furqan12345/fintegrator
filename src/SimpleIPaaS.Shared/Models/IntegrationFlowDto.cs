@@ -7,8 +7,10 @@ public class IntegrationFlowDto
 {
     public Guid Id { get; set; } = Guid.Empty;
     public Guid TenantId { get; set; }
+    public Guid? IntegrationId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
+    public string PersistedStateJson { get; set; } = "{}";
     
     public string Status { get; set; } = "Draft";
     public string TriggerType { get; set; } = "Manual";
@@ -35,6 +37,7 @@ public class IntegrationStepDto
     // API Config
     public string EndpointUrl { get; set; } = string.Empty;
     public string HttpMethod { get; set; } = "GET";
+    public string UrlMode { get; set; } = "Manual";
     
     // Auth
     public string AuthType { get; set; } = "None"; // None, Basic, Bearer, ApiKey, OAuth2ClientCredentials, OAuth2AuthCode, OAuth2RefreshToken, Custom

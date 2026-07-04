@@ -1,72 +1,173 @@
 @page "/"
+@using System.Net.Http.Json
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
-@inject IState<FlowState> FlowState
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
+@inject HttpClient Http
 
-<PageTitle>Integrations — SimpleIPaaS</PageTitle>
+<PageTitle>Integrations - SimpleIPaaS</PageTitle>
 
-<div class="page-header">
-    <div class="header-left">
-        <h2>Integrations</h2>
-        <p class="subtitle">Manage and monitor your integration flows</p>
-    </div>
-    <div class="header-right">
-        <button class="btn btn-primary" @onclick="CreateNewFlow">+ New Integration</button>
-    </div>
-</div>
-
-<div class="integrations-grid">
-    @if (FlowState.Value.IsLoading && !FlowState.Value.Flows.Any())
-    {
-        <div class="loading-state">Loading flows...</div>
-    }
-    else if (!FlowState.Value.Flows.Any())
-    {
-        <div class="empty-state">
-            <span class="empty-icon">📂</span>
-            <h3>No integrations yet</h3>
-            <p>Create your first integration flow to get started.</p>
-            <button class="btn btn-primary" @onclick="CreateNewFlow">Create Integration</button>
+<div class="page-scroll integrations-page">
+    <div class="page-header">
+        <div class="header-left">
+            <h2>Integrations</h2>
+            <p class="subtitle">Organize flows under integrations and keep standalone flows separate when needed.</p>
         </div>
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick="CreateStandaloneFlow">+ Standalone Flow</button>
+        </div>
+    </div>
+
+    <div class="wizard-form integrations-create-form">
+        <div class="form-group">
+            <label>New Integration Name</label>
+            <input type="text" class="form-control" @bind="_newIntegrationName" placeholder="e.g. HubSpot Sync" />
+        </div>
+        <div class="form-group">
+            <label>Description</label>
+            <input type="text" class="form-control" @bind="_newIntegrationDescription" placeholder="Optional description" />
+        </div>
+        <button class="btn btn-primary" @onclick="CreateIntegration" disabled="@_isLoading">Create Integration</button>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="loading-state">Loading integrations...</div>
     }
     else
     {
-        @foreach (var flow in FlowState.Value.Flows)
-        {
-            <div class="integration-card" @onclick="() => EditFlow(flow.Id)">
-                <div class="card-header">
-                    <h3 class="card-title">@flow.Name</h3>
-                    <span class="status-badge @(flow.Status.ToLower())">@flow.Status</span>
+        <div class="integrations-grid">
+            @if (!_integrations.Any())
+            {
+                <div class="empty-state">
+                    <h3>No integrations yet</h3>
+                    <p>Create an integration above, then add flows inside it.</p>
                 </div>
-                <div class="card-body">
-                    <p class="card-desc">@(string.IsNullOrEmpty(flow.Description) ? "No description provided." : flow.Description)</p>
-                    <div class="card-meta">
-                        <span>Trigger: @flow.TriggerType</span>
-                        <span>Steps: @flow.Nodes.Count</span>
+            }
+            else
+            {
+                @foreach (var integration in _integrations)
+                {
+                    <div class="integration-card">
+                        <div class="card-header">
+                            <h3 class="card-title">@integration.Name</h3>
+                        </div>
+                        <div class="card-body">
+                            <p class="card-desc">@(string.IsNullOrWhiteSpace(integration.Description) ? "No description provided." : integration.Description)</p>
+                            <div class="card-meta">
+                                <span>Flows: @integration.Flows.Count</span>
+                                <span>Updated: @integration.UpdatedAt.ToShortDateString()</span>
+                            </div>
+                            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
+                                @foreach (var flow in integration.Flows)
+                                {
+                                    <div class="card" style="padding: 12px; cursor: pointer;" @onclick="() => EditFlow(flow.Id)">
+                                        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center;">
+                                            <div>
+                                                <div style="font-weight: 600;">@flow.Name</div>
+                                                <div class="text-muted" style="font-size: 0.8rem;">Steps: @flow.Nodes.Count</div>
+                                            </div>
+                                            <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                        <div class="card-footer">
+                            <button class="btn btn-outline" @onclick="() => CreateFlow(integration.Id)">+ New Flow</button>
+                        </div>
                     </div>
+                }
+            }
+        </div>
+
+        @if (_standaloneFlows.Any())
+        {
+            <div class="page-header standalone-header">
+                <div class="header-left">
+                    <h2>Standalone Flows</h2>
                 </div>
-                <div class="card-footer">
-                    <span class="text-muted">Updated @flow.UpdatedAt.ToShortDateString()</span>
-                    <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">▶</button>
-                </div>
+            </div>
+
+            <div class="integrations-grid">
+                @foreach (var flow in _standaloneFlows)
+                {
+                    <div class="integration-card" @onclick="() => EditFlow(flow.Id)">
+                        <div class="card-header">
+                            <h3 class="card-title">@flow.Name</h3>
+                            <span class="status-badge @(flow.Status.ToLowerInvariant())">@flow.Status</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="card-desc">@(string.IsNullOrWhiteSpace(flow.Description) ? "No description provided." : flow.Description)</p>
+                            <div class="card-meta">
+                                <span>Trigger: @flow.TriggerType</span>
+                                <span>Steps: @flow.Nodes.Count</span>
+                            </div>
+                        </div>
+                        <div class="card-footer">
+                            <span class="text-muted">Updated @flow.UpdatedAt.ToShortDateString()</span>
+                            <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                        </div>
+                    </div>
+                }
             </div>
         }
     }
 </div>
 
 @code {
-    protected override void OnInitialized()
+    private List<IntegrationDto> _integrations = new();
+    private List<IntegrationFlowDto> _standaloneFlows = new();
+    private string _newIntegrationName = string.Empty;
+    private string _newIntegrationDescription = string.Empty;
+    private bool _isLoading;
+
+    protected override async Task OnInitializedAsync()
     {
-        base.OnInitialized();
-        Dispatcher.Dispatch(new LoadFlowsAction());
+        await base.OnInitializedAsync();
+        await LoadDataAsync();
     }
 
-    private void CreateNewFlow()
+    private async Task LoadDataAsync()
+    {
+        _isLoading = true;
+        _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+        var allFlows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+        _standaloneFlows = allFlows.Where(flow => flow.IntegrationId == null).OrderByDescending(flow => flow.UpdatedAt).ToList();
+        _isLoading = false;
+    }
+
+    private async Task CreateIntegration()
+    {
+        if (string.IsNullOrWhiteSpace(_newIntegrationName))
+        {
+            return;
+        }
+
+        var response = await Http.PostAsJsonAsync("api/integrations", new IntegrationDto
+        {
+            Name = _newIntegrationName.Trim(),
+            Description = _newIntegrationDescription.Trim()
+        });
+
+        if (response.IsSuccessStatusCode)
+        {
+            _newIntegrationName = string.Empty;
+            _newIntegrationDescription = string.Empty;
+            await LoadDataAsync();
+        }
+    }
+
+    private void CreateStandaloneFlow()
     {
         NavigationManager.NavigateTo("/flow-designer");
+    }
+
+    private void CreateFlow(Guid integrationId)
+    {
+        NavigationManager.NavigateTo($"/flow-designer?integrationId={integrationId}");
     }
 
     private void EditFlow(Guid flowId)

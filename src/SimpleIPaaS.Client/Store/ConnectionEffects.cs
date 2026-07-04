@@ -28,7 +28,9 @@ public class ConnectionEffects
     [EffectMethod]
     public async Task HandleSaveConnectionAction(SaveConnectionAction action, IDispatcher dispatcher)
     {
-        var response = await _http.PostAsJsonAsync("api/connections", action.Connection);
+        var response = action.Connection.Id == Guid.Empty
+            ? await _http.PostAsJsonAsync("api/connections", action.Connection)
+            : await _http.PutAsJsonAsync($"api/connections/{action.Connection.Id}", action.Connection);
         var savedConnection = await response.Content.ReadFromJsonAsync<ConnectionDto>();
         if (savedConnection != null)
         {

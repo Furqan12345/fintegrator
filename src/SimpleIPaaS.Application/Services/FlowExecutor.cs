@@ -6,6 +6,7 @@ using SimpleIPaaS.Domain;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain.Entities;
 using Newtonsoft.Json.Linq;
+using System.Globalization;
 
 namespace SimpleIPaaS.Application.Services;
 
@@ -58,6 +59,7 @@ public class FlowExecutor
             var sortedNodes = TopologicalSort(flow);
 
             var flowStateContext = new JObject();
+            var persistedStateContext = ParseObjectOrEmpty(flow.PersistedStateJson);
             var activeNodes = new HashSet<Guid>();
 
             // All starting nodes are active by default
@@ -84,6 +86,7 @@ public class FlowExecutor
                 await _executionRepository.AddStepExecutionAsync(stepExecution);
 
                 string flowStateJson = flowStateContext.ToString(Newtonsoft.Json.Formatting.None);
+                string persistedStateJson = persistedStateContext.ToString(Newtonsoft.Json.Formatting.None);
                 string currentPayload = string.Empty;
 
                 try
@@ -93,13 +96,13 @@ public class FlowExecutor
                         var url = node.EndpointUrl;
                         if (!string.IsNullOrWhiteSpace(node.UrlCode))
                         {
-                            url = await _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson);
+                            url = await _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson, persistedStateJson);
                         }
 
                         string requestPayload = string.Empty;
                         if (!string.IsNullOrWhiteSpace(node.PreFlightCode))
                         {
-                            requestPayload = await _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson);
+                            requestPayload = await _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson, persistedStateJson);
                         }
                         
                         stepExecution.RequestPayload = requestPayload;
@@ -128,7 +131,7 @@ public class FlowExecutor
                         
                         if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
                         {
-                            currentPayload = await _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, response);
+                            currentPayload = await _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, response);
                         }
 
                         // Activate all outgoing links
@@ -142,7 +145,7 @@ public class FlowExecutor
                     {
                         if (!string.IsNullOrWhiteSpace(node.MappingCode))
                         {
-                            currentPayload = await _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson);
+                            currentPayload = await _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson);
                             stepExecution.ResponsePayload = currentPayload;
                         }
 
@@ -158,7 +161,7 @@ public class FlowExecutor
                         bool branchResult = false;
                         if (!string.IsNullOrWhiteSpace(node.MappingCode))
                         {
-                            branchResult = await _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson);
+                            branchResult = await _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson, persistedStateJson);
                         }
                         
                         stepExecution.ResponsePayload = $"{{\"branchResult\": {branchResult.ToString().ToLower()}}}";
@@ -178,13 +181,34 @@ public class FlowExecutor
                     else if (node.StepType == StepType.Debug)
                     {
                         var inspectedAtUtc = DateTime.UtcNow;
-                        stepExecution.ResponsePayload = flowStateContext.ToString(Newtonsoft.Json.Formatting.Indented);
+                        stepExecution.ResponsePayload = new JObject
+                        {
+                            ["flowState"] = flowStateContext.DeepClone(),
+                            ["persistedState"] = persistedStateContext.DeepClone()
+                        }.ToString(Newtonsoft.Json.Formatting.Indented);
                         currentPayload = new JObject
                         {
                             ["inspectedAtUtc"] = inspectedAtUtc
                         }.ToString(Newtonsoft.Json.Formatting.None);
 
                         // Activate all outgoing links
+                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                        foreach (var edge in outgoing)
+                        {
+                            activeNodes.Add(edge.TargetNodeId);
+                        }
+                    }
+
+                    else if (node.StepType == StepType.PersistedState)
+                    {
+                        if (!string.IsNullOrWhiteSpace(node.MappingCode))
+                        {
+                            currentPayload = await _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson);
+                            persistedStateContext = ParseObjectOrEmpty(currentPayload);
+                            await _repository.UpdatePersistedStateAsync(flow.Id, persistedStateContext.ToString(Newtonsoft.Json.Formatting.None));
+                            stepExecution.ResponsePayload = currentPayload;
+                        }
+
                         var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                         foreach (var edge in outgoing)
                         {
@@ -276,5 +300,34 @@ public class FlowExecutor
         }
 
         return result;
+    }
+
+    private static JObject ParseObjectOrEmpty(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new JObject();
+        }
+
+        try
+        {
+            var token = JToken.Parse(json);
+            if (token is JObject obj)
+            {
+                return obj;
+            }
+
+            return new JObject
+            {
+                ["value"] = token
+            };
+        }
+        catch
+        {
+            return new JObject
+            {
+                ["value"] = json ?? string.Empty
+            };
+        }
     }
 }

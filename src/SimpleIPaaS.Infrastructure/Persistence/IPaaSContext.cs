@@ -17,6 +17,7 @@ public class IPaaSContext : DbContext
     public DbSet<IntegrationFlow> IntegrationFlows { get; set; } = null!;
     public DbSet<IntegrationStep> IntegrationSteps { get; set; } = null!;
     public DbSet<IntegrationEdge> IntegrationEdges { get; set; } = null!;
+    public DbSet<Integration> Integrations { get; set; } = null!;
     
     public DbSet<Connection> Connections { get; set; } = null!;
     public DbSet<FlowExecution> FlowExecutions { get; set; } = null!;
@@ -31,6 +32,7 @@ public class IPaaSContext : DbContext
         modelBuilder.Entity<IntegrationFlow>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<IntegrationStep>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<IntegrationEdge>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
+        modelBuilder.Entity<Integration>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<Connection>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<FlowExecution>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<StepExecution>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
@@ -47,6 +49,12 @@ public class IPaaSContext : DbContext
             .WithOne()
             .HasForeignKey(e => e.FlowId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Integration>()
+            .HasMany(i => i.Flows)
+            .WithOne()
+            .HasForeignKey(flow => flow.IntegrationId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         modelBuilder.Entity<FlowExecution>()
             .HasOne<IntegrationFlow>()
