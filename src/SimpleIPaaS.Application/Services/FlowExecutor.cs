@@ -7,6 +7,7 @@ using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain.Entities;
 using Newtonsoft.Json.Linq;
 using System.Globalization;
+using System.Text.Json;
 
 namespace SimpleIPaaS.Application.Services;
 
@@ -104,6 +105,10 @@ public class FlowExecutor
                         {
                             requestPayload = await _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson, persistedStateJson);
                         }
+                        else
+                        {
+                            requestPayload = GetApiPacketRequestBody(node.StepConfig);
+                        }
                         
                         stepExecution.RequestPayload = requestPayload;
 
@@ -115,7 +120,8 @@ public class FlowExecutor
                             AuthToken = node.AuthToken,
                             AuthUsername = node.AuthUsername,
                             AuthPassword = node.AuthPassword,
-                            ConnectionId = node.ConnectionId
+                            ConnectionId = node.ConnectionId,
+                            StepConfig = node.StepConfig
                         };
 
                         var (statusCode, response) = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId);
@@ -328,6 +334,31 @@ public class FlowExecutor
             {
                 ["value"] = json ?? string.Empty
             };
+        }
+    }
+
+    private static string GetApiPacketRequestBody(string? stepConfig)
+    {
+        if (string.IsNullOrWhiteSpace(stepConfig))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(stepConfig);
+            if (!document.RootElement.TryGetProperty("apiPacket", out var packet) ||
+                !packet.TryGetProperty("requestBody", out var body) ||
+                body.ValueKind != JsonValueKind.String)
+            {
+                return string.Empty;
+            }
+
+            return body.GetString() ?? string.Empty;
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
         }
     }
 }

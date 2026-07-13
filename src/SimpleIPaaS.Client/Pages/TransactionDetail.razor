@@ -1,0 +1,188 @@
+@page "/transaction-history/{TransactionId:guid}"
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject NavigationManager NavigationManager
+
+<PageTitle>Transaction Details - SimpleIPaaS</PageTitle>
+
+<div class="page-header">
+    <div class="header-left">
+        <h2>Transaction Details</h2>
+        <p class="subtitle">Transaction ID: @TransactionId</p>
+    </div>
+    <div class="header-right">
+        <button class="btn btn-outline" @onclick="GoBack">Back to History</button>
+    </div>
+</div>
+
+<div class="transaction-detail-container">
+    @if (_isLoading)
+    {
+        <div class="loading-state">Loading transaction cards...</div>
+    }
+    else if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="empty-state">
+            <h3>Unable to load transaction</h3>
+            <p>@_error</p>
+        </div>
+    }
+    else if (_steps.Count == 0)
+    {
+        <div class="empty-state">
+            <h3>No cards recorded</h3>
+            <p>This run did not capture card-level transaction data.</p>
+        </div>
+    }
+    else
+    {
+        <div class="transaction-summary">
+            <div>
+                <span class="summary-label">Flow</span>
+                <strong>@(_flow?.Name ?? ShortId(_execution?.FlowId ?? Guid.Empty))</strong>
+            </div>
+            <div>
+                <span class="summary-label">Started</span>
+                <strong>@(_execution?.StartedAt.ToLocalTime().ToString("MMM d, yyyy h:mm:ss tt") ?? "-")</strong>
+            </div>
+            <div>
+                <span class="summary-label">Completed</span>
+                <strong>@(_execution?.CompletedAt?.ToLocalTime().ToString("MMM d, yyyy h:mm:ss tt") ?? "-")</strong>
+            </div>
+            <div>
+                <span class="summary-label">Status</span>
+                <span class="status-badge @((_execution?.Status ?? string.Empty).ToLowerInvariant())">@(_execution?.Status ?? "-")</span>
+            </div>
+        </div>
+
+        <div class="transaction-card-list">
+            @foreach (var step in _steps.OrderBy(s => s.StartedAt))
+            {
+                var node = FindNode(step.StepId);
+                <section class="transaction-card">
+                    <div class="transaction-card-header">
+                        <div>
+                            <div class="transaction-card-eyebrow">@CardType(node)</div>
+                            <h3>@CardTitle(step, node)</h3>
+                        </div>
+                        <span class="status-badge @(step.Status.ToLowerInvariant())">@step.Status</span>
+                    </div>
+
+                    <div class="transaction-card-meta">
+                        <span>Started: @step.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</span>
+                        <span>Completed: @(step.CompletedAt?.ToLocalTime().ToString("h:mm:ss tt") ?? "-")</span>
+                        <span>Status Code: @step.HttpStatusCode</span>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(step.ErrorMessage))
+                    {
+                        <div class="step-error">
+                            <strong>Error:</strong> @step.ErrorMessage
+                        </div>
+                    }
+
+                    <div class="transaction-io-grid">
+                        <div class="transaction-json-panel">
+                            <div class="transaction-json-title">Received Data</div>
+                            <pre class="transaction-json-viewer"><code>@FormatJson(step.RequestPayload)</code></pre>
+                        </div>
+                        <div class="transaction-json-panel">
+                            <div class="transaction-json-title">Returned Data</div>
+                            <pre class="transaction-json-viewer"><code>@FormatJson(step.ResponsePayload)</code></pre>
+                        </div>
+                    </div>
+                </section>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public Guid TransactionId { get; set; }
+
+    private bool _isLoading = true;
+    private string _error = string.Empty;
+    private FlowExecutionDto? _execution;
+    private IntegrationFlowDto? _flow;
+    private List<StepExecutionDto> _steps = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _isLoading = true;
+        _error = string.Empty;
+
+        try
+        {
+            var executions = await Http.GetFromJsonAsync<List<FlowExecutionDto>>("api/executions") ?? new();
+            _execution = executions.FirstOrDefault(execution => execution.Id == TransactionId);
+            _steps = await Http.GetFromJsonAsync<List<StepExecutionDto>>($"api/executions/{TransactionId}/steps") ?? new();
+
+            if (_execution != null)
+            {
+                try
+                {
+                    _flow = await Http.GetFromJsonAsync<IntegrationFlowDto>($"api/integrationflow/{_execution.FlowId}");
+                }
+                catch (HttpRequestException)
+                {
+                    _flow = null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private IntegrationStepDto? FindNode(Guid stepId)
+    {
+        return _flow?.Nodes.FirstOrDefault(node => node.Id == stepId);
+    }
+
+    private static string CardTitle(StepExecutionDto step, IntegrationStepDto? node)
+    {
+        if (!string.IsNullOrWhiteSpace(node?.NodeName))
+        {
+            return node.NodeName;
+        }
+
+        return $"Card {ShortId(step.StepId)}";
+    }
+
+    private static string CardType(IntegrationStepDto? node)
+    {
+        return !string.IsNullOrWhiteSpace(node?.StepType) ? node.StepType : "Card";
+    }
+
+    private static string ShortId(Guid id) => id == Guid.Empty ? "-" : $"{id.ToString()[..8]}...";
+
+    private static string FormatJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "{}";
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+    }
+
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo("/transaction-history");
+    }
+}

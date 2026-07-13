@@ -1,4 +1,6 @@
 @using SimpleIPaaS.Shared.Models
+@using System.Text.Json
+@using System.Text.Json.Nodes
 
 <div class="card-header" style="background: var(--primary);">
     <h3 class="card-title" style="color: white;">HTTP Action</h3>
@@ -103,6 +105,30 @@
         }
     }
 
+    <div class="api-packet-section">
+        <div class="api-packet-title">API Packet Details</div>
+
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Headers</label>
+            <textarea class="form-control api-packet-textarea" @bind="PacketHeadersJson" @bind:event="oninput" placeholder="{ &quot;Accept&quot;: &quot;application/json&quot; }"></textarea>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Query Params</label>
+            <textarea class="form-control api-packet-textarea" @bind="PacketQueryParamsJson" @bind:event="oninput" placeholder="{ &quot;limit&quot;: &quot;25&quot; }"></textarea>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Content-Type</label>
+            <input type="text" class="form-control" @bind="PacketContentType" @bind:event="oninput" placeholder="application/json" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Body</label>
+            <textarea class="form-control api-packet-body" @bind="PacketRequestBody" @bind:event="oninput" placeholder="{ }"></textarea>
+        </div>
+    </div>
+
     <div class="script-buttons" style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px;">
         <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 2px;">Scripts (C#)</label>
         <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("UrlCode")'>
@@ -124,6 +150,31 @@
     private IEnumerable<ConnectionDto> AvailableConnections => Designer?.AvailableConnections ?? Enumerable.Empty<ConnectionDto>();
     private string SelectedConnectionBaseUrl => AvailableConnections.FirstOrDefault(connection => connection.Id == Step.ConnectionId)?.BaseUrl ?? string.Empty;
     private string ConnectionValue => Step.ConnectionId?.ToString() ?? string.Empty;
+    private static readonly JsonSerializerOptions StepConfigJsonOptions = new() { WriteIndented = false };
+
+    private string PacketHeadersJson
+    {
+        get => GetPacketValue("headersJson", "{}");
+        set => SetPacketValue("headersJson", value);
+    }
+
+    private string PacketQueryParamsJson
+    {
+        get => GetPacketValue("queryParamsJson", "{}");
+        set => SetPacketValue("queryParamsJson", value);
+    }
+
+    private string PacketContentType
+    {
+        get => GetPacketValue("contentType", "application/json");
+        set => SetPacketValue("contentType", value);
+    }
+
+    private string PacketRequestBody
+    {
+        get => GetPacketValue("requestBody", string.Empty);
+        set => SetPacketValue("requestBody", value);
+    }
 
     protected override void OnParametersSet()
     {
@@ -155,6 +206,43 @@
         else
         {
             Step.ConnectionId = null;
+        }
+    }
+
+    private string GetPacketValue(string key, string fallback)
+    {
+        var packet = GetPacketObject();
+        return packet[key]?.GetValue<string>() ?? fallback;
+    }
+
+    private void SetPacketValue(string key, string value)
+    {
+        var root = ParseStepConfig();
+        var packet = root["apiPacket"] as JsonObject ?? new JsonObject();
+        packet[key] = value ?? string.Empty;
+        root["apiPacket"] = packet;
+        Step.StepConfig = root.ToJsonString(StepConfigJsonOptions);
+    }
+
+    private JsonObject GetPacketObject()
+    {
+        return ParseStepConfig()["apiPacket"] as JsonObject ?? new JsonObject();
+    }
+
+    private JsonObject ParseStepConfig()
+    {
+        if (string.IsNullOrWhiteSpace(Step.StepConfig))
+        {
+            return new JsonObject();
+        }
+
+        try
+        {
+            return JsonNode.Parse(Step.StepConfig) as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            return new JsonObject();
         }
     }
 }

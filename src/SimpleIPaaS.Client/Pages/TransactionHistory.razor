@@ -1,0 +1,85 @@
+@page "/transaction-history"
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<ExecutionState> ExecutionState
+@inject IDispatcher Dispatcher
+@inject NavigationManager NavigationManager
+
+<PageTitle>Transaction History - SimpleIPaaS</PageTitle>
+
+<div class="page-header">
+    <div class="header-left">
+        <h2>Transaction History</h2>
+        <p class="subtitle">Review flow runs and inspect the data each card received and returned.</p>
+    </div>
+</div>
+
+<div class="activity-log-container">
+    @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
+    {
+        <div class="loading-state">Loading transaction history...</div>
+    }
+    else if (!ExecutionState.Value.Executions.Any())
+    {
+        <div class="empty-state">
+            <span class="empty-icon">TX</span>
+            <h3>No transactions yet</h3>
+            <p>Run a flow to capture transaction history.</p>
+        </div>
+    }
+    else
+    {
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Transaction</th>
+                    <th>Flow</th>
+                    <th>Status</th>
+                    <th>Run Date</th>
+                    <th>Run Time</th>
+                    <th>Cards</th>
+                    <th>Result</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var transaction in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
+                {
+                    <tr>
+                        <td>@ShortId(transaction.Id)</td>
+                        <td>@ShortId(transaction.FlowId)</td>
+                        <td><span class="status-badge @(transaction.Status.ToLowerInvariant())">@transaction.Status</span></td>
+                        <td>@transaction.StartedAt.ToLocalTime().ToString("MMM d, yyyy")</td>
+                        <td>@transaction.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</td>
+                        <td>@CardCount(transaction)</td>
+                        <td>@transaction.SuccessRecords success / @transaction.FailedRecords failed</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline" @onclick="() => CheckTransaction(transaction.Id)">Check</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        Dispatcher.Dispatch(new LoadExecutionsAction());
+    }
+
+    private void CheckTransaction(Guid transactionId)
+    {
+        NavigationManager.NavigateTo($"/transaction-history/{transactionId}");
+    }
+
+    private static string ShortId(Guid id) => $"{id.ToString()[..8]}...";
+
+    private static int CardCount(FlowExecutionDto transaction)
+    {
+        return transaction.SuccessRecords + transaction.FailedRecords;
+    }
+}
