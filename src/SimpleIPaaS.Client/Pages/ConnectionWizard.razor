@@ -39,9 +39,17 @@
                 <option value="Basic">Basic Auth</option>
                 <option value="Bearer">Bearer Token</option>
                 <option value="ApiKey">API Key</option>
+                <option value="OAuth2ClientCredentials">OAuth 2.0 Client Credentials</option>
                 <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
+                <option value="OAuth2AuthCode">OAuth 2.0 Authorization Code</option>
+                <option value="Custom">Custom Headers</option>
             </select>
         </div>
+
+        @if (ShowStoredSecretHint)
+        {
+            <div class="form-hint">Credentials for this connection are stored securely and are not shown. Leave the fields below blank to keep them, or enter new values to replace them.</div>
+        }
 
         @if (_connection.AuthType == "Basic")
         {
@@ -51,25 +59,51 @@
             </div>
             <div class="form-group">
                 <label>Password</label>
-                <input type="password" class="form-control" @bind="_basicPassword" />
+                <input type="password" class="form-control" @bind="_basicPassword" placeholder="@SecretPlaceholder" />
             </div>
         }
         else if (_connection.AuthType == "Bearer")
         {
             <div class="form-group">
                 <label>Token</label>
-                <input type="password" class="form-control" @bind="_bearerToken" />
+                <input type="password" class="form-control" @bind="_bearerToken" placeholder="@SecretPlaceholder" />
             </div>
         }
         else if (_connection.AuthType == "ApiKey")
         {
             <div class="form-group">
-                <label>Header Name</label>
+                <label>Placement</label>
+                <select class="form-control" @bind="_apiKeyPlacement">
+                    <option value="header">Header</option>
+                    <option value="query">Query Parameter</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>@(_apiKeyPlacement == "query" ? "Parameter Name" : "Header Name")</label>
                 <input type="text" class="form-control" @bind="_apiKeyHeaderName" />
             </div>
             <div class="form-group">
                 <label>API Key</label>
-                <input type="password" class="form-control" @bind="_apiKeyValue" />
+                <input type="password" class="form-control" @bind="_apiKeyValue" placeholder="@SecretPlaceholder" />
+            </div>
+        }
+        else if (_connection.AuthType == "OAuth2ClientCredentials")
+        {
+            <div class="form-group">
+                <label>Token URL</label>
+                <input type="text" class="form-control" @bind="_oauthTokenUrl" placeholder="https://auth.example.com/oauth/token" />
+            </div>
+            <div class="form-group">
+                <label>Client ID</label>
+                <input type="text" class="form-control" @bind="_oauthClientId" />
+            </div>
+            <div class="form-group">
+                <label>Client Secret</label>
+                <input type="password" class="form-control" @bind="_oauthClientSecret" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>Scope (optional)</label>
+                <input type="text" class="form-control" @bind="_oauthScope" placeholder="e.g. read write" />
             </div>
         }
         else if (_connection.AuthType == "OAuth2RefreshToken")
@@ -80,11 +114,57 @@
             </div>
             <div class="form-group">
                 <label>Refresh Token</label>
-                <input type="password" class="form-control" @bind="_oauthRefreshToken" />
+                <input type="password" class="form-control" @bind="_oauthRefreshToken" placeholder="@SecretPlaceholder" />
             </div>
             <div class="form-group">
                 <label>Access Token (optional)</label>
-                <input type="password" class="form-control" @bind="_oauthAccessToken" />
+                <input type="password" class="form-control" @bind="_oauthAccessToken" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>Client ID (optional)</label>
+                <input type="text" class="form-control" @bind="_oauthClientId" />
+            </div>
+            <div class="form-group">
+                <label>Client Secret (optional)</label>
+                <input type="password" class="form-control" @bind="_oauthClientSecret" placeholder="@SecretPlaceholder" />
+            </div>
+        }
+        else if (_connection.AuthType == "OAuth2AuthCode")
+        {
+            <div class="form-group">
+                <label>Token URL</label>
+                <input type="text" class="form-control" @bind="_oauthTokenUrl" />
+            </div>
+            <div class="form-group">
+                <label>Client ID</label>
+                <input type="text" class="form-control" @bind="_oauthClientId" />
+            </div>
+            <div class="form-group">
+                <label>Client Secret</label>
+                <input type="password" class="form-control" @bind="_oauthClientSecret" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>Access Token</label>
+                <input type="password" class="form-control" @bind="_oauthAccessToken" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>Refresh Token</label>
+                <input type="password" class="form-control" @bind="_oauthRefreshToken" placeholder="@SecretPlaceholder" />
+            </div>
+        }
+        else if (_connection.AuthType == "Custom")
+        {
+            <div class="form-group">
+                <label>Custom Headers</label>
+                @foreach (var header in _customHeaders)
+                {
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                        <input type="text" class="form-control" @bind="header.Name" placeholder="Header name" />
+                        <input type="text" class="form-control" @bind="header.Value" placeholder="Header value" />
+                        <button class="btn btn-outline" type="button" @onclick="() => RemoveCustomHeader(header)">Remove</button>
+                    </div>
+                }
+                <button class="btn btn-outline" type="button" @onclick="AddCustomHeader">Add Header</button>
             </div>
         }
     </div>
@@ -99,9 +179,38 @@
     private string _bearerToken = string.Empty;
     private string _apiKeyHeaderName = "X-Api-Key";
     private string _apiKeyValue = string.Empty;
+    private string _apiKeyPlacement = "header";
     private string _oauthTokenUrl = string.Empty;
     private string _oauthRefreshToken = string.Empty;
     private string _oauthAccessToken = string.Empty;
+    private string _oauthClientId = string.Empty;
+    private string _oauthClientSecret = string.Empty;
+    private string _oauthScope = string.Empty;
+    private List<CustomHeaderEntry> _customHeaders = new() { new CustomHeaderEntry() };
+    private bool _isEditMode;
+    private string _originalAuthType = string.Empty;
+    private bool _hadStoredAuthConfig;
+
+    private bool ShowStoredSecretHint =>
+        _isEditMode && _hadStoredAuthConfig && _connection.AuthType == _originalAuthType && _connection.AuthType != "None";
+
+    private string SecretPlaceholder => ShowStoredSecretHint ? "Stored — leave blank to keep" : string.Empty;
+
+    private class CustomHeaderEntry
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
+    }
+
+    private void AddCustomHeader()
+    {
+        _customHeaders.Add(new CustomHeaderEntry());
+    }
+
+    private void RemoveCustomHeader(CustomHeaderEntry header)
+    {
+        _customHeaders.Remove(header);
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -133,14 +242,43 @@
             Status = existing.Status
         };
 
+        _isEditMode = true;
+        _originalAuthType = existing.AuthType;
+        _hadStoredAuthConfig = !string.Equals(existing.AuthType, "None", StringComparison.OrdinalIgnoreCase);
+
         HydrateAuthFields(existing.AuthConfigJson);
     }
 
     private void SaveConnection()
     {
-        _connection.AuthConfigJson = BuildAuthConfigJson();
+        _connection.AuthConfigJson = ResolveAuthConfigJson();
         Dispatcher.Dispatch(new SaveConnectionAction { Connection = _connection });
         GoBack();
+    }
+
+    private string ResolveAuthConfigJson()
+    {
+        if (!_isEditMode || _connection.AuthType != _originalAuthType || HasAuthInput())
+        {
+            return BuildAuthConfigJson();
+        }
+
+        return string.Empty;
+    }
+
+    private bool HasAuthInput()
+    {
+        return _connection.AuthType switch
+        {
+            "Basic" => !string.IsNullOrEmpty(_basicUsername) || !string.IsNullOrEmpty(_basicPassword),
+            "Bearer" => !string.IsNullOrEmpty(_bearerToken),
+            "ApiKey" => !string.IsNullOrEmpty(_apiKeyValue),
+            "OAuth2ClientCredentials" => !string.IsNullOrEmpty(_oauthClientId) || !string.IsNullOrEmpty(_oauthClientSecret) || !string.IsNullOrEmpty(_oauthTokenUrl),
+            "OAuth2RefreshToken" => !string.IsNullOrEmpty(_oauthRefreshToken) || !string.IsNullOrEmpty(_oauthAccessToken) || !string.IsNullOrEmpty(_oauthClientSecret),
+            "OAuth2AuthCode" => !string.IsNullOrEmpty(_oauthAccessToken) || !string.IsNullOrEmpty(_oauthRefreshToken) || !string.IsNullOrEmpty(_oauthClientSecret),
+            "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
+            _ => false
+        };
     }
 
     private void GoBack()
@@ -154,8 +292,11 @@
         {
             "Basic" => new { username = _basicUsername, password = _basicPassword },
             "Bearer" => new { token = _bearerToken },
-            "ApiKey" => new { headerName = _apiKeyHeaderName, apiKey = _apiKeyValue },
-            "OAuth2RefreshToken" => new { tokenUrl = _oauthTokenUrl, refreshToken = _oauthRefreshToken, accessToken = _oauthAccessToken },
+            "ApiKey" => new { headerName = _apiKeyHeaderName, apiKey = _apiKeyValue, placement = _apiKeyPlacement },
+            "OAuth2ClientCredentials" => new { tokenUrl = _oauthTokenUrl, clientId = _oauthClientId, clientSecret = _oauthClientSecret, scope = _oauthScope },
+            "OAuth2RefreshToken" => new { tokenUrl = _oauthTokenUrl, refreshToken = _oauthRefreshToken, accessToken = _oauthAccessToken, clientId = _oauthClientId, clientSecret = _oauthClientSecret },
+            "OAuth2AuthCode" => new { tokenUrl = _oauthTokenUrl, clientId = _oauthClientId, clientSecret = _oauthClientSecret, accessToken = _oauthAccessToken, refreshToken = _oauthRefreshToken },
+            "Custom" => new { headers = _customHeaders.Where(header => !string.IsNullOrWhiteSpace(header.Name)).Select(header => new { name = header.Name, value = header.Value }).ToList() },
             _ => new { }
         };
 
@@ -176,8 +317,28 @@
         _bearerToken = root.TryGetProperty("token", out var token) ? token.GetString() ?? string.Empty : string.Empty;
         _apiKeyHeaderName = root.TryGetProperty("headerName", out var headerName) ? headerName.GetString() ?? "X-Api-Key" : "X-Api-Key";
         _apiKeyValue = root.TryGetProperty("apiKey", out var apiKey) ? apiKey.GetString() ?? string.Empty : string.Empty;
+        _apiKeyPlacement = root.TryGetProperty("placement", out var placement) ? placement.GetString() ?? "header" : "header";
         _oauthTokenUrl = root.TryGetProperty("tokenUrl", out var tokenUrl) ? tokenUrl.GetString() ?? string.Empty : string.Empty;
         _oauthRefreshToken = root.TryGetProperty("refreshToken", out var refreshToken) ? refreshToken.GetString() ?? string.Empty : string.Empty;
         _oauthAccessToken = root.TryGetProperty("accessToken", out var accessToken) ? accessToken.GetString() ?? string.Empty : string.Empty;
+        _oauthClientId = root.TryGetProperty("clientId", out var clientId) ? clientId.GetString() ?? string.Empty : string.Empty;
+        _oauthClientSecret = root.TryGetProperty("clientSecret", out var clientSecret) ? clientSecret.GetString() ?? string.Empty : string.Empty;
+        _oauthScope = root.TryGetProperty("scope", out var scope) ? scope.GetString() ?? string.Empty : string.Empty;
+
+        if (root.TryGetProperty("headers", out var headers) && headers.ValueKind == JsonValueKind.Array)
+        {
+            _customHeaders = headers.EnumerateArray()
+                .Select(header => new CustomHeaderEntry
+                {
+                    Name = header.TryGetProperty("name", out var name) ? name.GetString() ?? string.Empty : string.Empty,
+                    Value = header.TryGetProperty("value", out var value) ? value.GetString() ?? string.Empty : string.Empty
+                })
+                .ToList();
+
+            if (_customHeaders.Count == 0)
+            {
+                _customHeaders.Add(new CustomHeaderEntry());
+            }
+        }
     }
 }

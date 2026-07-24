@@ -16,6 +16,7 @@
 @inject IState<FlowState> FlowState
 @inject IDispatcher Dispatcher
 @inject HttpClient Http
+@inject IJSRuntime JSRuntime
 
 <PageTitle>Flow Designer - SimpleIPaaS</PageTitle>
 
@@ -36,6 +37,9 @@
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.PersistedState)">+ Persisted State</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.Debug)">+ Debug</button>
         <div class="toolbar-divider"></div>
+        <button class="btn btn-outline" @onclick="DeleteSelectedNodes" title="Delete selected node(s)">Delete Node</button>
+        <button class="btn btn-outline" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)">Flow Settings</button>
+        <div class="toolbar-divider"></div>
         <button class="btn" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
             @(FlowState.Value.IsLoading ? "Saving..." : "Save")
         </button>
@@ -43,6 +47,20 @@
             Run
         </button>
     </div>
+
+    @if (_validationErrors.Any())
+    {
+        <div class="validation-banner">
+            <strong>Cannot save flow:</strong>
+            <ul>
+                @foreach (var error in _validationErrors)
+                {
+                    <li>@error</li>
+                }
+            </ul>
+            <button class="btn btn-sm btn-outline" @onclick="() => _validationErrors.Clear()">Dismiss</button>
+        </div>
+    }
 
     <CascadingValue Value="Diagram">
         <CascadingValue Value="this">
@@ -73,6 +91,83 @@
 
 <DebugJsonModal @bind-IsVisible="_showDebugJsonModal" JsonContent="@_debugJsonContent" ErrorMessage="@_debugJsonError" />
 
+@if (_showFlowSettings && FlowState.Value.CurrentFlow != null)
+{
+    var settingsFlow = FlowState.Value.CurrentFlow;
+    <div class="modal-overlay" @onclick="CloseFlowSettings">
+        <div class="modal-container flow-settings-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Flow Settings</h2>
+                <button class="modal-close-btn" @onclick="CloseFlowSettings">✕</button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto;">
+                <div class="form-group">
+                    <label>Flow Status</label>
+                    <select class="form-control" @bind="settingsFlow.Status">
+                        <option value="Draft">Draft</option>
+                        <option value="Active">Active</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Trigger Type</label>
+                    <select class="form-control" value="@settingsFlow.TriggerType" @onchange="OnTriggerTypeChanged">
+                        <option value="Manual">Manual</option>
+                        <option value="Webhook">Webhook</option>
+                        <option value="Cron">Cron</option>
+                    </select>
+                </div>
+
+                @if (settingsFlow.TriggerType == "Cron")
+                {
+                    <div class="form-group">
+                        <label>Cron Expression</label>
+                        <input type="text" class="form-control" @bind="settingsFlow.CronExpression" @bind:event="oninput" placeholder="*/5 * * * *" />
+                        <small class="text-muted">@DescribeCron(settingsFlow.CronExpression)</small>
+                    </div>
+                    @if (TryGetNextFires(settingsFlow.CronExpression, out var nextFires))
+                    {
+                        <div class="form-group">
+                            <label>Next runs</label>
+                            <ul style="margin: 0; padding-left: 18px;">
+                                @foreach (var fire in nextFires)
+                                {
+                                    <li class="text-muted">@fire.ToLocalTime()</li>
+                                }
+                            </ul>
+                        </div>
+                    }
+                }
+                else if (settingsFlow.TriggerType == "Webhook")
+                {
+                    <div class="form-group">
+                        <label>Webhook URL</label>
+                        @if (settingsFlow.Id == Guid.Empty)
+                        {
+                            <small class="text-muted">Save the flow first to get a webhook URL.</small>
+                        }
+                        else
+                        {
+                            <div style="display: flex; gap: 8px;">
+                                <input type="text" class="form-control" readonly value="@WebhookUrl" />
+                                <button class="btn btn-outline" @onclick="CopyWebhookUrl">@(_webhookCopied ? "Copied!" : "Copy")</button>
+                            </div>
+                        }
+                    </div>
+                    <div class="form-group">
+                        <button class="btn btn-outline" @onclick="RegenerateWebhookSecret">Regenerate Secret</button>
+                        <small class="text-muted" style="display: block; margin-top: 4px;">Regenerating invalidates the current URL after the next save.</small>
+                    </div>
+                }
+
+                <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
+                    <button class="btn btn-outline" @onclick="CloseFlowSettings">Close</button>
+                    <button class="btn" @onclick="SaveFlowSettings" disabled="@FlowState.Value.IsLoading">Save Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public Guid? FlowId { get; set; }
 
@@ -92,6 +187,9 @@
     private string _debugJsonError = string.Empty;
     private List<IntegrationDto> _integrations = new();
     private List<ConnectionDto> _connections = new();
+    private bool _showFlowSettings;
+    private bool _webhookCopied;
+    private List<string> _validationErrors = new();
 
     private IEnumerable<IntegrationDto> AvailableIntegrations => _integrations;
     private string IntegrationValue => FlowState.Value.CurrentFlow?.IntegrationId?.ToString() ?? IntegrationIdQuery?.ToString() ?? string.Empty;
@@ -237,6 +335,12 @@
             return;
         }
 
+        _validationErrors = ValidateDiagram();
+        if (_validationErrors.Any())
+        {
+            return;
+        }
+
         var flow = FlowState.Value.CurrentFlow;
         flow.Name = FlowName;
         flow.IntegrationId = GetSelectedIntegrationId();
@@ -311,6 +415,299 @@
 
     private void ZoomIn() => Diagram.SetZoom(Diagram.Zoom * 1.2);
     private void ZoomOut() => Diagram.SetZoom(Diagram.Zoom / 1.2);
+
+    private void DeleteSelectedNodes()
+    {
+        var selectedNodes = Diagram.Nodes.OfType<IntegrationNodeModel>().Where(node => node.Selected).ToList();
+        foreach (var node in selectedNodes)
+        {
+            var attachedLinks = Diagram.Links.OfType<LinkModel>()
+                .Where(link => (link.Source.Model as PortModel)?.Parent == node || (link.Target.Model as PortModel)?.Parent == node)
+                .ToList();
+            foreach (var link in attachedLinks)
+            {
+                Diagram.Links.Remove(link);
+            }
+
+            Diagram.Nodes.Remove(node);
+        }
+    }
+
+    private List<string> ValidateDiagram()
+    {
+        var errors = new List<string>();
+        var nodes = Diagram.Nodes.OfType<IntegrationNodeModel>().ToList();
+
+        if (!nodes.Any())
+        {
+            errors.Add("The flow must contain at least one node.");
+            return errors;
+        }
+
+        var duplicateNames = nodes
+            .Select(node => string.IsNullOrWhiteSpace(node.StepConfig.NodeName) ? node.StepConfig.StepType : node.StepConfig.NodeName)
+            .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToList();
+        foreach (var name in duplicateNames)
+        {
+            errors.Add($"Duplicate node name '{name}' — node names must be unique.");
+        }
+
+        var nodeIds = nodes.Select(node => node.StepConfig.Id).ToHashSet();
+        var adjacency = nodeIds.ToDictionary(id => id, _ => new List<Guid>());
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            var sourceNode = (link.Source.Model as PortModel)?.Parent as IntegrationNodeModel;
+            var targetNode = (link.Target.Model as PortModel)?.Parent as IntegrationNodeModel;
+            if (sourceNode == null || targetNode == null ||
+                !nodeIds.Contains(sourceNode.StepConfig.Id) || !nodeIds.Contains(targetNode.StepConfig.Id))
+            {
+                errors.Add("An edge references a node that no longer exists on the canvas.");
+                continue;
+            }
+
+            adjacency[sourceNode.StepConfig.Id].Add(targetNode.StepConfig.Id);
+        }
+
+        if (HasCycle(adjacency))
+        {
+            errors.Add("The flow contains a cycle — flows must be acyclic.");
+        }
+
+        return errors;
+    }
+
+    private static bool HasCycle(Dictionary<Guid, List<Guid>> adjacency)
+    {
+        var visiting = new HashSet<Guid>();
+        var visited = new HashSet<Guid>();
+
+        bool Visit(Guid nodeId)
+        {
+            if (visiting.Contains(nodeId))
+            {
+                return true;
+            }
+
+            if (!visited.Add(nodeId))
+            {
+                return false;
+            }
+
+            visiting.Add(nodeId);
+            foreach (var next in adjacency[nodeId])
+            {
+                if (Visit(next))
+                {
+                    return true;
+                }
+            }
+
+            visiting.Remove(nodeId);
+            return false;
+        }
+
+        return adjacency.Keys.Any(Visit);
+    }
+
+    private void OpenFlowSettings()
+    {
+        _webhookCopied = false;
+        _showFlowSettings = true;
+    }
+
+    private void CloseFlowSettings()
+    {
+        _showFlowSettings = false;
+    }
+
+    private void SaveFlowSettings()
+    {
+        SaveFlow(false);
+        if (!_validationErrors.Any())
+        {
+            _showFlowSettings = false;
+        }
+    }
+
+    private void OnTriggerTypeChanged(ChangeEventArgs args)
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null)
+        {
+            return;
+        }
+
+        flow.TriggerType = args.Value?.ToString() ?? "Manual";
+        if (flow.TriggerType == "Webhook" && string.IsNullOrWhiteSpace(flow.WebhookSecret))
+        {
+            flow.WebhookSecret = Guid.NewGuid().ToString("N");
+        }
+    }
+
+    private void RegenerateWebhookSecret()
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null)
+        {
+            return;
+        }
+
+        flow.WebhookSecret = Guid.NewGuid().ToString("N");
+        _webhookCopied = false;
+    }
+
+    private string WebhookUrl
+    {
+        get
+        {
+            var flow = FlowState.Value.CurrentFlow;
+            if (flow == null || flow.Id == Guid.Empty)
+            {
+                return string.Empty;
+            }
+
+            var baseUrl = Http.BaseAddress?.ToString().TrimEnd('/') ?? string.Empty;
+            return $"{baseUrl}/api/webhooks/{flow.Id}/{flow.WebhookSecret}";
+        }
+    }
+
+    private async Task CopyWebhookUrl()
+    {
+        await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", WebhookUrl);
+        _webhookCopied = true;
+    }
+
+    private static string DescribeCron(string expression)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return "Enter a 5-field cron expression: minute hour day-of-month month day-of-week.";
+        }
+
+        var parts = expression.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 5)
+        {
+            return "Invalid expression — expected 5 fields (minute hour day-of-month month day-of-week).";
+        }
+
+        static string Field(string value, string unit) => value switch
+        {
+            "*" => $"every {unit}",
+            _ when value.StartsWith("*/") => $"every {value.Substring(2)} {unit}s",
+            _ => $"at {unit} {value}"
+        };
+
+        return $"Runs {Field(parts[0], "minute")}, {Field(parts[1], "hour")}, {Field(parts[2], "day")}, {Field(parts[3], "month")}, {Field(parts[4], "weekday")}.";
+    }
+
+    private static bool TryGetNextFires(string expression, out List<DateTime> nextFires)
+    {
+        nextFires = new List<DateTime>();
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return false;
+        }
+
+        var parts = expression.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 5)
+        {
+            return false;
+        }
+
+        var minutes = ParseCronField(parts[0], 0, 59);
+        var hours = ParseCronField(parts[1], 0, 23);
+        var days = ParseCronField(parts[2], 1, 31);
+        var months = ParseCronField(parts[3], 1, 12);
+        var weekdays = ParseCronField(parts[4], 0, 7);
+        if (minutes == null || hours == null || days == null || months == null || weekdays == null)
+        {
+            return false;
+        }
+
+        if (weekdays.Contains(7))
+        {
+            weekdays.Add(0);
+        }
+
+        var candidate = DateTime.UtcNow.AddMinutes(1);
+        candidate = new DateTime(candidate.Year, candidate.Month, candidate.Day, candidate.Hour, candidate.Minute, 0, DateTimeKind.Utc);
+        var limit = candidate.AddDays(366);
+
+        while (candidate < limit && nextFires.Count < 3)
+        {
+            if (minutes.Contains(candidate.Minute) &&
+                hours.Contains(candidate.Hour) &&
+                days.Contains(candidate.Day) &&
+                months.Contains(candidate.Month) &&
+                weekdays.Contains((int)candidate.DayOfWeek))
+            {
+                nextFires.Add(candidate);
+            }
+
+            candidate = candidate.AddMinutes(1);
+        }
+
+        return nextFires.Any();
+    }
+
+    private static HashSet<int>? ParseCronField(string field, int min, int max)
+    {
+        var values = new HashSet<int>();
+        foreach (var part in field.Split(','))
+        {
+            var segment = part;
+            var step = 1;
+            var stepIndex = segment.IndexOf('/');
+            if (stepIndex >= 0)
+            {
+                if (!int.TryParse(segment.Substring(stepIndex + 1), out step) || step <= 0)
+                {
+                    return null;
+                }
+
+                segment = segment.Substring(0, stepIndex);
+            }
+
+            int rangeStart, rangeEnd;
+            if (segment == "*" || segment.Length == 0)
+            {
+                rangeStart = min;
+                rangeEnd = max;
+            }
+            else if (segment.Contains('-'))
+            {
+                var bounds = segment.Split('-');
+                if (bounds.Length != 2 || !int.TryParse(bounds[0], out rangeStart) || !int.TryParse(bounds[1], out rangeEnd))
+                {
+                    return null;
+                }
+            }
+            else
+            {
+                if (!int.TryParse(segment, out rangeStart))
+                {
+                    return null;
+                }
+
+                rangeEnd = stepIndex >= 0 ? max : rangeStart;
+            }
+
+            if (rangeStart < min || rangeEnd > max || rangeStart > rangeEnd)
+            {
+                return null;
+            }
+
+            for (var value = rangeStart; value <= rangeEnd; value += step)
+            {
+                values.Add(value);
+            }
+        }
+
+        return values;
+    }
 
     public enum StepType
     {

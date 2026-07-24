@@ -23,6 +23,7 @@ public class IPaaSContext : DbContext
     public DbSet<FlowExecution> FlowExecutions { get; set; } = null!;
     public DbSet<StepExecution> StepExecutions { get; set; } = null!;
     public DbSet<DeadLetterEntry> DeadLetterEntries { get; set; } = null!;
+    public DbSet<ApiKey> ApiKeys { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

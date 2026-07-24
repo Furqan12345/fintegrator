@@ -5,6 +5,7 @@
 @inject IState<ConnectionState> ConnectionState
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
+@inject HttpClient Http
 
 <PageTitle>Connections — SimpleIPaaS</PageTitle>
 
@@ -49,17 +50,67 @@
                 </div>
                 <div class="card-footer">
                     <span class="text-muted">Updated @conn.UpdatedAt.ToShortDateString()</span>
+                    <button class="btn btn-sm btn-outline" @onclick:stopPropagation="true" @onclick="() => TestConnection(conn.Id)" disabled="@(_testingConnectionId == conn.Id)">
+                        @(_testingConnectionId == conn.Id ? "Testing..." : "Test")
+                    </button>
                 </div>
+                @if (_testResults.TryGetValue(conn.Id, out var testResult))
+                {
+                    <div class="card-footer">
+                        <span class="status-badge @(testResult.Success ? "success" : "failed")">@(testResult.Success ? "✓ Reachable" : "✗ Failed")</span>
+                        <span class="text-muted">@testResult.Message</span>
+                    </div>
+                }
             </div>
         }
     }
 </div>
 
 @code {
+    private Guid? _testingConnectionId;
+    private readonly Dictionary<Guid, ConnectionTestResult> _testResults = new();
+
+    private class ConnectionTestResult
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
     protected override void OnInitialized()
     {
         base.OnInitialized();
         Dispatcher.Dispatch(new LoadConnectionsAction());
+    }
+
+    private async Task TestConnection(Guid connectionId)
+    {
+        _testingConnectionId = connectionId;
+        try
+        {
+            var response = await Http.PostAsync($"api/connections/{connectionId}/test", null);
+            var content = await response.Content.ReadAsStringAsync();
+            var result = new ConnectionTestResult { Success = false, Message = content };
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(content);
+                var root = document.RootElement;
+                result.Success = root.TryGetProperty("success", out var success) && success.GetBoolean();
+                var statusCode = root.TryGetProperty("statusCode", out var code) ? code.GetInt32() : 0;
+                var error = root.TryGetProperty("error", out var errorProp) ? errorProp.GetString() : null;
+                result.Message = result.Success
+                    ? $"HTTP {statusCode}"
+                    : string.IsNullOrWhiteSpace(error) ? $"HTTP {statusCode}" : error!;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+            }
+
+            _testResults[connectionId] = result;
+        }
+        finally
+        {
+            _testingConnectionId = null;
+        }
     }
 
     private void CreateNewConnection()

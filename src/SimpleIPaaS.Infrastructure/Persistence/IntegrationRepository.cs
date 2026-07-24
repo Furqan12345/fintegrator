@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 
@@ -59,7 +60,7 @@ public class IntegrationRepository : IIntegrationRepository
             .IgnoreQueryFilters()
             .Include(f => f.Nodes)
             .Include(f => f.Edges)
-            .FirstOrDefaultAsync(f => f.Id == flow.Id);
+            .FirstOrDefaultAsync(f => f.Id == flow.Id && f.TenantId == _tenantContext.TenantId);
 
         if (existing == null)
         {
@@ -73,6 +74,10 @@ public class IntegrationRepository : IIntegrationRepository
         existing.Description = flow.Description;
         existing.IntegrationId = flow.IntegrationId;
         existing.Status = flow.Status;
+        if (existing.CronExpression != flow.CronExpression || existing.TriggerType != flow.TriggerType)
+        {
+            existing.NextRunAt = null;
+        }
         existing.TriggerType = flow.TriggerType;
         existing.CronExpression = flow.CronExpression;
         existing.WebhookSecret = flow.WebhookSecret;
@@ -102,18 +107,38 @@ public class IntegrationRepository : IIntegrationRepository
     public async Task DeleteAsync(Guid id)
     {
         var flow = await GetByIdAsync(id);
-        if (flow != null)
+        if (flow == null)
         {
-            _context.IntegrationFlows.Remove(flow);
-            await _context.SaveChangesAsync();
+            return;
         }
+
+        var executionIds = await _context.FlowExecutions
+            .Where(e => e.FlowId == id)
+            .Select(e => e.Id)
+            .ToListAsync();
+
+        if (executionIds.Count > 0)
+        {
+            await _context.DeadLetterEntries
+                .Where(d => executionIds.Contains(d.FlowExecutionId))
+                .ExecuteDeleteAsync();
+            await _context.StepExecutions
+                .Where(s => executionIds.Contains(s.FlowExecutionId))
+                .ExecuteDeleteAsync();
+            await _context.FlowExecutions
+                .Where(e => e.FlowId == id)
+                .ExecuteDeleteAsync();
+        }
+
+        _context.IntegrationFlows.Remove(flow);
+        await _context.SaveChangesAsync();
     }
 
     public async Task UpdatePersistedStateAsync(Guid flowId, string persistedStateJson)
     {
         var flow = await _context.IntegrationFlows
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId);
+            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId && existingFlow.TenantId == _tenantContext.TenantId);
 
         if (flow == null)
         {
@@ -131,6 +156,38 @@ public class IntegrationRepository : IIntegrationRepository
             .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId);
 
         return flow?.PersistedStateJson ?? "{}";
+    }
+
+    public async Task<IntegrationFlow?> GetFlowForTriggerAsync(Guid id)
+    {
+        return await _context.IntegrationFlows
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(f => f.Id == id);
+    }
+
+    public async Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAcrossTenantsAsync()
+    {
+        return await _context.IntegrationFlows
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(f => f.Status == FlowStatus.Active && f.TriggerType == TriggerType.Cron && f.CronExpression != "")
+            .ToListAsync();
+    }
+
+    public async Task UpdateNextRunAtAsync(Guid flowId, DateTime? nextRunAt)
+    {
+        var flow = await _context.IntegrationFlows
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(f => f.Id == flowId);
+
+        if (flow == null)
+        {
+            return;
+        }
+
+        flow.NextRunAt = nextRunAt;
+        await _context.SaveChangesAsync();
     }
 
     private static void StampTenant(IntegrationFlow flow, Guid tenantId)

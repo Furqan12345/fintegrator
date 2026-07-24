@@ -16,9 +16,13 @@ public static class DatabaseSchemaInitializer
         connection.Open();
 
         EnsureIntegrationsTable(connection);
+        EnsureApiKeysTable(connection);
         EnsureColumn(connection, "IntegrationFlows", "IntegrationId", "TEXT NULL");
         EnsureColumn(connection, "IntegrationFlows", "PersistedStateJson", "TEXT NOT NULL DEFAULT '{}'");
         EnsureColumn(connection, "IntegrationSteps", "UrlMode", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "IntegrationSteps", "AuthConfigJson", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "IntegrationFlows", "NextRunAt", "TEXT NULL");
+        EnsureColumn(connection, "FlowExecutions", "TriggerSource", "TEXT NOT NULL DEFAULT ''");
     }
 
     private static void EnsureIntegrationsTable(SqliteConnection connection)
@@ -32,6 +36,22 @@ public static class DatabaseSchemaInitializer
                 Description TEXT NOT NULL,
                 CreatedAt TEXT NOT NULL,
                 UpdatedAt TEXT NOT NULL
+            );
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    private static void EnsureApiKeysTable(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS ApiKeys (
+                Id TEXT NOT NULL CONSTRAINT PK_ApiKeys PRIMARY KEY,
+                TenantId TEXT NOT NULL,
+                Name TEXT NOT NULL,
+                KeyHash TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                RevokedAt TEXT NULL
             );
             """;
         command.ExecuteNonQuery();

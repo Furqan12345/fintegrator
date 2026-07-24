@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 
 namespace SimpleIPaaS.Application.Interfaces;
@@ -8,7 +9,7 @@ namespace SimpleIPaaS.Application.Interfaces;
 public interface IExecutionRepository
 {
     Task<FlowExecution?> GetFlowExecutionAsync(Guid id);
-    Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync();
+    Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50);
 
     Task AddFlowExecutionAsync(FlowExecution execution);
     Task UpdateFlowExecutionAsync(FlowExecution execution);
@@ -18,7 +19,9 @@ public interface IExecutionRepository
     Task<IEnumerable<StepExecution>> GetStepExecutionsAsync(Guid flowExecutionId);
     
     Task AddDeadLetterEntryAsync(DeadLetterEntry entry);
+    Task<DeadLetterEntry?> GetDeadLetterAsync(Guid id);
     Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize);
-    Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync();
+    Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAcrossTenantsAsync(int batchSize);
+    Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync(string? status = null);
     Task UpdateDeadLetterEntryAsync(DeadLetterEntry entry);
 }

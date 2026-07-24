@@ -3,9 +3,9 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 using SimpleIPaaS.Shared.Models;
 
 namespace SimpleIPaaS.Api.Controllers;
@@ -15,12 +15,12 @@ namespace SimpleIPaaS.Api.Controllers;
 public class ExecutionController : ControllerBase
 {
     private readonly IExecutionRepository _repository;
-    private readonly ITenantContext _tenantContext;
+    private readonly ExecutionCancellationRegistry _cancellationRegistry;
 
-    public ExecutionController(IExecutionRepository repository, ITenantContext tenantContext)
+    public ExecutionController(IExecutionRepository repository, ExecutionCancellationRegistry cancellationRegistry)
     {
         _repository = repository;
-        _tenantContext = tenantContext;
+        _cancellationRegistry = cancellationRegistry;
     }
 
     // Kept for any existing callers
@@ -32,88 +32,36 @@ public class ExecutionController : ControllerBase
         return Ok(execution);
     }
 
-    // Dev helper to seed a minimal execution + step so the UI/step endpoint can be tested quickly
-    // GET api/Execution/dev/seed
-    [HttpGet("dev/seed")]
-    public async Task<IActionResult> SeedExecution()
-    {
-        try
-        {
-            // Use explicit tenant id so we don't depend on DI lifetime/initialization.
-            var tenantId = _tenantContext.TenantId;
-            if (tenantId == Guid.Empty)
-            {
-                tenantId = Guid.NewGuid();
-            }
-
-            var flowExecution = new FlowExecution
-            {
-                FlowId = Guid.NewGuid(),
-                TenantId = tenantId,
-                Status = ExecutionStatus.InProgress,
-                StartedAt = DateTime.UtcNow
-            };
-
-            await _repository.AddFlowExecutionAsync(flowExecution);
-
-            var stepExecution = new StepExecution
-            {
-                FlowExecutionId = flowExecution.Id,
-                StepId = Guid.NewGuid(),
-                TenantId = tenantId,
-                Status = ExecutionStatus.Success,
-                StartedAt = DateTime.UtcNow,
-                CompletedAt = DateTime.UtcNow,
-                HttpStatusCode = 200,
-                ErrorMessage = null,
-                RequestPayload = "{}",
-                ResponsePayload = "{\"ok\":true}"
-            };
-
-            await _repository.AddStepExecutionAsync(stepExecution);
-
-            // (Optional) update counters for better UI display
-            flowExecution.TotalRecords = 1;
-            flowExecution.SuccessRecords = 1;
-            flowExecution.FailedRecords = 0;
-            flowExecution.Status = ExecutionStatus.Success;
-            flowExecution.CompletedAt = DateTime.UtcNow;
-
-            await _repository.UpdateFlowExecutionAsync(flowExecution);
-
-            return Ok(new { executionId = flowExecution.Id });
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new
-            {
-                error = ex.Message,
-                detail = ex.ToString()
-            });
-        }
-    }
-
     // Matches SimpleIPaaS.Client/Store/ExecutionEffects.cs
     [HttpGet("")]
-    public async Task<IActionResult> GetExecutions()
+    public async Task<IActionResult> GetExecutions(
+        [FromQuery] Guid? flowId = null,
+        [FromQuery] string? status = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50)
     {
-        var executions = await _repository.GetFlowExecutionsAsync();
-
-        var dto = executions.Select(e => new FlowExecutionDto
+        ExecutionStatus? statusFilter = null;
+        if (!string.IsNullOrWhiteSpace(status))
         {
-            Id = e.Id,
-            FlowId = e.FlowId,
-            TenantId = e.TenantId,
-            Status = e.Status.ToString(),
-            StartedAt = e.StartedAt,
-            CompletedAt = e.CompletedAt,
-            ErrorMessage = e.ErrorMessage,
-            TotalRecords = e.TotalRecords,
-            SuccessRecords = e.SuccessRecords,
-            FailedRecords = e.FailedRecords
-        });
+            if (!Enum.TryParse<ExecutionStatus>(status, true, out var parsed))
+            {
+                ModelState.AddModelError(nameof(status), $"'{status}' is not a valid ExecutionStatus.");
+                return ValidationProblem(ModelState);
+            }
 
-        return Ok(dto);
+            statusFilter = parsed;
+        }
+
+        var executions = await _repository.GetFlowExecutionsAsync(flowId, statusFilter, page, pageSize);
+        return Ok(executions.Select(ToDto));
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetExecution(Guid id)
+    {
+        var execution = await _repository.GetFlowExecutionAsync(id);
+        if (execution == null) return NotFound();
+        return Ok(ToDto(execution));
     }
 
     // Matches SimpleIPaaS.Client/Store/ExecutionEffects.cs
@@ -137,5 +85,42 @@ public class ExecutionController : ControllerBase
         });
 
         return Ok(dto);
+    }
+
+    [HttpPost("{id}/cancel")]
+    public async Task<IActionResult> Cancel(Guid id)
+    {
+        var execution = await _repository.GetFlowExecutionAsync(id);
+        if (execution == null) return NotFound();
+
+        var signalled = _cancellationRegistry.Cancel(id);
+
+        if (execution.Status == ExecutionStatus.Queued)
+        {
+            execution.Status = ExecutionStatus.Cancelled;
+            execution.ErrorMessage = "Execution was cancelled.";
+            execution.CompletedAt = DateTime.UtcNow;
+            await _repository.UpdateFlowExecutionAsync(execution);
+        }
+
+        return Ok(new { success = true, signalled, status = execution.Status.ToString() });
+    }
+
+    private static FlowExecutionDto ToDto(FlowExecution e)
+    {
+        return new FlowExecutionDto
+        {
+            Id = e.Id,
+            FlowId = e.FlowId,
+            TenantId = e.TenantId,
+            Status = e.Status.ToString(),
+            StartedAt = e.StartedAt,
+            CompletedAt = e.CompletedAt,
+            ErrorMessage = e.ErrorMessage,
+            TriggerSource = e.TriggerSource,
+            TotalRecords = e.TotalRecords,
+            SuccessRecords = e.SuccessRecords,
+            FailedRecords = e.FailedRecords
+        };
     }
 }

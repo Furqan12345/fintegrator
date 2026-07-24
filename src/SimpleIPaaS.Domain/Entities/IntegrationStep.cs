@@ -24,6 +24,7 @@ public class IntegrationStep
     public string AuthToken { get; set; } = string.Empty;
     public string AuthUsername { get; set; } = string.Empty;
     public string AuthPassword { get; set; } = string.Empty;
+    public string AuthConfigJson { get; set; } = string.Empty;
     
     // Auth Config (Enterprise Connection)
     public Guid? ConnectionId { get; set; }

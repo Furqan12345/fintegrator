@@ -1,11 +1,12 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using Cronos;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Services;
+using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Infrastructure.Services;
 
@@ -22,24 +23,57 @@ public class FlowExecutionBackgroundWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("FlowExecutionBackgroundWorker is starting.");
+        _logger.LogInformation("Dead letter worker is starting.");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                using var scope = _serviceProvider.CreateScope();
-                var deadLetterService = scope.ServiceProvider.GetRequiredService<DeadLetterService>();
-                
-                await deadLetterService.ProcessPendingLettersAsync();
+                await ProcessPendingAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error occurred processing dead letters");
             }
 
-            // Wait 1 minute before checking again
-            await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task ProcessPendingAsync(CancellationToken stoppingToken)
+    {
+        using var scanScope = _serviceProvider.CreateScope();
+        var executionRepository = scanScope.ServiceProvider.GetRequiredService<IExecutionRepository>();
+        var pending = await executionRepository.GetPendingDeadLettersAcrossTenantsAsync(100);
+
+        foreach (var entry in pending)
+        {
+            stoppingToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var tenantContext = scope.ServiceProvider.GetRequiredService<ITenantContext>();
+                tenantContext.SetTenantId(entry.TenantId);
+
+                var deadLetterService = scope.ServiceProvider.GetRequiredService<DeadLetterService>();
+                await deadLetterService.ReplayEntryAsync(entry.Id, force: false, stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error replaying dead letter {DeadLetterId}", entry.Id);
+            }
         }
     }
 }

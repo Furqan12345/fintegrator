@@ -12,6 +12,7 @@ public class FlowExecutionDto
     public DateTime StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public string? ErrorMessage { get; set; }
+    public string TriggerSource { get; set; } = string.Empty;
     public int TotalRecords { get; set; }
     public int SuccessRecords { get; set; }
     public int FailedRecords { get; set; }

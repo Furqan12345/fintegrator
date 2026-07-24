@@ -16,6 +16,7 @@ public class IntegrationFlow
     public TriggerType TriggerType { get; set; } = TriggerType.Manual;
     public string CronExpression { get; set; } = string.Empty;
     public string WebhookSecret { get; set; } = string.Empty;
+    public DateTime? NextRunAt { get; set; }
     
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

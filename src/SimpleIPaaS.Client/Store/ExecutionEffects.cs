@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
@@ -18,7 +19,7 @@ public class ExecutionEffects
     [EffectMethod]
     public async Task HandleLoadExecutionsAction(LoadExecutionsAction action, IDispatcher dispatcher)
     {
-        var executions = await _http.GetFromJsonAsync<FlowExecutionDto[]>("api/executions");
+        var executions = await _http.GetFromJsonAsync<FlowExecutionDto[]>(BuildExecutionsUrl(action.FlowId, action.Status, action.Page, action.PageSize));
         if (executions != null)
         {
             dispatcher.Dispatch(new LoadExecutionsResultAction { Executions = executions });
@@ -33,5 +34,34 @@ public class ExecutionEffects
         {
             dispatcher.Dispatch(new LoadExecutionDetailsResultAction { StepExecutions = steps });
         }
+    }
+
+    [EffectMethod]
+    public async Task HandleCancelExecutionAction(CancelExecutionAction action, IDispatcher dispatcher)
+    {
+        await _http.PostAsync($"api/executions/{action.Id}/cancel", null);
+        dispatcher.Dispatch(new LoadExecutionsAction
+        {
+            FlowId = action.FlowId,
+            Status = action.Status,
+            Page = action.Page,
+            PageSize = action.PageSize
+        });
+    }
+
+    private static string BuildExecutionsUrl(System.Guid? flowId, string status, int page, int pageSize)
+    {
+        var query = new List<string> { $"page={page}", $"pageSize={pageSize}" };
+        if (flowId.HasValue)
+        {
+            query.Add($"flowId={flowId.Value}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            query.Add($"status={status}");
+        }
+
+        return $"api/executions?{string.Join("&", query)}";
     }
 }

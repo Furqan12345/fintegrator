@@ -21,4 +21,8 @@ public static class ExecutionReducers
     [ReducerMethod]
     public static ExecutionState ReduceLoadExecutionDetailsResultAction(ExecutionState state, LoadExecutionDetailsResultAction action) =>
         new ExecutionState(isLoading: false, executions: state.Executions, currentStepExecutions: action.StepExecutions.ToList());
+
+    [ReducerMethod]
+    public static ExecutionState ReduceCancelExecutionAction(ExecutionState state, CancelExecutionAction action) =>
+        new ExecutionState(isLoading: true, executions: state.Executions, currentStepExecutions: state.CurrentStepExecutions);
 }

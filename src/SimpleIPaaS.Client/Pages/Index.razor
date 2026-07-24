@@ -69,7 +69,10 @@
                                                 <div style="font-weight: 600;">@flow.Name</div>
                                                 <div class="text-muted" style="font-size: 0.8rem;">Steps: @flow.Nodes.Count</div>
                                             </div>
-                                            <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                                            <div style="display: flex; gap: 6px;">
+                                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => AskDeleteFlow(flow)" title="Delete Flow">Delete</button>
+                                            </div>
                                         </div>
                                     </div>
                                 }
@@ -108,7 +111,10 @@
                         </div>
                         <div class="card-footer">
                             <span class="text-muted">Updated @flow.UpdatedAt.ToShortDateString()</span>
-                            <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                            <div style="display: flex; gap: 6px;">
+                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => AskDeleteFlow(flow)" title="Delete Flow">Delete</button>
+                            </div>
                         </div>
                     </div>
                 }
@@ -117,12 +123,36 @@
     }
 </div>
 
+@if (_deleteTarget != null)
+{
+    <div class="modal-overlay" @onclick="CancelDeleteFlow">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Delete flow</h2>
+                <button class="modal-close-btn" @onclick="CancelDeleteFlow">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>This permanently deletes <strong>@_deleteTarget.Name</strong> and its history. Type the flow name to confirm.</p>
+                <div class="form-group">
+                    <input type="text" class="form-control" @bind="_deleteConfirmName" @bind:event="oninput" placeholder="@_deleteTarget.Name" />
+                </div>
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                    <button class="btn btn-outline" @onclick="CancelDeleteFlow">Cancel</button>
+                    <button class="btn btn-danger" @onclick="ConfirmDeleteFlow" disabled="@(!string.Equals(_deleteConfirmName, _deleteTarget.Name, StringComparison.Ordinal))">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private List<IntegrationDto> _integrations = new();
     private List<IntegrationFlowDto> _standaloneFlows = new();
     private string _newIntegrationName = string.Empty;
     private string _newIntegrationDescription = string.Empty;
     private bool _isLoading;
+    private IntegrationFlowDto? _deleteTarget;
+    private string _deleteConfirmName = string.Empty;
 
     protected override async Task OnInitializedAsync()
     {
@@ -178,5 +208,33 @@
     private void RunFlow(Guid flowId)
     {
         Dispatcher.Dispatch(new RunFlowAction { Id = flowId });
+    }
+
+    private void AskDeleteFlow(IntegrationFlowDto flow)
+    {
+        _deleteTarget = flow;
+        _deleteConfirmName = string.Empty;
+    }
+
+    private void CancelDeleteFlow()
+    {
+        _deleteTarget = null;
+        _deleteConfirmName = string.Empty;
+    }
+
+    private async Task ConfirmDeleteFlow()
+    {
+        if (_deleteTarget == null || !string.Equals(_deleteConfirmName, _deleteTarget.Name, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var response = await Http.DeleteAsync($"api/integrationflow/{_deleteTarget.Id}");
+        if (response.IsSuccessStatusCode)
+        {
+            _deleteTarget = null;
+            _deleteConfirmName = string.Empty;
+            await LoadDataAsync();
+        }
     }
 }

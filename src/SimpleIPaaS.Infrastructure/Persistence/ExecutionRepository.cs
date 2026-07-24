@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 
@@ -25,10 +26,27 @@ public class ExecutionRepository : IExecutionRepository
         return await _context.FlowExecutions.FirstOrDefaultAsync(e => e.Id == id);
     }
 
-    public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync()
+    public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50)
     {
-        return await _context.FlowExecutions
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize < 1 ? 50 : Math.Min(pageSize, 200);
+
+        var query = _context.FlowExecutions.AsQueryable();
+
+        if (flowId.HasValue && flowId.Value != Guid.Empty)
+        {
+            query = query.Where(e => e.FlowId == flowId.Value);
+        }
+
+        if (status.HasValue)
+        {
+            query = query.Where(e => e.Status == status.Value);
+        }
+
+        return await query
             .OrderByDescending(e => e.StartedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync();
     }
 
@@ -85,6 +103,11 @@ public class ExecutionRepository : IExecutionRepository
         await _context.SaveChangesAsync();
     }
 
+    public async Task<DeadLetterEntry?> GetDeadLetterAsync(Guid id)
+    {
+        return await _context.DeadLetterEntries.FirstOrDefaultAsync(d => d.Id == id);
+    }
+
     public async Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize)
     {
         return await _context.DeadLetterEntries
@@ -94,9 +117,27 @@ public class ExecutionRepository : IExecutionRepository
             .ToListAsync();
     }
 
-    public async Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync()
+    public async Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAcrossTenantsAsync(int batchSize)
     {
         return await _context.DeadLetterEntries
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(d => d.Status == "Pending")
+            .OrderBy(d => d.CreatedAt)
+            .Take(batchSize)
+            .ToListAsync();
+    }
+
+    public async Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync(string? status = null)
+    {
+        var query = _context.DeadLetterEntries.AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            query = query.Where(d => d.Status == status);
+        }
+
+        return await query
             .OrderByDescending(d => d.CreatedAt)
             .ToListAsync();
     }

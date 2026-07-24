@@ -35,7 +35,10 @@ public class TransportEngine : ITransportEngine
         _resiliencePipeline = new ResiliencePipelineBuilder<HttpResponseMessage>()
             .AddRetry(new Polly.Retry.RetryStrategyOptions<HttpResponseMessage>
             {
-                ShouldHandle = new PredicateBuilder<HttpResponseMessage>().HandleResult(r => !r.IsSuccessStatusCode),
+                ShouldHandle = new PredicateBuilder<HttpResponseMessage>().HandleResult(r =>
+                    (int)r.StatusCode >= 500 ||
+                    r.StatusCode == System.Net.HttpStatusCode.RequestTimeout ||
+                    (int)r.StatusCode == 429),
                 MaxRetryAttempts = 3,
                 Delay = TimeSpan.FromSeconds(2),
                 BackoffType = DelayBackoffType.Exponential
@@ -47,10 +50,11 @@ public class TransportEngine : ITransportEngine
     public async Task<(int StatusCode, string Response)> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null)
     {
         var client = _httpClientFactory.CreateClient();
-        
+
         var url = step.EndpointUrl;
         AuthType authType = step.AuthType;
         string configJson = string.Empty;
+        Guid? resolvedConnectionId = null;
 
         // If a Connection is specified, merge its base URL and Auth configurations
         if (connectionId.HasValue && connectionId.Value != Guid.Empty)
@@ -63,15 +67,20 @@ public class TransportEngine : ITransportEngine
                     // Ensure proper URL concatenation
                     url = connection.BaseUrl.TrimEnd('/') + "/" + url.TrimStart('/');
                 }
-                
+
                 authType = connection.AuthType;
                 configJson = await _encryptionService.DecryptAsync(connection.AuthConfigJson);
+                resolvedConnectionId = connection.Id;
             }
         }
         else
         {
-            // Fallback to step level legacy auth if no connection is provided
-            if (step.AuthType == AuthType.Bearer && !string.IsNullOrWhiteSpace(step.AuthToken))
+            // Fallback to step level inline auth if no connection is provided
+            if (!string.IsNullOrWhiteSpace(step.AuthConfigJson))
+            {
+                configJson = step.AuthConfigJson;
+            }
+            else if (step.AuthType == AuthType.Bearer && !string.IsNullOrWhiteSpace(step.AuthToken))
             {
                 configJson = $"{{\"token\":\"{step.AuthToken}\"}}";
             }
@@ -79,7 +88,11 @@ public class TransportEngine : ITransportEngine
             {
                 configJson = $"{{\"username\":\"{step.AuthUsername}\", \"password\":\"{step.AuthPassword}\"}}";
             }
-            else if (step.AuthType == AuthType.OAuth2RefreshToken)
+            else if (step.AuthType == AuthType.ApiKey && !string.IsNullOrWhiteSpace(step.AuthUsername))
+            {
+                configJson = $"{{\"headerName\":\"{step.AuthUsername}\", \"apiKey\":\"{step.AuthToken}\"}}";
+            }
+            else if (step.AuthType == AuthType.OAuth2RefreshToken || step.AuthType == AuthType.OAuth2AuthCode)
             {
                 var tokenUrl = step.AuthUsername ?? string.Empty;
                 var refreshToken = step.AuthPassword ?? string.Empty;
@@ -91,40 +104,68 @@ public class TransportEngine : ITransportEngine
         var packetDetails = ApiPacketDetails.FromStepConfig(step.StepConfig);
         url = AppendQueryParams(url, packetDetails.QueryParams);
 
-        var request = new HttpRequestMessage(new HttpMethod(step.HttpMethod), url);
-
-        foreach (var header in packetDetails.Headers)
+        var authContext = new AuthenticationContext
         {
-            if (!string.IsNullOrWhiteSpace(header.Key) &&
-                !header.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
-            {
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-        }
-
-        // Apply Authentication via Factory
-        var authHandler = _authFactory.GetHandler(authType);
-        await authHandler.AuthenticateAsync(request, configJson);
+            ConfigJson = configJson,
+            ConnectionId = resolvedConnectionId
+        };
 
         payload = string.IsNullOrWhiteSpace(payload) ? packetDetails.RequestBody : payload;
 
-        if (!string.IsNullOrWhiteSpace(payload) &&
-            (step.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) || 
-             step.HttpMethod.Equals("PUT", StringComparison.OrdinalIgnoreCase) ||
-             step.HttpMethod.Equals("PATCH", StringComparison.OrdinalIgnoreCase)))
+        HttpRequestMessage BuildRequest()
         {
-            var contentType = string.IsNullOrWhiteSpace(packetDetails.ContentType)
-                ? "application/json"
-                : packetDetails.ContentType;
-            request.Content = new StringContent(payload, Encoding.UTF8, contentType);
+            var message = new HttpRequestMessage(new HttpMethod(step.HttpMethod), url);
+
+            foreach (var header in packetDetails.Headers)
+            {
+                if (!string.IsNullOrWhiteSpace(header.Key) &&
+                    !header.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+                {
+                    message.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(payload) &&
+                (step.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) ||
+                 step.HttpMethod.Equals("PUT", StringComparison.OrdinalIgnoreCase) ||
+                 step.HttpMethod.Equals("PATCH", StringComparison.OrdinalIgnoreCase)))
+            {
+                var contentType = string.IsNullOrWhiteSpace(packetDetails.ContentType)
+                    ? "application/json"
+                    : packetDetails.ContentType;
+                message.Content = new StringContent(payload, Encoding.UTF8, contentType);
+            }
+
+            return message;
         }
 
-        var response = await _resiliencePipeline.ExecuteAsync(async cancellationToken => 
+        async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
         {
-            // We need to clone the request because HttpClient disposes the request after SendAsync
-            var clonedRequest = await CloneHttpRequestMessageAsync(request);
-            return await client.SendAsync(clonedRequest, cancellationToken);
-        });
+            return await _resiliencePipeline.ExecuteAsync(async cancellationToken =>
+            {
+                // We need to clone the request because HttpClient disposes the request after SendAsync
+                var clonedRequest = await CloneHttpRequestMessageAsync(request);
+                return await client.SendAsync(clonedRequest, cancellationToken);
+            });
+        }
+
+        var authHandler = _authFactory.GetHandler(authType);
+
+        var initialRequest = BuildRequest();
+        await authHandler.AuthenticateAsync(initialRequest, authContext);
+
+        var response = await SendAsync(initialRequest);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
+            (authType == AuthType.OAuth2ClientCredentials ||
+             authType == AuthType.OAuth2RefreshToken ||
+             authType == AuthType.OAuth2AuthCode))
+        {
+            authContext.ForceRefresh = true;
+            var retryRequest = BuildRequest();
+            await authHandler.AuthenticateAsync(retryRequest, authContext);
+            response = await SendAsync(retryRequest);
+        }
 
         var content = await response.Content.ReadAsStringAsync();
         return ((int)response.StatusCode, content);

@@ -3,14 +3,40 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using SimpleIPaaS.Application.Interfaces;
 
 namespace SimpleIPaaS.Infrastructure.Services.Security;
 
 public class EncryptionService : IEncryptionService
 {
-    // In production, this should be injected via securely stored configuration (e.g. Azure KeyVault)
-    private readonly byte[] _key = Encoding.UTF8.GetBytes("SuperSecretEncryptionKey12345678");
+    private const string DevelopmentFallbackKey = "SuperSecretEncryptionKey12345678";
+
+    private readonly byte[] _key;
+
+    public EncryptionService(IConfiguration configuration, IHostEnvironment environment, ILogger<EncryptionService> logger)
+    {
+        var configuredKey = configuration["Encryption:Key"];
+        if (!string.IsNullOrWhiteSpace(configuredKey))
+        {
+            _key = Encoding.UTF8.GetBytes(configuredKey);
+            if (_key.Length != 32)
+            {
+                throw new InvalidOperationException("Encryption:Key must be exactly 32 bytes.");
+            }
+        }
+        else if (environment.IsDevelopment())
+        {
+            logger.LogWarning("Encryption:Key is not configured; falling back to the built-in development key.");
+            _key = Encoding.UTF8.GetBytes(DevelopmentFallbackKey);
+        }
+        else
+        {
+            throw new InvalidOperationException("Encryption:Key configuration is required outside Development.");
+        }
+    }
 
     public Task<string> EncryptAsync(string plainText)
     {

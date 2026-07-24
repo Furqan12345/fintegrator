@@ -268,6 +268,10 @@ html, body {
 .btn-success { background: var(--success); }
 .btn-success:hover { background: var(--success-hover); }
 
+.btn-sm { padding: 4px 10px; font-size: 0.75rem; }
+.btn-danger { background: var(--danger); }
+.btn-danger:hover { background: #b91c1c; }
+
 .btn-outline {
     background: transparent;
     border: 1px solid var(--border-color);
@@ -590,6 +594,35 @@ select.form-input {
     max-height: none;
 }
 
+.modal-container.confirm-modal,
+.modal-container.flow-settings-modal {
+    width: 480px;
+    max-width: 92vw;
+    height: auto;
+    max-height: 85vh;
+}
+
+.validation-banner {
+    margin: 8px 12px 0 12px;
+    padding: 10px 14px;
+    background: rgba(220, 38, 38, 0.08);
+    border: 1px solid rgba(220, 38, 38, 0.3);
+    border-radius: var(--radius-sm);
+    color: var(--danger);
+    font-size: 0.8rem;
+}
+.validation-banner ul { margin: 6px 0; padding-left: 18px; }
+
+.form-hint {
+    margin: 0 0 12px 0;
+    padding: 10px 14px;
+    background: rgba(37, 99, 235, 0.08);
+    border: 1px solid rgba(37, 99, 235, 0.3);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
 @keyframes slideUp {
     from { transform: translateY(12px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
@@ -859,6 +892,15 @@ select.form-input {
 .status-badge.draft,
 .status-badge.pending { background: rgba(107, 114, 128, 0.1); color: var(--text-secondary); }
 .status-badge.failed { background: rgba(220, 38, 38, 0.1); color: var(--danger); }
+.status-badge.running,
+.status-badge.inprogress { background: rgba(37, 99, 235, 0.1); color: #2563eb; }
+.status-badge.queued { background: rgba(156, 163, 175, 0.15); color: var(--text-secondary); }
+.status-badge.cancelled { background: rgba(161, 98, 7, 0.1); color: #a16207; }
+.status-badge.partialsuccess,
+.status-badge.retrying,
+.status-badge.warning { background: rgba(217, 119, 6, 0.1); color: var(--warning); }
+.status-badge.resolved { background: rgba(5, 150, 105, 0.1); color: var(--success); }
+.status-badge.discarded { background: rgba(107, 114, 128, 0.15); color: #6b7280; }
 
 .card-desc {
     font-size: 0.85rem;

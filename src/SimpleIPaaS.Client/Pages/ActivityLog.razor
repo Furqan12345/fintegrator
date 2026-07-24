@@ -3,6 +3,7 @@
 @using SimpleIPaaS.Shared.Models
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
 @inject IState<ExecutionState> ExecutionState
+@inject IState<FlowState> FlowState
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
 
@@ -12,6 +13,24 @@
     <div class="header-left">
         <h2>Activity Log</h2>
         <p class="subtitle">Monitor integration execution history and status</p>
+    </div>
+    <div class="header-right">
+        <select class="form-control" value="@_flowFilter" @onchange="OnFlowFilterChanged" style="min-width: 180px;">
+            <option value="">All flows</option>
+            @foreach (var flow in FlowState.Value.Flows)
+            {
+                <option value="@flow.Id">@flow.Name</option>
+            }
+        </select>
+        <select class="form-control" value="@_statusFilter" @onchange="OnStatusFilterChanged" style="min-width: 150px;">
+            <option value="">All statuses</option>
+            <option value="Queued">Queued</option>
+            <option value="InProgress">Running</option>
+            <option value="Success">Success</option>
+            <option value="PartialSuccess">Partial Success</option>
+            <option value="Failed">Failed</option>
+            <option value="Cancelled">Cancelled</option>
+        </select>
     </div>
 </div>
 
@@ -33,8 +52,9 @@
         <table class="table table-hover">
             <thead>
                 <tr>
-                    <th>Flow ID</th>
+                    <th>Flow</th>
                     <th>Status</th>
+                    <th>Trigger</th>
                     <th>Started At</th>
                     <th>Completed At</th>
                     <th>Records (Success/Fail)</th>
@@ -45,32 +65,134 @@
                 @foreach (var exec in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
                 {
                     <tr>
-                        <td>@exec.FlowId.ToString().Substring(0, 8)...</td>
+                        <td>@ResolveFlowName(exec.FlowId)</td>
                         <td>
                             <span class="status-badge @(exec.Status.ToLower())">@exec.Status</span>
                         </td>
+                        <td>@(string.IsNullOrWhiteSpace(exec.TriggerSource) ? "-" : exec.TriggerSource)</td>
                         <td>@exec.StartedAt.ToLocalTime()</td>
                         <td>@(exec.CompletedAt?.ToLocalTime().ToString() ?? "-")</td>
                         <td>@exec.TotalRecords (@exec.SuccessRecords / @exec.FailedRecords)</td>
                         <td>
                             <button class="btn btn-sm btn-outline" @onclick="() => ViewDetails(exec.Id)">Details</button>
+                            @if (IsActive(exec))
+                            {
+                                <button class="btn btn-sm btn-outline" @onclick="() => CancelExecution(exec.Id)">Cancel</button>
+                            }
                         </td>
                     </tr>
                 }
             </tbody>
         </table>
+
+        <div style="display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px;">
+            <button class="btn btn-sm btn-outline" @onclick="PreviousPage" disabled="@(_page <= 1)">◀ Prev</button>
+            <span class="text-muted">Page @_page</span>
+            <button class="btn btn-sm btn-outline" @onclick="NextPage" disabled="@(ExecutionState.Value.Executions.Count < PageSize)">Next ▶</button>
+        </div>
     }
 </div>
 
 @code {
+    private const int PageSize = 50;
+
+    private string _flowFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private int _page = 1;
+    private System.Threading.Timer? _refreshTimer;
+
     protected override void OnInitialized()
     {
         base.OnInitialized();
-        Dispatcher.Dispatch(new LoadExecutionsAction());
+        Dispatcher.Dispatch(new LoadFlowsAction());
+        LoadExecutions();
+        _refreshTimer = new System.Threading.Timer(_ => InvokeAsync(RefreshIfActive), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+    }
+
+    private void RefreshIfActive()
+    {
+        if (ExecutionState.Value.Executions.Any(IsActive))
+        {
+            LoadExecutions();
+        }
+    }
+
+    private void LoadExecutions()
+    {
+        Dispatcher.Dispatch(new LoadExecutionsAction
+        {
+            FlowId = ParsedFlowId,
+            Status = _statusFilter,
+            Page = _page,
+            PageSize = PageSize
+        });
+    }
+
+    private Guid? ParsedFlowId => Guid.TryParse(_flowFilter, out var flowId) ? flowId : null;
+
+    private static bool IsActive(FlowExecutionDto exec) =>
+        exec.Status.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
+        exec.Status.Equals("InProgress", StringComparison.OrdinalIgnoreCase) ||
+        exec.Status.Equals("Running", StringComparison.OrdinalIgnoreCase);
+
+    private void OnFlowFilterChanged(ChangeEventArgs args)
+    {
+        _flowFilter = args.Value?.ToString() ?? string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void OnStatusFilterChanged(ChangeEventArgs args)
+    {
+        _statusFilter = args.Value?.ToString() ?? string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void PreviousPage()
+    {
+        if (_page <= 1)
+        {
+            return;
+        }
+
+        _page--;
+        LoadExecutions();
+    }
+
+    private void NextPage()
+    {
+        _page++;
+        LoadExecutions();
+    }
+
+    private void CancelExecution(Guid executionId)
+    {
+        Dispatcher.Dispatch(new CancelExecutionAction
+        {
+            Id = executionId,
+            FlowId = ParsedFlowId,
+            Status = _statusFilter,
+            Page = _page,
+            PageSize = PageSize
+        });
+    }
+
+    private string ResolveFlowName(Guid flowId)
+    {
+        var flow = FlowState.Value.Flows.FirstOrDefault(f => f.Id == flowId);
+        return flow?.Name ?? $"{flowId.ToString().Substring(0, 8)}...";
     }
 
     private void ViewDetails(Guid executionId)
     {
         NavigationManager.NavigateTo($"/execution-detail/{executionId}");
+    }
+
+    protected override ValueTask DisposeAsyncCore(bool disposing)
+    {
+        _refreshTimer?.Dispose();
+        _refreshTimer = null;
+        return base.DisposeAsyncCore(disposing);
     }
 }

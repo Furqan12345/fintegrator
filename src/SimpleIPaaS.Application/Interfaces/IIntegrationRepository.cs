@@ -15,4 +15,7 @@ public interface IIntegrationRepository
     Task DeleteAsync(Guid id);
     Task UpdatePersistedStateAsync(Guid flowId, string persistedStateJson);
     Task<string> GetPersistedStateAsync(Guid flowId);
+    Task<IntegrationFlow?> GetFlowForTriggerAsync(Guid id);
+    Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAcrossTenantsAsync();
+    Task UpdateNextRunAtAsync(Guid flowId, DateTime? nextRunAt);
 }

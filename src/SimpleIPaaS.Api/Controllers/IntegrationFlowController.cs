@@ -1,9 +1,14 @@
 using System;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Api.Mappings;
+using SimpleIPaaS.Api.Validation;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Services;
+using SimpleIPaaS.Domain;
+using SimpleIPaaS.Infrastructure.MultiTenancy;
 using SimpleIPaaS.Shared.Models;
 
 namespace SimpleIPaaS.Api.Controllers;
@@ -13,17 +18,20 @@ namespace SimpleIPaaS.Api.Controllers;
 public class IntegrationFlowController : ControllerBase
 {
     private readonly IIntegrationRepository _repository;
-    private readonly FlowExecutor _runner;
     private readonly IAdvancedCodeExecutionService _codeExecutionService;
+    private readonly FlowRunService _flowRunService;
+    private readonly ITenantContext _tenantContext;
 
     public IntegrationFlowController(
         IIntegrationRepository repository,
-        FlowExecutor runner,
-        IAdvancedCodeExecutionService codeExecutionService)
+        IAdvancedCodeExecutionService codeExecutionService,
+        FlowRunService flowRunService,
+        ITenantContext tenantContext)
     {
         _repository = repository;
-        _runner = runner;
         _codeExecutionService = codeExecutionService;
+        _flowRunService = flowRunService;
+        _tenantContext = tenantContext;
     }
 
     [HttpGet("")]
@@ -45,8 +53,15 @@ public class IntegrationFlowController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] IntegrationFlowDto dto)
     {
+        var validationErrors = FlowValidator.Validate(dto);
+        if (validationErrors.Count > 0)
+        {
+            return FlowValidationProblem(validationErrors);
+        }
+
         var flow = dto.ToEntity();
         flow.Id = Guid.NewGuid();
+        EnsureWebhookSecret(flow);
         await _repository.AddAsync(flow);
         return CreatedAtAction(nameof(Get), new { id = flow.Id }, flow.ToDto());
     }
@@ -56,24 +71,48 @@ public class IntegrationFlowController : ControllerBase
     {
         if (flowId != dto.Id) return BadRequest("ID mismatch");
 
+        var validationErrors = FlowValidator.Validate(dto);
+        if (validationErrors.Count > 0)
+        {
+            return FlowValidationProblem(validationErrors);
+        }
+
         var flow = dto.ToEntity();
+        EnsureWebhookSecret(flow);
         await _repository.UpdateAsync(flow);
-        
+
         return Ok(flow.ToDto());
+    }
+
+    [HttpDelete("{flowId}")]
+    public async Task<IActionResult> Delete([FromRoute] Guid flowId)
+    {
+        var flow = await _repository.GetByIdAsync(flowId);
+        if (flow == null) return NotFound();
+
+        try
+        {
+            await _repository.DeleteAsync(flowId);
+        }
+        catch (DbUpdateException)
+        {
+            return Problem(
+                title: "Conflict",
+                detail: "The flow could not be deleted because dependent records exist.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        return NoContent();
     }
 
     [HttpPost("{flowId}/run")]
     public async Task<IActionResult> Run([FromRoute] Guid flowId)
     {
-        try
-        {
-            var result = await _runner.ExecuteFlowAsync(flowId);
-            return Ok(new { success = true, executionId = result.Id, status = result.Status.ToString() });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, error = ex.Message });
-        }
+        var flow = await _repository.GetByIdAsync(flowId);
+        if (flow == null) return NotFound();
+
+        var executionId = await _flowRunService.EnqueueAsync(flowId, _tenantContext.TenantId, "Manual", null, HttpContext.RequestAborted);
+        return Accepted(new { success = true, executionId, status = ExecutionStatus.Queued.ToString() });
     }
 
     [HttpPost("test-mapping")]
@@ -135,5 +174,23 @@ public class IntegrationFlowController : ControllerBase
     {
         await _repository.UpdatePersistedStateAsync(flowId, "{}");
         return NoContent();
+    }
+
+    private IActionResult FlowValidationProblem(List<string> errors)
+    {
+        foreach (var error in errors)
+        {
+            ModelState.AddModelError("flow", error);
+        }
+
+        return ValidationProblem(ModelState);
+    }
+
+    private static void EnsureWebhookSecret(Domain.Entities.IntegrationFlow flow)
+    {
+        if (flow.TriggerType == TriggerType.Webhook && string.IsNullOrWhiteSpace(flow.WebhookSecret))
+        {
+            flow.WebhookSecret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        }
     }
 }

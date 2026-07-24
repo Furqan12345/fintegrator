@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain.Entities;
@@ -17,31 +19,44 @@ public class FlowExecutor
     private readonly ITransportEngine _transportEngine;
     private readonly IAdvancedCodeExecutionService _codeExecutionService;
     private readonly IExecutionRepository _executionRepository;
+    private readonly ILogger<FlowExecutor> _logger;
 
     public FlowExecutor(
         IIntegrationRepository repository,
         ITransportEngine transportEngine,
         IAdvancedCodeExecutionService codeExecutionService,
-        IExecutionRepository executionRepository)
+        IExecutionRepository executionRepository,
+        ILogger<FlowExecutor> logger)
     {
         _repository = repository;
         _transportEngine = transportEngine;
         _codeExecutionService = codeExecutionService;
         _executionRepository = executionRepository;
+        _logger = logger;
     }
 
-    public async Task<FlowExecution> ExecuteFlowAsync(Guid flowId)
+    public async Task<FlowExecution> ExecuteFlowAsync(Guid flowId, Guid executionId, string? triggerPayload, CancellationToken cancellationToken)
     {
-        var flow = await _repository.GetByIdAsync(flowId);
-        if (flow == null) throw new ArgumentException("Flow not found", nameof(flowId));
+        var flowExecution = await _executionRepository.GetFlowExecutionAsync(executionId)
+            ?? throw new InvalidOperationException($"FlowExecution {executionId} not found.");
 
-        var flowExecution = new FlowExecution
+        flowExecution.Status = ExecutionStatus.InProgress;
+        flowExecution.StartedAt = DateTime.UtcNow;
+        await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+
+        _logger.LogInformation("Execution {ExecutionId} started for flow {FlowId} (trigger: {TriggerSource})",
+            executionId, flowId, flowExecution.TriggerSource);
+
+        var flow = await _repository.GetByIdAsync(flowId);
+        if (flow == null)
         {
-            FlowId = flow.Id,
-            Status = ExecutionStatus.InProgress,
-            StartedAt = DateTime.UtcNow
-        };
-        await _executionRepository.AddFlowExecutionAsync(flowExecution);
+            flowExecution.Status = ExecutionStatus.Failed;
+            flowExecution.ErrorMessage = "Flow not found.";
+            flowExecution.CompletedAt = DateTime.UtcNow;
+            await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+            _logger.LogWarning("Execution {ExecutionId} failed: flow {FlowId} not found", executionId, flowId);
+            return flowExecution;
+        }
 
         if (!flow.Nodes.Any())
         {
@@ -56,14 +71,17 @@ public class FlowExecutor
             var startNodes = flow.Nodes.Where(n => !flow.Edges.Any(e => e.TargetNodeId == n.Id)).ToList();
             if (!startNodes.Any()) throw new InvalidOperationException("Could not find a starting node.");
 
-            // Topologically sort nodes for proper DAG traversal
             var sortedNodes = TopologicalSort(flow);
 
             var flowStateContext = new JObject();
+            if (!string.IsNullOrWhiteSpace(triggerPayload))
+            {
+                flowStateContext["trigger"] = ParseTokenOrString(triggerPayload);
+            }
+
             var persistedStateContext = ParseObjectOrEmpty(flow.PersistedStateJson);
             var activeNodes = new HashSet<Guid>();
 
-            // All starting nodes are active by default
             foreach (var startNode in startNodes)
             {
                 activeNodes.Add(startNode.Id);
@@ -71,9 +89,10 @@ public class FlowExecutor
 
             foreach (var node in sortedNodes)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (!activeNodes.Contains(node.Id))
                 {
-                    // Skip execution of this node since it's not active in the current path
                     continue;
                 }
 
@@ -85,46 +104,23 @@ public class FlowExecutor
                     StartedAt = DateTime.UtcNow
                 };
                 await _executionRepository.AddStepExecutionAsync(stepExecution);
+                flowExecution.TotalRecords++;
 
                 string flowStateJson = flowStateContext.ToString(Newtonsoft.Json.Formatting.None);
                 string persistedStateJson = persistedStateContext.ToString(Newtonsoft.Json.Formatting.None);
                 string currentPayload = string.Empty;
 
+                _logger.LogInformation("Execution {ExecutionId}: running node {NodeName} ({StepType})",
+                    executionId, node.NodeName, node.StepType);
+
                 try
                 {
                     if (node.StepType == StepType.HttpAction)
                     {
-                        var url = node.EndpointUrl;
-                        if (!string.IsNullOrWhiteSpace(node.UrlCode))
-                        {
-                            url = await _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson, persistedStateJson);
-                        }
+                        var (statusCode, response, requestPayload) =
+                            await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken);
 
-                        string requestPayload = string.Empty;
-                        if (!string.IsNullOrWhiteSpace(node.PreFlightCode))
-                        {
-                            requestPayload = await _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson, persistedStateJson);
-                        }
-                        else
-                        {
-                            requestPayload = GetApiPacketRequestBody(node.StepConfig);
-                        }
-                        
                         stepExecution.RequestPayload = requestPayload;
-
-                        var nodeToDispatch = new IntegrationStep 
-                        { 
-                            EndpointUrl = url, 
-                            HttpMethod = node.HttpMethod,
-                            AuthType = node.AuthType,
-                            AuthToken = node.AuthToken,
-                            AuthUsername = node.AuthUsername,
-                            AuthPassword = node.AuthPassword,
-                            ConnectionId = node.ConnectionId,
-                            StepConfig = node.StepConfig
-                        };
-
-                        var (statusCode, response) = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId);
                         stepExecution.HttpStatusCode = statusCode;
                         stepExecution.ResponsePayload = response;
 
@@ -134,13 +130,12 @@ public class FlowExecutor
                         }
 
                         currentPayload = response;
-                        
+
                         if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
                         {
                             currentPayload = await _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, response);
                         }
 
-                        // Activate all outgoing links
                         var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                         foreach (var edge in outgoing)
                         {
@@ -155,7 +150,6 @@ public class FlowExecutor
                             stepExecution.ResponsePayload = currentPayload;
                         }
 
-                        // Activate all outgoing links
                         var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                         foreach (var edge in outgoing)
                         {
@@ -169,11 +163,10 @@ public class FlowExecutor
                         {
                             branchResult = await _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson, persistedStateJson);
                         }
-                        
+
                         stepExecution.ResponsePayload = $"{{\"branchResult\": {branchResult.ToString().ToLower()}}}";
                         currentPayload = stepExecution.ResponsePayload;
 
-                        // Activate only the branch matched by port name
                         var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                         foreach (var edge in outgoing)
                         {
@@ -197,14 +190,12 @@ public class FlowExecutor
                             ["inspectedAtUtc"] = inspectedAtUtc
                         }.ToString(Newtonsoft.Json.Formatting.None);
 
-                        // Activate all outgoing links
                         var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                         foreach (var edge in outgoing)
                         {
                             activeNodes.Add(edge.TargetNodeId);
                         }
                     }
-
                     else if (node.StepType == StepType.PersistedState)
                     {
                         if (!string.IsNullOrWhiteSpace(node.MappingCode))
@@ -224,7 +215,7 @@ public class FlowExecutor
 
                     if (!string.IsNullOrWhiteSpace(node.NodeName))
                     {
-                        try 
+                        try
                         {
                             flowStateContext[node.NodeName] = JToken.Parse(string.IsNullOrWhiteSpace(currentPayload) ? "{}" : currentPayload);
                         }
@@ -238,12 +229,22 @@ public class FlowExecutor
                     stepExecution.CompletedAt = DateTime.UtcNow;
                     flowExecution.SuccessRecords++;
                 }
+                catch (OperationCanceledException)
+                {
+                    stepExecution.Status = ExecutionStatus.Cancelled;
+                    stepExecution.ErrorMessage = "Execution was cancelled.";
+                    stepExecution.CompletedAt = DateTime.UtcNow;
+                    await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     stepExecution.Status = ExecutionStatus.Failed;
                     stepExecution.ErrorMessage = ex.Message;
                     stepExecution.CompletedAt = DateTime.UtcNow;
                     flowExecution.FailedRecords++;
+
+                    _logger.LogError(ex, "Execution {ExecutionId}: node {NodeName} failed", executionId, node.NodeName);
 
                     var deadLetter = new DeadLetterEntry
                     {
@@ -255,7 +256,7 @@ public class FlowExecutor
                     };
                     await _executionRepository.AddDeadLetterEntryAsync(deadLetter);
                     await _executionRepository.UpdateStepExecutionAsync(stepExecution);
-                    throw; // Stop flow execution
+                    throw;
                 }
 
                 await _executionRepository.UpdateStepExecutionAsync(stepExecution);
@@ -263,16 +264,59 @@ public class FlowExecutor
 
             flowExecution.Status = ExecutionStatus.Success;
             flowExecution.CompletedAt = DateTime.UtcNow;
+            _logger.LogInformation("Execution {ExecutionId} completed successfully ({TotalRecords} steps)",
+                executionId, flowExecution.TotalRecords);
+        }
+        catch (OperationCanceledException)
+        {
+            flowExecution.Status = ExecutionStatus.Cancelled;
+            flowExecution.ErrorMessage = "Execution was cancelled.";
+            flowExecution.CompletedAt = DateTime.UtcNow;
+            _logger.LogWarning("Execution {ExecutionId} was cancelled", executionId);
         }
         catch (Exception ex)
         {
             flowExecution.Status = ExecutionStatus.Failed;
             flowExecution.ErrorMessage = ex.Message;
             flowExecution.CompletedAt = DateTime.UtcNow;
+            _logger.LogError(ex, "Execution {ExecutionId} failed", executionId);
         }
 
         await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
         return flowExecution;
+    }
+
+    public async Task<(int StatusCode, string Response, string RequestPayload)> ExecuteHttpNodeAsync(
+        IntegrationStep node, string flowStateJson, string persistedStateJson, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var url = node.EndpointUrl;
+        if (!string.IsNullOrWhiteSpace(node.UrlCode))
+        {
+            url = await _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson, persistedStateJson);
+        }
+
+        string requestPayload = string.Empty;
+        if (!string.IsNullOrWhiteSpace(node.PreFlightCode))
+        {
+            requestPayload = await _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson, persistedStateJson);
+        }
+
+        var nodeToDispatch = new IntegrationStep
+        {
+            EndpointUrl = url,
+            HttpMethod = node.HttpMethod,
+            AuthType = node.AuthType,
+            AuthToken = node.AuthToken,
+            AuthUsername = node.AuthUsername,
+            AuthPassword = node.AuthPassword,
+            AuthConfigJson = node.AuthConfigJson,
+            ConnectionId = node.ConnectionId
+        };
+
+        var (statusCode, response) = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId);
+        return (statusCode, response, requestPayload);
     }
 
     private List<IntegrationStep> TopologicalSort(IntegrationFlow flow)
@@ -295,7 +339,7 @@ public class FlowExecutor
                 }
                 visiting.Remove(node.Id);
                 visited.Add(node.Id);
-                result.Insert(0, node); // Add to the front to reverse post-order
+                result.Insert(0, node);
             }
         }
 
@@ -306,6 +350,18 @@ public class FlowExecutor
         }
 
         return result;
+    }
+
+    private static JToken ParseTokenOrString(string payload)
+    {
+        try
+        {
+            return JToken.Parse(payload);
+        }
+        catch
+        {
+            return payload;
+        }
     }
 
     private static JObject ParseObjectOrEmpty(string? json)
