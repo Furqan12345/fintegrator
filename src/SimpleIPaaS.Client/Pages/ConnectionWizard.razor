@@ -51,6 +51,11 @@
             <div class="form-hint">Credentials for this connection are stored securely and are not shown. Leave the fields below blank to keep them, or enter new values to replace them.</div>
         }
 
+        @if (!string.IsNullOrEmpty(_authError))
+        {
+            <div class="validation-banner">@_authError</div>
+        }
+
         @if (_connection.AuthType == "Basic")
         {
             <div class="form-group">
@@ -158,7 +163,7 @@
                 <label>Custom Headers</label>
                 @foreach (var header in _customHeaders)
                 {
-                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                    <div class="form-row">
                         <input type="text" class="form-control" @bind="header.Name" placeholder="Header name" />
                         <input type="text" class="form-control" @bind="header.Value" placeholder="Header value" />
                         <button class="btn btn-outline" type="button" @onclick="() => RemoveCustomHeader(header)">Remove</button>
@@ -190,6 +195,12 @@
     private bool _isEditMode;
     private string _originalAuthType = string.Empty;
     private bool _hadStoredAuthConfig;
+    private string? _authError;
+    private string _hydratedApiKeyHeaderName = "X-Api-Key";
+    private string _hydratedApiKeyPlacement = "header";
+    private string _hydratedTokenUrl = string.Empty;
+    private string _hydratedClientId = string.Empty;
+    private string _hydratedScope = string.Empty;
 
     private bool ShowStoredSecretHint =>
         _isEditMode && _hadStoredAuthConfig && _connection.AuthType == _originalAuthType && _connection.AuthType != "None";
@@ -247,13 +258,46 @@
         _hadStoredAuthConfig = !string.Equals(existing.AuthType, "None", StringComparison.OrdinalIgnoreCase);
 
         HydrateAuthFields(existing.AuthConfigJson);
+        CaptureAuthBaseline();
     }
 
     private void SaveConnection()
     {
+        _authError = null;
+
+        if (_isEditMode && _hadStoredAuthConfig && !HasAuthInput() && RequiresCredentials(_connection.AuthType))
+        {
+            if (_connection.AuthType != _originalAuthType)
+            {
+                _authError = "Changing the authentication type requires entering the new credentials.";
+                return;
+            }
+
+            if (HasNonSecretAuthChange())
+            {
+                _authError = "Re-enter the credentials to change these authentication settings.";
+                return;
+            }
+        }
+
         _connection.AuthConfigJson = ResolveAuthConfigJson();
         Dispatcher.Dispatch(new SaveConnectionAction { Connection = _connection });
         GoBack();
+    }
+
+    private static bool RequiresCredentials(string authType) =>
+        !string.Equals(authType, "None", StringComparison.OrdinalIgnoreCase);
+
+    private bool HasNonSecretAuthChange()
+    {
+        return _connection.AuthType switch
+        {
+            "ApiKey" => _apiKeyHeaderName != _hydratedApiKeyHeaderName || _apiKeyPlacement != _hydratedApiKeyPlacement,
+            "OAuth2ClientCredentials" => _oauthTokenUrl != _hydratedTokenUrl || _oauthClientId != _hydratedClientId || _oauthScope != _hydratedScope,
+            "OAuth2RefreshToken" or "OAuth2AuthCode" => _oauthTokenUrl != _hydratedTokenUrl || _oauthClientId != _hydratedClientId,
+            "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
+            _ => false
+        };
     }
 
     private string ResolveAuthConfigJson()
@@ -301,6 +345,15 @@
         };
 
         return JsonSerializer.Serialize(payload);
+    }
+
+    private void CaptureAuthBaseline()
+    {
+        _hydratedApiKeyHeaderName = _apiKeyHeaderName;
+        _hydratedApiKeyPlacement = _apiKeyPlacement;
+        _hydratedTokenUrl = _oauthTokenUrl;
+        _hydratedClientId = _oauthClientId;
+        _hydratedScope = _oauthScope;
     }
 
     private void HydrateAuthFields(string authConfigJson)

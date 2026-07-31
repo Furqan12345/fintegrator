@@ -1,0 +1,33 @@
+@using SimpleIPaaS.Client.Store
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<ToastState> ToastState
+@inject IDispatcher Dispatcher
+
+@if (ToastState.Value.Toasts.Any())
+{
+    <div class="toast-host" role="status" aria-live="polite">
+        @foreach (var toast in ToastState.Value.Toasts)
+        {
+            <div class="toast toast-@toast.Level">
+                <span class="toast-icon">@Icon(toast.Level)</span>
+                <span class="toast-message">@toast.Message</span>
+                <button class="toast-close" title="Dismiss" @onclick="() => Dismiss(toast.Id)">✕</button>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private void Dismiss(Guid id)
+    {
+        Dispatcher.Dispatch(new DismissToastAction { Id = id });
+    }
+
+    private static string Icon(string level) => level switch
+    {
+        "error" => "✗",
+        "warning" => "⚠",
+        "info" => "ℹ",
+        _ => "✓"
+    };
+}

@@ -24,6 +24,8 @@ public class IPaaSContext : DbContext
     public DbSet<StepExecution> StepExecutions { get; set; } = null!;
     public DbSet<DeadLetterEntry> DeadLetterEntries { get; set; } = null!;
     public DbSet<ApiKey> ApiKeys { get; set; } = null!;
+    public DbSet<CrossReferenceList> CrossReferenceLists { get; set; } = null!;
+    public DbSet<CrossReferenceEntry> CrossReferenceEntries { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -38,7 +40,18 @@ public class IPaaSContext : DbContext
         modelBuilder.Entity<FlowExecution>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<StepExecution>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<DeadLetterEntry>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        
+        modelBuilder.Entity<CrossReferenceList>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
+        modelBuilder.Entity<CrossReferenceEntry>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
+
+        modelBuilder.Entity<CrossReferenceList>()
+            .HasIndex(e => new { e.TenantId, e.Name })
+            .IsUnique();
+
+        modelBuilder.Entity<CrossReferenceEntry>()
+            .HasIndex(e => new { e.TenantId, e.ListName, e.KeyValue })
+            .IsUnique();
+
+
         modelBuilder.Entity<IntegrationFlow>()
             .HasMany(f => f.Nodes)
             .WithOne()

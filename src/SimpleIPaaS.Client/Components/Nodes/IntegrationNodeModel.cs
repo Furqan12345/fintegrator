@@ -18,7 +18,11 @@ public class IntegrationNodeModel : NodeModel
             AddPort(new PortModel("true", this, PortAlignment.Right));
             AddPort(new PortModel("false", this, PortAlignment.Bottom));
         }
-        else // HttpAction, Mapping, Debug, PersistedState
+        else if (stepConfig.StepType == "Schedule")
+        {
+            AddPort(new PortModel("right", this, PortAlignment.Right));
+        }
+        else // HttpAction, Mapping, Debug, PersistedState, CrossReferenceStore, CrossReferenceFilter
         {
             AddPort(new PortModel("left", this, PortAlignment.Left));
             AddPort(new PortModel("right", this, PortAlignment.Right));

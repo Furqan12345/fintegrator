@@ -8,12 +8,15 @@ public class StepExecution
     public Guid FlowExecutionId { get; set; }
     public Guid StepId { get; set; }
     public Guid TenantId { get; set; }
+    public string NodeName { get; set; } = string.Empty;
     
     public ExecutionStatus Status { get; set; } = ExecutionStatus.InProgress;
     
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
-    
+    public DateTime? RecoveredAt { get; set; }
+    public Guid? RecoveredByDeadLetterId { get; set; }
+
     public int HttpStatusCode { get; set; }
     public string? ErrorMessage { get; set; }
     

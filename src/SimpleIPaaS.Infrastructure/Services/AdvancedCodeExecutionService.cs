@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +21,8 @@ public class AdvancedScriptGlobals
 
 public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
 {
+    private static readonly ConcurrentDictionary<string, object> CompiledScripts = new();
+
     private readonly TimeSpan _timeout;
 
     public AdvancedCodeExecutionService(IConfiguration configuration)
@@ -42,66 +47,67 @@ public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
                 "Newtonsoft.Json", "Newtonsoft.Json.Linq");
     }
 
-    private string TimeoutError() =>
-        JsonSerializer.Serialize(new { error = $"Script execution timed out after {_timeout.TotalSeconds} seconds" });
+    private static ScriptRunner<TResult> GetRunner<TResult>(string csharpCode)
+    {
+        var cacheKey = ScriptCacheKey.Compute(csharpCode, typeof(AdvancedScriptGlobals), typeof(TResult));
+        return (ScriptRunner<TResult>)CompiledScripts.GetOrAdd(cacheKey, _ =>
+            CSharpScript.Create<TResult>(csharpCode, BuildOptions(), typeof(AdvancedScriptGlobals)).CreateDelegate());
+    }
 
-    public async Task<string> ExecuteMappingAsync(string csharpCode, string flowStateJson, string persistedStateJson)
+    private async Task<TResult> RunAsync<TResult>(string csharpCode, AdvancedScriptGlobals globals)
     {
         using var cts = new CancellationTokenSource(_timeout);
         try
         {
-            var globals = new AdvancedScriptGlobals
+            var runner = GetRunner<TResult>(csharpCode);
+            var scriptTask = Task.Run(() => runner(globals, cts.Token));
+            var completed = await Task.WhenAny(scriptTask, Task.Delay(_timeout, cts.Token));
+
+            if (completed != scriptTask)
             {
-                FlowStateJson = flowStateJson,
-                PersistedStateJson = persistedStateJson
-            };
+                cts.Cancel();
+                throw new ScriptExecutionException(
+                    $"Script execution timed out after {_timeout.TotalSeconds} seconds", timedOut: true);
+            }
 
-            var result = await CSharpScript.EvaluateAsync<string>(
-                csharpCode,
-                BuildOptions(),
-                globals: globals,
-                cancellationToken: cts.Token);
-
-            return result ?? string.Empty;
+            return await scriptTask;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
         {
-            return TimeoutError();
+            throw new ScriptExecutionException(
+                $"Script execution timed out after {_timeout.TotalSeconds} seconds", timedOut: true);
+        }
+        catch (ScriptExecutionException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            return JsonSerializer.Serialize(new { error = ex.Message });
+            throw new ScriptExecutionException(ScriptCacheKey.JsonSafe(ex.Message), timedOut: false, innerException: ex);
         }
+    }
+
+    public async Task<string> ExecuteMappingAsync(string csharpCode, string flowStateJson, string persistedStateJson)
+    {
+        var globals = new AdvancedScriptGlobals
+        {
+            FlowStateJson = flowStateJson,
+            PersistedStateJson = persistedStateJson
+        };
+
+        return await RunAsync<string>(csharpCode, globals) ?? string.Empty;
     }
 
     public async Task<string> ExecutePostFlightAsync(string csharpCode, string flowStateJson, string persistedStateJson, string httpResponseJson)
     {
-        using var cts = new CancellationTokenSource(_timeout);
-        try
+        var globals = new AdvancedScriptGlobals
         {
-            var globals = new AdvancedScriptGlobals
-            {
-                FlowStateJson = flowStateJson,
-                PersistedStateJson = persistedStateJson,
-                HttpResponseJson = httpResponseJson
-            };
+            FlowStateJson = flowStateJson,
+            PersistedStateJson = persistedStateJson,
+            HttpResponseJson = httpResponseJson
+        };
 
-            var result = await CSharpScript.EvaluateAsync<string>(
-                csharpCode,
-                BuildOptions(),
-                globals: globals,
-                cancellationToken: cts.Token);
-
-            return result ?? string.Empty;
-        }
-        catch (OperationCanceledException)
-        {
-            return TimeoutError();
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { error = ex.Message });
-        }
+        return await RunAsync<string>(csharpCode, globals) ?? string.Empty;
     }
 
     public async Task<string> ExecuteUrlAsync(string csharpCode, string flowStateJson, string persistedStateJson)
@@ -111,26 +117,28 @@ public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
 
     public async Task<bool> ExecuteBranchAsync(string csharpCode, string flowStateJson, string persistedStateJson)
     {
-        using var cts = new CancellationTokenSource(_timeout);
-        try
+        var globals = new AdvancedScriptGlobals
         {
-            var globals = new AdvancedScriptGlobals
-            {
-                FlowStateJson = flowStateJson,
-                PersistedStateJson = persistedStateJson
-            };
+            FlowStateJson = flowStateJson,
+            PersistedStateJson = persistedStateJson
+        };
 
-            var result = await CSharpScript.EvaluateAsync<bool>(
-                csharpCode,
-                BuildOptions(),
-                globals: globals,
-                cancellationToken: cts.Token);
+        return await RunAsync<bool>(csharpCode, globals);
+    }
+}
 
-            return result;
-        }
-        catch
-        {
-            return false;
-        }
+internal static class ScriptCacheKey
+{
+    public static string Compute(string csharpCode, Type globalsType, Type resultType)
+    {
+        var material = $"{globalsType.FullName}|{resultType.FullName}|{csharpCode}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
+        return Convert.ToHexString(hash);
+    }
+
+    public static string JsonSafe(string message)
+    {
+        var encoded = JsonSerializer.Serialize(message ?? string.Empty);
+        return encoded.Substring(1, encoded.Length - 2);
     }
 }

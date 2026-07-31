@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+**/node_modules/
+.git/
+.github/
+*.user
+*.log
+**/*.db
+**/*.db-shm
+**/*.db-wal
+design/
+wbs/
+architecture/
+presentation/

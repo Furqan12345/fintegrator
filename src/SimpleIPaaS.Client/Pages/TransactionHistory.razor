@@ -23,7 +23,7 @@
     else if (!ExecutionState.Value.Executions.Any())
     {
         <div class="empty-state">
-            <span class="empty-icon">TX</span>
+            <span class="empty-icon"><AppIcon Name="transactions" Class="icon icon-lg" /></span>
             <h3>No transactions yet</h3>
             <p>Run a flow to capture transaction history.</p>
         </div>
@@ -48,7 +48,13 @@
                 {
                     <tr>
                         <td>@ShortId(transaction.Id)</td>
-                        <td>@ShortId(transaction.FlowId)</td>
+                        <td>
+                            @ResolveFlowName(transaction)
+                            @if (!string.IsNullOrWhiteSpace(transaction.IntegrationName))
+                            {
+                                <div class="text-muted">@transaction.IntegrationName</div>
+                            }
+                        </td>
                         <td><span class="status-badge @(transaction.Status.ToLowerInvariant())">@transaction.Status</span></td>
                         <td>@transaction.StartedAt.ToLocalTime().ToString("MMM d, yyyy")</td>
                         <td>@transaction.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</td>
@@ -77,6 +83,9 @@
     }
 
     private static string ShortId(Guid id) => $"{id.ToString()[..8]}...";
+
+    private static string ResolveFlowName(FlowExecutionDto transaction) =>
+        string.IsNullOrWhiteSpace(transaction.FlowName) ? ShortId(transaction.FlowId) : transaction.FlowName;
 
     private static int CardCount(FlowExecutionDto transaction)
     {

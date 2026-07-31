@@ -8,9 +8,13 @@ public class FlowExecutionDto
     public Guid Id { get; set; }
     public Guid FlowId { get; set; }
     public Guid TenantId { get; set; }
+    public string FlowName { get; set; } = string.Empty;
+    public Guid? IntegrationId { get; set; }
+    public string IntegrationName { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public DateTime StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
+    public DateTime? RecoveredAt { get; set; }
     public string? ErrorMessage { get; set; }
     public string TriggerSource { get; set; } = string.Empty;
     public int TotalRecords { get; set; }
@@ -23,9 +27,12 @@ public class StepExecutionDto
     public Guid Id { get; set; }
     public Guid FlowExecutionId { get; set; }
     public Guid StepId { get; set; }
+    public string NodeName { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public DateTime StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
+    public DateTime? RecoveredAt { get; set; }
+    public Guid? RecoveredByDeadLetterId { get; set; }
     public int HttpStatusCode { get; set; }
     public string? ErrorMessage { get; set; }
     public string RequestPayload { get; set; } = string.Empty;

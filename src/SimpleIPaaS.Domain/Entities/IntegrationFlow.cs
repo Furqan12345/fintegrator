@@ -17,6 +17,8 @@ public class IntegrationFlow
     public string CronExpression { get; set; } = string.Empty;
     public string WebhookSecret { get; set; } = string.Empty;
     public DateTime? NextRunAt { get; set; }
+    public DateTime? RunAt { get; set; }
+    public bool AllowPostReplay { get; set; }
     
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

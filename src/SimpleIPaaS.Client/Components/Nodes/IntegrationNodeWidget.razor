@@ -24,6 +24,18 @@
     {
         <PersistedStateCard Step="Node.StepConfig" />
     }
+    else if (Node.StepConfig.StepType == "Schedule")
+    {
+        <ScheduleCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "CrossReferenceStore")
+    {
+        <CrossReferenceStoreCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "CrossReferenceFilter")
+    {
+        <CrossReferenceFilterCard Step="Node.StepConfig" />
+    }
 
     @foreach (var port in Node.Ports)
     {

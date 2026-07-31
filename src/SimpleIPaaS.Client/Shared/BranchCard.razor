@@ -1,28 +1,28 @@
 @using SimpleIPaaS.Shared.Models
 
-<div class="card-header" style="background: var(--success);">
-    <h3 class="card-title" style="color: white;">🔀 Branch</h3>
+<div class="card-header node-header node-header-success">
+    <h3 class="card-title">Branch</h3>
 </div>
 <div class="card-body">
-    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0 0 8px 0;">
+    <p class="node-hint">
         Write a C# script that returns a boolean to route output paths.
     </p>
-    <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Node Name</label>
-        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. CheckStatus" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. CheckStatus" />
     </div>
-    <button class="btn" style="width: 100%;" @onclick="OpenEditor">
-        @(string.IsNullOrWhiteSpace(Step.MappingCode) ? "✏️ Open Code Editor" : "✏️ Edit Branch Script")
+    <button class="btn btn-block" @onclick="OpenEditor">
+        @(string.IsNullOrWhiteSpace(Step.MappingCode) ? "Open Code Editor" : "Edit Branch Script")
     </button>
     @if (!string.IsNullOrWhiteSpace(Step.MappingCode))
     {
-        <div style="margin-top: 8px; padding: 6px 10px; background: var(--bg-app); border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.7rem; color: var(--text-secondary); font-family: 'Cascadia Code', Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+        <div class="node-code-preview">
             @Step.MappingCode.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith("//"))
         </div>
     }
-    <div class="branch-ports-info" style="margin-top: 10px;">
-        <small class="text-muted" style="display: block; line-height: 1.3;">
-            👉 Connect Right port (True) or Bottom port (False) to route the execution.
+    <div class="branch-ports-info">
+        <small class="text-muted">
+            Connect Right port (True) or Bottom port (False) to route the execution.
         </small>
     </div>
 </div>

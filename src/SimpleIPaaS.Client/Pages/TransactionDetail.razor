@@ -25,6 +25,7 @@
     else if (!string.IsNullOrWhiteSpace(_error))
     {
         <div class="empty-state">
+            <span class="empty-icon"><AppIcon Name="info" Class="icon icon-lg" /></span>
             <h3>Unable to load transaction</h3>
             <p>@_error</p>
         </div>
@@ -32,6 +33,7 @@
     else if (_steps.Count == 0)
     {
         <div class="empty-state">
+            <span class="empty-icon"><AppIcon Name="transactions" Class="icon icon-lg" /></span>
             <h3>No cards recorded</h3>
             <p>This run did not capture card-level transaction data.</p>
         </div>

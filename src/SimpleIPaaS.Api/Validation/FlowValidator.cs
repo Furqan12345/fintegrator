@@ -20,6 +20,22 @@ public static class FlowValidator
             errors.Add($"Node name '{name}' is used more than once. Node names must be unique.");
         }
 
+        var duplicateIds = flow.Nodes
+            .GroupBy(n => n.Id)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        foreach (var id in duplicateIds)
+        {
+            errors.Add($"Node id '{id}' is used more than once. Node ids must be unique.");
+        }
+
+        if (duplicateIds.Count > 0)
+        {
+            return errors;
+        }
+
         var nodeIds = flow.Nodes.Select(n => n.Id).ToHashSet();
         foreach (var edge in flow.Edges)
         {

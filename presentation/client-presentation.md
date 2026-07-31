@@ -22,12 +22,18 @@ Design, run, and monitor API integrations across your business systems from one 
 
 ### Slide 3 · The Solution
 One platform, four capabilities:
-1. **Design** — drag-and-drop flow designer (HTTP actions, mappers, branches, state)
+1. **Design** — drag-and-drop flow designer (HTTP actions, mappers, branches, state, schedules, cross-reference dedup)
 2. **Connect** — reusable Connections with 8 authentication schemes, secrets encrypted at rest
-3. **Run** — manual, scheduled (cron), or webhook-triggered; queued and concurrency-controlled
-4. **Observe** — per-step execution timeline, payload capture, dead-letter replay
+3. **Run** — manual, scheduled (recurring cron or one-time), or webhook-triggered; queued and concurrency-controlled
+4. **Observe** — per-step execution timeline, payload capture, dead-letter replay with full recovery history
 
 > *Speaker notes:* Emphasize that flows are data, not code deployments — a change to a mapping goes live on save, with the previous runs still fully auditable.
+
+### Slide 3a · Two Capabilities Worth Calling Out
+- **Cross-reference deduplication** — name a list (e.g. "processed-orders"), store a key from each record, and let a Filter node drop anything already seen. Multiple flows can share a list. This is what turns "fetch the last 100 orders" into "process only the 12 new ones", safely and repeatably.
+- **Recovery you can audit** — when a failed step is resynced from the dead-letter queue, the run reads as *Recovered*, not Failed, while retaining the original error and a full log of every retry attempt.
+
+> *Speaker notes:* These are the two features that most directly reduce operational toil. Dedup removes the "did we already process this?" class of bug entirely; recovery history means an auditor can always reconstruct what went wrong and when it was fixed.
 
 ### Slide 4 · Architecture at a Glance
 Blazor WebAssembly client → ASP.NET Core API (API-key auth, tenant-isolated) → queued execution engine (DAG runner, Polly resilience, Roslyn transformations) → EF Core persistence with per-tenant filters and AES-GCM-encrypted credentials.
@@ -58,10 +64,12 @@ Delivered platform + documentation set (architecture, design, project plan). Pro
 | 2 | Open **Connections**, create one with OAuth2 Client Credentials | "Credentials are entered once, encrypted at rest, and never shown again — watch the field placeholder when I re-open it." |
 | 3 | Open a flow in the **Designer**; add an HTTP Action + Mapper | "Node names are the contract — the mapper reads `getOrders.body` by name." |
 | 4 | Open a Branch node's predicate script | "Routing logic is one C# expression; true/false ports are visible on the canvas." |
-| 5 | Open **Flow Settings** → set a cron schedule; show the webhook URL + secret | "Three trigger types — manual, schedule, webhook — configured here, no redeploys." |
+| 5 | Drop a **Schedule** node on the canvas; toggle recurring cron vs one-time, show the next fire times | "Scheduling is visible on the canvas, not buried in a settings dialog. Next-run times come from the server, so what you see is exactly what will happen." |
+| 5a | Open **Flow Settings** → show the webhook URL + secret | "Manual, schedule, and webhook triggers — all configured without a redeploy." |
+| 5b | Add **XRef Store** + **XRef Filter** nodes, run twice | "First run stores 5 keys; second run passes zero records because they're all known. That's idempotent integration without writing dedup logic." |
 | 6 | Click **Run**, jump to **Activity Log** | "The run is queued instantly; the API never blocks on the target systems." |
 | 7 | Open **Execution Detail** on a finished run | "Every step: status, latency, request and response payloads. This is the audit trail." |
-| 8 | Show a failed run → follow link to **Dead Letters** → click **Retry** | "Failures become managed work items. Retry replays through the full pipeline — auth, scripts, everything." |
+| 8 | Show a failed run → follow link to **Dead Letters** → click **Retry** → return to Activity Log | "Failures become managed work items. Retry replays through the full pipeline — auth, scripts, everything — and the run now reads **Recovered**, with the original error and every attempt still on file." |
 | 9 | Call the webhook URL from a terminal (`curl -X POST …/api/webhooks/{flow}/{secret}`) | "External systems trigger flows with a scoped secret — no platform credentials shared." |
 
 **Demo environment:** run API and client locally, seed one integration with two flows (one healthy, one pointing at a 502-returning endpoint to produce the dead-letter scenario) before the session.
@@ -78,8 +86,10 @@ Delivered platform + documentation set (architecture, design, project plan). Pro
 | Outbound authentication | Each auth scheme exercised against a token-echo test endpoint (grant request shape, header decoration, token cache expiry, refresh rotation) | Verified |
 | Security controls | Negative tests: missing/invalid API key → 401; cross-tenant id probing → 404; secrets absent from every API response; script timeout enforced | Verified |
 | Static review | Multi-pass agent-assisted review across engine, security, and frontend, findings driven to closure via the verification loop (Part 6 prompts) | Complete |
+| Automated tests | 74 tests across scripting semantics, flow validation, DAG execution, encryption, authentication handlers, and tenant isolation | All passing |
+| Continuous integration | Restore → build → test → container image build on every push and pull request | Configured |
 
-*Automated unit/integration test suites are part of the immediate roadmap (Part 5) — current coverage is build verification plus the structured manual passes above.*
+The automated suite is deliberately concentrated on the behaviours whose failure would be silent in production — script-failure semantics, tenant query isolation, credential encryption round-trips, and the authentication handler matrix. Writing it surfaced three genuine defects that manual review had missed (an unenforced script timeout, a query-parameter authentication path that threw on every call, and a duplicate-node-id crash returning 500 instead of 400); all three were fixed and are now covered by regression tests.
 
 ---
 
@@ -90,7 +100,9 @@ Delivered platform + documentation set (architecture, design, project plan). Pro
 3. **OAuth2 authorization-code flow is operator-assisted.** Initial code exchange happens out-of-band; the platform then manages refresh automatically. Interactive PKCE flow is on the roadmap.
 4. **HTTP-family connectors only.** Queues, databases, and file transfer (SFTP) are not yet native node types.
 5. **No response pagination in HTTP actions.** Large collection endpoints must be windowed by the flow author (the domain model already reserves pagination styles for the roadmap item).
-6. **Retry replays require idempotent targets.** Dead-letter replay of non-idempotent POST endpoints can duplicate side effects; per-request idempotency keys are on the roadmap.
+6. **POST replay is opt-in per flow.** Dead-letter replay of non-idempotent POST endpoints is refused unless the flow explicitly enables it, because a replay could duplicate the side effect; per-request idempotency keys are on the roadmap.
+7. **Cross-reference keys are declarative field paths**, not expressions. Composite keys from multiple dotted paths are supported; derived or computed keys (e.g. a hash of normalised values) would need the roadmap's expression support.
+8. **A mid-flow "wait until" node does not exist.** Scheduling starts a flow; it cannot pause one part-way. That would require durable continuations in the execution engine and is deliberately out of scope.
 
 ---
 

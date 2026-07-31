@@ -19,7 +19,11 @@ public class ExecutionEffects
     [EffectMethod]
     public async Task HandleLoadExecutionsAction(LoadExecutionsAction action, IDispatcher dispatcher)
     {
-        var executions = await _http.GetFromJsonAsync<FlowExecutionDto[]>(BuildExecutionsUrl(action.FlowId, action.Status, action.Page, action.PageSize));
+        var executions = await SafeFetch.GetAsync<FlowExecutionDto[]>(
+            _http,
+            BuildExecutionsUrl(action.FlowId, action.Status, action.Page, action.PageSize),
+            dispatcher,
+            "executions");
         if (executions != null)
         {
             dispatcher.Dispatch(new LoadExecutionsResultAction { Executions = executions });
@@ -29,7 +33,8 @@ public class ExecutionEffects
     [EffectMethod]
     public async Task HandleLoadExecutionDetailsAction(LoadExecutionDetailsAction action, IDispatcher dispatcher)
     {
-        var steps = await _http.GetFromJsonAsync<StepExecutionDto[]>($"api/executions/{action.ExecutionId}/steps");
+        var steps = await SafeFetch.GetAsync<StepExecutionDto[]>(
+            _http, $"api/executions/{action.ExecutionId}/steps", dispatcher, "execution steps");
         if (steps != null)
         {
             dispatcher.Dispatch(new LoadExecutionDetailsResultAction { StepExecutions = steps });

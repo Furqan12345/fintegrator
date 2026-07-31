@@ -1,20 +1,44 @@
+@page "/execution/{ExecutionId:guid}"
 @page "/execution-detail/{ExecutionId:guid}"
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Client.Shared
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
 @inject IState<ExecutionState> ExecutionState
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
+@inject HttpClient Http
 
 <PageTitle>Execution Details — SimpleIPaaS</PageTitle>
 
 <div class="page-header">
     <div class="header-left">
-        <h2>Execution Details</h2>
-        <p class="subtitle">Execution ID: @ExecutionId</p>
+        <h2>Execution @ShortId(ExecutionId)</h2>
+        <p class="subtitle">
+            @if (_execution != null)
+            {
+                <span>@FlowLabel</span>
+                <span> · Started @_execution.StartedAt.ToLocalTime().ToString("MMM d, yyyy h:mm:ss tt")</span>
+                <span> · @ExecutionDuration</span>
+            }
+            else
+            {
+                <span>Execution ID: @ExecutionId</span>
+            }
+        </p>
+        @if (_execution != null && IsRecovered(_execution.Status))
+        {
+            <p class="subtitle">Recovered — failed initially, resynced @RecoveredLabel(_execution.RecoveredAt)</p>
+        }
     </div>
     <div class="header-right">
-        <button class="btn btn-outline" @onclick="GoBack">Back to Log</button>
+        @if (_execution != null)
+        {
+            <span class="status-badge @_execution.Status.ToLowerInvariant()">@StatusIcon(_execution.Status) @_execution.Status</span>
+        }
+        <button class="btn btn-outline" @onclick="GoBack">Back to Activity</button>
     </div>
 </div>
 
@@ -23,35 +47,115 @@
     {
         <div class="loading-state">Loading step details...</div>
     }
-    else if (!ExecutionState.Value.CurrentStepExecutions.Any())
+    else if (!ExecutionState.Value.CurrentStepExecutions.Any() && !UnreachedNodes.Any())
     {
         <div class="empty-state">
-            <span class="empty-icon">ℹ️</span>
+            <span class="empty-icon"><AppIcon Name="info" Class="icon icon-lg" /></span>
             <h3>No steps recorded</h3>
+            <p>This execution did not produce any step results.</p>
         </div>
     }
     else
     {
         <div class="steps-timeline">
-            @foreach (var step in ExecutionState.Value.CurrentStepExecutions.OrderBy(s => s.StartedAt))
+            @foreach (var step in OrderedSteps)
             {
-                <div class="step-card">
+                var isSkipped = IsSkipped(step.Status);
+                <div class="step-card @(isSkipped ? "step-hollow" : null)">
                     <div class="step-header">
-                        <h4>Step ID: @step.StepId.ToString().Substring(0, 8)...</h4>
-                        <span class="status-badge @(step.Status.ToLower())">@step.Status</span>
+                        <h4><span class="step-status-icon">@StatusIcon(step.Status)</span> @StepDisplayName(step)</h4>
+                        <div class="step-header-meta">
+                            <span class="step-metric">@HttpLabel(step)</span>
+                            <span class="step-metric">@StepDuration(step)</span>
+                            <span class="status-badge @step.Status.ToLowerInvariant()">@step.Status</span>
+                        </div>
                     </div>
                     <div class="step-body">
                         <div class="step-meta">
-                            <span>Started: @step.StartedAt.ToLocalTime()</span>
-                            <span>Completed: @(step.CompletedAt?.ToLocalTime().ToString() ?? "-")</span>
-                            <span>Status Code: @step.HttpStatusCode</span>
+                            <span>Started: @step.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</span>
+                            <span>Completed: @(step.CompletedAt?.ToLocalTime().ToString("h:mm:ss tt") ?? "-")</span>
                         </div>
-                        @if (!string.IsNullOrEmpty(step.ErrorMessage))
+
+                        @if (IsRecovered(step.Status))
                         {
-                            <div class="step-error">
-                                <strong>Error:</strong> @step.ErrorMessage
+                            <div class="step-meta">
+                                <span>Recovered — failed initially, resynced @RecoveredLabel(step.RecoveredAt)</span>
                             </div>
                         }
+
+                        @if (!string.IsNullOrWhiteSpace(step.ErrorMessage))
+                        {
+                            <details class="step-accordion" open="@(!IsRecovered(step.Status))">
+                                <summary>@(IsRecovered(step.Status) ? "original error" : "error")</summary>
+                                <div class="step-error">
+                                    @step.ErrorMessage
+                                    <div class="step-accordion-actions">
+                                        <a class="btn btn-sm btn-outline" href="@DeadLetterLink(step)">View dead letter →</a>
+                                    </div>
+                                </div>
+                            </details>
+                        }
+                        else if (IsFailed(step.Status))
+                        {
+                            <div class="step-accordion-actions">
+                                <a class="btn btn-sm btn-outline" href="@DeadLetterLink(step)">View dead letter →</a>
+                            </div>
+                        }
+
+                        @{
+                            var attempts = AttemptHistory(step);
+                        }
+                        @if (attempts.Count > 0)
+                        {
+                            <details class="step-accordion">
+                                <summary>attempt history (@attempts.Count)</summary>
+                                <div class="step-error">
+                                    @foreach (var attempt in attempts)
+                                    {
+                                        <div class="step-meta">
+                                            <span>Attempt @attempt.Attempt</span>
+                                            <span>@attempt.At.ToLocalTime().ToString("MMM d, h:mm:ss tt")</span>
+                                            <span>@(attempt.StatusCode.HasValue ? $"HTTP {attempt.StatusCode}" : "no response")</span>
+                                        </div>
+                                        <div>@(string.IsNullOrWhiteSpace(attempt.Error) ? "Succeeded" : attempt.Error)</div>
+                                    }
+                                </div>
+                            </details>
+                        }
+
+                        @if (HasPayload(step.RequestPayload))
+                        {
+                            <details class="step-accordion">
+                                <summary>request</summary>
+                                <pre class="transaction-json-viewer"><code>@FormatJson(step.RequestPayload)</code></pre>
+                            </details>
+                        }
+
+                        @if (HasPayload(step.ResponsePayload))
+                        {
+                            <details class="step-accordion">
+                                <summary>response</summary>
+                                <pre class="transaction-json-viewer"><code>@FormatJson(step.ResponsePayload)</code></pre>
+                            </details>
+                        }
+
+                        @if (!HasPayload(step.RequestPayload) && !HasPayload(step.ResponsePayload) && string.IsNullOrWhiteSpace(step.ErrorMessage))
+                        {
+                            <span class="text-muted">No payload captured for this step.</span>
+                        }
+                    </div>
+                </div>
+            }
+
+            @foreach (var node in UnreachedNodes)
+            {
+                <div class="step-card step-hollow">
+                    <div class="step-header">
+                        <h4><span class="step-status-icon">○</span> @NodeLabel(node)</h4>
+                        <div class="step-header-meta">
+                            <span class="step-metric">—</span>
+                            <span class="status-badge pending">Not reached</span>
+                        </div>
                     </div>
                 </div>
             }
@@ -63,14 +167,257 @@
     [Parameter]
     public Guid ExecutionId { get; set; }
 
-    protected override void OnInitialized()
+    private static readonly JsonSerializerOptions AttemptOptions = new() { PropertyNameCaseInsensitive = true };
+
+    private FlowExecutionDto? _execution;
+    private IntegrationFlowDto? _flow;
+    private readonly Dictionary<Guid, List<AttemptRecord>> _attemptsByStep = new();
+
+    private IEnumerable<StepExecutionDto> OrderedSteps =>
+        ExecutionState.Value.CurrentStepExecutions.OrderBy(step => step.StartedAt).ThenBy(step => step.CompletedAt);
+
+    private IEnumerable<IntegrationStepDto> UnreachedNodes
     {
-        base.OnInitialized();
+        get
+        {
+            if (_flow == null)
+            {
+                return Array.Empty<IntegrationStepDto>();
+            }
+
+            var executed = ExecutionState.Value.CurrentStepExecutions.Select(step => step.StepId).ToHashSet();
+            return _flow.Nodes.Where(node => !executed.Contains(node.Id));
+        }
+    }
+
+    private string FlowLabel
+    {
+        get
+        {
+            if (_execution == null)
+            {
+                return "-";
+            }
+
+            var flowName = !string.IsNullOrWhiteSpace(_execution.FlowName) ? _execution.FlowName : _flow?.Name;
+            if (string.IsNullOrWhiteSpace(flowName))
+            {
+                return ShortId(_execution.FlowId);
+            }
+
+            return string.IsNullOrWhiteSpace(_execution.IntegrationName)
+                ? flowName
+                : $"{_execution.IntegrationName} · {flowName}";
+        }
+    }
+
+    private string ExecutionDuration
+    {
+        get
+        {
+            if (_execution?.CompletedAt == null)
+            {
+                return "in progress";
+            }
+
+            return FormatDuration(_execution.CompletedAt.Value - _execution.StartedAt);
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await base.OnParametersSetAsync();
         Dispatcher.Dispatch(new LoadExecutionDetailsAction { ExecutionId = ExecutionId });
+        await LoadContextAsync();
+    }
+
+    private async Task LoadContextAsync()
+    {
+        _execution = null;
+        _flow = null;
+        _attemptsByStep.Clear();
+
+        try
+        {
+            _execution = await Http.GetFromJsonAsync<FlowExecutionDto>($"api/executions/{ExecutionId}");
+        }
+        catch (HttpRequestException)
+        {
+            return;
+        }
+
+        if (_execution == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _flow = await Http.GetFromJsonAsync<IntegrationFlowDto>($"api/integrationflow/{_execution.FlowId}");
+        }
+        catch (HttpRequestException)
+        {
+            _flow = null;
+        }
+
+        await LoadAttemptHistoryAsync();
+    }
+
+    private async Task LoadAttemptHistoryAsync()
+    {
+        List<DeadLetterDto> entries;
+        try
+        {
+            entries = await Http.GetFromJsonAsync<List<DeadLetterDto>>("api/deadletters") ?? new List<DeadLetterDto>();
+        }
+        catch (HttpRequestException)
+        {
+            return;
+        }
+
+        foreach (var entry in entries.Where(entry => entry.FlowExecutionId == ExecutionId))
+        {
+            var attempts = ParseAttempts(entry.AttemptHistoryJson);
+            if (attempts.Count == 0)
+            {
+                continue;
+            }
+
+            if (_attemptsByStep.TryGetValue(entry.StepId, out var existing))
+            {
+                existing.AddRange(attempts);
+            }
+            else
+            {
+                _attemptsByStep[entry.StepId] = attempts;
+            }
+        }
+    }
+
+    private static List<AttemptRecord> ParseAttempts(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new List<AttemptRecord>();
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<AttemptRecord>>(json, AttemptOptions) ?? new List<AttemptRecord>();
+        }
+        catch (JsonException)
+        {
+            return new List<AttemptRecord>();
+        }
+    }
+
+    private List<AttemptRecord> AttemptHistory(StepExecutionDto step) =>
+        _attemptsByStep.TryGetValue(step.StepId, out var attempts) ? attempts : new List<AttemptRecord>();
+
+    private static string RecoveredLabel(DateTime? recoveredAt) =>
+        recoveredAt.HasValue ? recoveredAt.Value.ToLocalTime().ToString("MMM d, yyyy h:mm:ss tt") : "earlier";
+
+    private sealed class AttemptRecord
+    {
+        public int Attempt { get; set; }
+        public DateTime At { get; set; }
+        public int? StatusCode { get; set; }
+        public string Error { get; set; } = string.Empty;
+    }
+
+    private string StepDisplayName(StepExecutionDto step)
+    {
+        if (!string.IsNullOrWhiteSpace(step.NodeName))
+        {
+            return step.NodeName;
+        }
+
+        var node = _flow?.Nodes.FirstOrDefault(candidate => candidate.Id == step.StepId);
+        if (node != null)
+        {
+            return NodeLabel(node);
+        }
+
+        return $"Step {ShortId(step.StepId)}";
+    }
+
+    private static string NodeLabel(IntegrationStepDto node) =>
+        string.IsNullOrWhiteSpace(node.NodeName) ? node.StepType : node.NodeName;
+
+    private string DeadLetterLink(StepExecutionDto step) =>
+        $"/deadletters?executionId={ExecutionId}&stepId={step.StepId}";
+
+    private static bool HasPayload(string? payload) =>
+        !string.IsNullOrWhiteSpace(payload) && payload.Trim() != "{}";
+
+    private static bool IsSkipped(string status) =>
+        status.Equals("Skipped", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("NotReached", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsFailed(string status) =>
+        status.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("Error", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRecovered(string status) =>
+        status.Equals("Recovered", StringComparison.OrdinalIgnoreCase);
+
+    private static string StatusIcon(string status) => status.ToLowerInvariant() switch
+    {
+        "success" => "✓",
+        "completed" => "✓",
+        "recovered" => "↻",
+        "failed" => "✗",
+        "error" => "✗",
+        "cancelled" => "⊘",
+        "skipped" => "○",
+        "notreached" => "○",
+        "inprogress" => "●",
+        "running" => "●",
+        "queued" => "◔",
+        _ => "•"
+    };
+
+    private static string HttpLabel(StepExecutionDto step) =>
+        step.HttpStatusCode > 0 ? $"HTTP {step.HttpStatusCode}" : "—";
+
+    private static string StepDuration(StepExecutionDto step) =>
+        step.CompletedAt == null ? "—" : FormatDuration(step.CompletedAt.Value - step.StartedAt);
+
+    private static string FormatDuration(TimeSpan span)
+    {
+        var milliseconds = span.TotalMilliseconds;
+        if (milliseconds < 0)
+        {
+            return "—";
+        }
+
+        return milliseconds >= 1000
+            ? $"{span.TotalSeconds:0.##} s"
+            : $"{milliseconds:0} ms";
+    }
+
+    private static string ShortId(Guid id) => id == Guid.Empty ? "-" : $"{id.ToString()[..8]}…";
+
+    private static string FormatJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "{}";
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
     }
 
     private void GoBack()
     {
-        NavigationManager.NavigateTo("/activity-log");
+        NavigationManager.NavigateTo("/activity");
     }
 }

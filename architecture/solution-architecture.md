@@ -120,6 +120,8 @@ erDiagram
     FlowExecution ||--o{ StepExecution : steps
     StepExecution ||--o{ DeadLetterEntry : failures
     Connection ||--o{ IntegrationStep : "used by"
+    Tenant ||--o{ CrossReferenceList : owns
+    CrossReferenceList ||--o{ CrossReferenceEntry : contains
 ```
 
 ### 5.1 Core tables
@@ -127,13 +129,15 @@ erDiagram
 | Table | Key columns | Purpose |
 |---|---|---|
 | `Integrations` | Id, TenantId, Name, Description | Logical grouping of flows |
-| `IntegrationFlows` | Id, TenantId, IntegrationId, Name, Status, **TriggerType**, **CronExpression**, **WebhookSecret**, PersistedStateJson | Flow definition + trigger configuration |
-| `IntegrationSteps` | Id, FlowId, NodeType, NodeName, EndpointUrl, HttpMethod, AuthType, AuthConfigJson, MappingCode, UrlCode, PreFlightCode, PostFlightCode, ConnectionId, PositionX/Y | DAG nodes |
+| `IntegrationFlows` | Id, TenantId, IntegrationId, Name, Status, **TriggerType**, **CronExpression**, **RunAt**, **NextRunAt**, **WebhookSecret**, AllowPostReplay, PersistedStateJson | Flow definition + trigger configuration (`RunAt` drives one-time schedules) |
+| `IntegrationSteps` | Id, FlowId, StepType, NodeName, EndpointUrl, HttpMethod, AuthType, AuthConfigJson *(encrypted)*, MappingCode, UrlCode, PreFlightCode, PostFlightCode, ConnectionId, **StepConfig**, PositionX/Y | DAG nodes. `StepConfig` is a per-node JSON blob (API packet, schedule, cross-reference settings) — new node types extend it rather than adding columns |
 | `IntegrationEdges` | Id, FlowId, SourceNodeId, TargetNodeId, SourcePortId, TargetPortId | DAG edges (Branch uses `true`/`false` source ports) |
 | `Connections` | Id, TenantId, Name, BaseUrl, AuthType, AuthConfigJson *(AES-GCM encrypted)*, Status | Reusable authenticated endpoints |
-| `FlowExecutions` | Id, TenantId, FlowId, Status, StartedAt, CompletedAt, TotalRecords, SuccessCount, FailedCount, TriggerSource | Run header; `TotalRecords` maintained by the executor |
-| `StepExecutions` | Id, ExecutionId, StepId, NodeName, Status, HttpStatusCode, RequestPayload, ResponsePayload, ErrorMessage, StartedAt, CompletedAt | Per-node audit trail |
-| `DeadLetterEntries` | Id, TenantId, StepExecutionId, FlowId, Payload, ErrorMessage, Status (Pending/Retrying/Resolved/Discarded), RetryCount, LastAttemptAt | Failure capture + managed replay |
+| `FlowExecutions` | Id, TenantId, FlowId, **FlowName**, **IntegrationId**, **IntegrationName**, Status, StartedAt, CompletedAt, **RecoveredAt**, TotalRecords, SuccessRecords, FailedRecords, TriggerSource | Run header. Names are denormalized at creation so history survives renames and lists need no joins |
+| `StepExecutions` | Id, ExecutionId, StepId, NodeName, Status, HttpStatusCode, RequestPayload, ResponsePayload, ErrorMessage, **RecoveredAt**, **RecoveredByDeadLetterId**, StartedAt, CompletedAt | Per-node audit trail. `ErrorMessage` is never cleared — it remains the historical record even after recovery |
+| `DeadLetterEntries` | Id, TenantId, FlowExecutionId, StepId, **FlowName**, **IntegrationName**, **NodeName**, Payload, FlowStateJson, ErrorMessage, **AttemptHistoryJson**, Status (Pending/Retrying/Resolved/Discarded), RetryCount, LastRetriedAt, **ResolvedAt** | Failure capture + managed replay. `AttemptHistoryJson` is an append-only log of every attempt |
+| `CrossReferenceLists` | Id, TenantId, Name, Description, CreatedAt | Named deduplication lists, shareable across flows |
+| `CrossReferenceEntries` | Id, TenantId, ListName, KeyValue, ValueJson, FlowId, CreatedAt — **unique (TenantId, ListName, KeyValue)** | Stored keys. The unique index makes the membership test indexed and re-runs idempotent |
 | `ApiKeys` | Id, TenantId, Name, KeyHash (SHA-256), CreatedAt, RevokedAt | Platform authentication; plaintext key shown once at creation |
 
 ### 5.2 Schema management
@@ -164,7 +168,11 @@ Base path `/api`. All endpoints except `POST /api/webhooks/{flowId}/{secret}` an
 | `GET /api/deadletters?status=` | DLQ listing |
 | `POST /api/deadletters/{id}/retry` | Managed replay of a dead letter |
 | `POST /api/deadletters/{id}/discard` | Mark discarded |
+| `POST /api/integrationflow/{id}/webhook-secret` | Server-side regeneration of the flow's webhook secret |
+| `POST /api/integrationflow/cron-preview` | Returns the next N occurrences of a cron expression (Cronos, 5- or 6-field) plus a human description; `400` ProblemDetails on an invalid expression |
 | `POST /api/webhooks/{flowId}/{secret}` | Inbound webhook trigger; secret must match flow's `WebhookSecret` (constant-time compare); body becomes trigger payload; returns `202` + executionId |
+| `GET/POST/DELETE /api/crossreferences` | Cross-reference list management |
+| `GET /api/crossreferences/{list}/entries?search=&page=` | Paged entry inspection; delete an entry or clear the list |
 | `GET /api/connections` (secrets always redacted) / `GET /{id}` (secrets redacted) / `POST` / `PUT /{id}` / `DELETE /{id}` / `POST /{id}/test` | Connection CRUD + connectivity test |
 | `GET /health` | Liveness + DB readiness |
 
@@ -195,7 +203,7 @@ Base path `/api`. All endpoints except `POST /api/webhooks/{flowId}/{secret}` an
 
 - Topological sort with cycle detection; unreachable branch arms are pruned via active-node gating.
 - Cumulative named-node state: each node's output is appended to the shared `FlowStateContext` JSON under its `NodeName`; downstream scripts address prior outputs by name.
-- Node types: `HttpAction`, `Mapping`, `Branch` (boolean script → `true`/`false` port), `PersistedState`, `Debug`.
+- Node types: `HttpAction`, `Mapping`, `Branch` (boolean script → `true`/`false` port), `PersistedState`, `Debug`, `Schedule`, `CrossReferenceStore`, `CrossReferenceFilter`. Every node type owns its outgoing-edge activation, so an unhandled type would silently strand its downstream branch — new types must always be added to the executor as well as the palette.
 - Webhook trigger payloads are injected into `FlowStateContext` under the reserved key `trigger` before the first node runs.
 - The executor sets `TotalRecords` (= executed step count) alongside `SuccessCount`/`FailedCount`.
 
@@ -203,16 +211,27 @@ Base path `/api`. All endpoints except `POST /api/webhooks/{flowId}/{secret}` an
 
 User scripts (mapping, dynamic URL, pre/post-flight, branch predicates) run through `AdvancedCodeExecutionService` with these mandatory guards:
 
-- **Wall-clock timeout** per script (`Scripting:TimeoutSeconds`, default 10) enforced via linked `CancellationToken`; timeout fails the step with an explicit message.
-- **Curated reference set** — only the platform-supplied assemblies/imports are added (System core, LINQ, `System.Text.Json`, Newtonsoft.Json); scripts are compiled per-node and cached by content hash.
-- Script exceptions are captured and JSON-escaped into structured step errors; raw exception text is never emitted as unescaped JSON.
-- **Deployment boundary (documented constraint):** Roslyn scripting is in-process; the platform's trust model is *authenticated tenant users are trusted script authors*. Deployments serving untrusted authors must enable the roadmap out-of-process sandbox (§12).
+- **Wall-clock timeout** per script (`Scripting:TimeoutSeconds`, default 10). The script runs as a separate task raced against a timeout (`Task.WhenAny`), because Roslyn's `ScriptRunner` observes its `CancellationToken` only before the submission begins and cannot interrupt code already executing. On timeout the step **fails** with an explicit message, the flow aborts, and the worker slot is released immediately.
+- **Residual limitation (documented constraint):** a script stuck in a tight non-yielding loop keeps running on a background thread after its step has failed; .NET cannot forcibly abort it in-process. The execution pipeline is protected (the step fails, the worker continues), but the thread is not reclaimed until the process recycles. Reclaiming it requires the roadmap out-of-process sandbox (§12).
+- **Curated reference set** — only the platform-supplied assemblies/imports are added (System core, LINQ, `System.Text.Json`, Newtonsoft.Json); scripts are compiled per-node and cached by content hash (SHA-256 of code + globals/result types).
+- Script failures raise `ScriptExecutionException`, which fails the step, records the error, writes a dead-letter entry, and aborts downstream nodes — a failing script is never recorded as a successful step. Branch predicate errors fail the step rather than defaulting to `false`. Error text is JSON-escaped; raw exception text is never emitted as unescaped JSON.
+- **Trust model:** Roslyn scripting is in-process; the platform assumes *authenticated tenant users are trusted script authors*. Deployments serving untrusted authors must enable the roadmap out-of-process sandbox (§12).
 
 ### 7.4 Resilience & retry budget
 
 - Transport-level: Polly pipeline — 3 retries, exponential backoff, 30s attempt timeout, retry on 5xx/408/429 only (**not** on other 4xx, which are non-retryable client errors).
 - Flow-level: a step that exhausts transport retries fails the step, dead-letters it, and aborts downstream nodes.
-- DLQ-level: `DeadLetterWorker` polls every 60s and replays only `HttpAction` steps flagged replay-safe (GET/PUT/DELETE, or POST where the flow opts in), max 5 attempts, then `Discarded`. Replays re-run the node through the full pipeline (UrlCode/PreFlight/auth), not a raw payload re-send.
+- DLQ-level: `DeadLetterWorker` polls every 60s and replays only `HttpAction` steps flagged replay-safe (GET/PUT/DELETE, or POST where the flow sets `AllowPostReplay`), max 5 attempts, then `Discarded`. Replays re-run the node through the full pipeline (UrlCode/PreFlight/auth) using the **flow state captured at failure time**, not a raw payload re-send.
+
+### 7.5 Recovery semantics
+
+A failed run is history, not something to overwrite. When a dead letter is replayed successfully:
+
+- The originating `StepExecution` moves to **`Recovered`** with `RecoveredAt` and the originating dead-letter id. Its original `ErrorMessage` is deliberately **left intact** as the historical record.
+- The parent `FlowExecution` moves to `Recovered` **only once no sibling dead letter is still Pending or Retrying**, and its failed/success record counts are rebalanced so the totals stay coherent.
+- Every replay attempt — success or failure — appends `{attempt, at, statusCode, error}` to the dead letter's `AttemptHistoryJson`. Nothing is ever cleared, so the full error history remains reviewable in the UI after recovery.
+
+The UI therefore reads a recovered run as a success while still disclosing that it failed initially, when it was resynced, and every error encountered along the way.
 
 ---
 
@@ -222,10 +241,20 @@ User scripts (mapping, dynamic URL, pre/post-flight, branch predicates) run thro
 |---|---|
 | **Manual** | `POST /api/integrationflow/{id}/run` → queue |
 | **Webhook** | `POST /api/webhooks/{flowId}/{secret}` — anonymous route, authenticated by per-flow secret (generated server-side, constant-time compared); payload passed to the flow |
-| **Cron** | `CronTriggerScheduler` hosted service: every 30s scans Active flows with `TriggerType=Cron`, evaluates `CronExpression` via Cronos (UTC), enqueues when due; per-flow `NextRunAt` bookkeeping prevents double-fires |
+| **Cron (recurring)** | `CronTriggerScheduler` hosted service: every 30s scans Active flows with `TriggerType=Cron`, evaluates `CronExpression` via Cronos (UTC, 5- or 6-field), enqueues when due; per-flow `NextRunAt` bookkeeping prevents double-fires |
+| **One-time** | A flow with `RunAt` set fires exactly once at that instant. The scheduler clears `NextRunAt` **before** enqueuing, giving at-most-once delivery; a `RunAt` in the past is never resurrected on re-save, and `RunAt` is retained as the historical record of what was scheduled |
 | **Polling** | Modeled as Cron + an initial HttpAction node (documented pattern); no separate infrastructure |
 
-Trigger configuration (type, cron expression, webhook URL display + secret regeneration) is edited in the Flow Designer's flow-settings panel.
+Trigger configuration is edited either in the flow-settings panel or, preferably, via a **Schedule node** on the canvas. When a Schedule node is present it is the single source of truth for the flow's trigger and the settings panel shows a read-only summary, so the two cannot silently disagree. Next-fire times are always computed **server-side** through `POST /api/integrationflow/cron-preview` (Cronos), so the designer and scheduler can never diverge on cron semantics.
+
+### 8.1 Cross-reference (deduplication)
+
+Two node types provide idempotent record deduplication against named, tenant-scoped lists that multiple flows can share:
+
+- **CrossReferenceStore** — resolves an optional `arrayPath`, computes a composite key per record from dotted `keyPaths` (e.g. `order.id`), and bulk-upserts keys into the named list. The payload passes through unchanged.
+- **CrossReferenceFilter** — computes the same keys and emits only records whose key is **absent** from the list.
+
+Because the executor runs each node exactly once (there is no loop construct), both nodes process the entire array in a single pass and use **one bulk existence query per node**, never a per-record query. Keys are declarative field paths rather than scripts, which avoids compilation cost and the in-process scripting constraints in §7.3. Lists are managed from the Cross-References console (inspect, search, delete entries, clear or delete a list).
 
 ---
 

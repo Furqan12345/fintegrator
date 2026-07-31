@@ -79,6 +79,12 @@ public class IntegrationController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(Guid id)
     {
+        var existing = await _integrationRepository.GetByIdAsync(id);
+        if (existing == null)
+        {
+            return NotFound();
+        }
+
         await _integrationRepository.DeleteAsync(id);
         return NoContent();
     }

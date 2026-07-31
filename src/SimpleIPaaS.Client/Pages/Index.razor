@@ -42,6 +42,7 @@
             @if (!_integrations.Any())
             {
                 <div class="empty-state">
+                    <span class="empty-icon"><AppIcon Name="integrations" Class="icon icon-lg" /></span>
                     <h3>No integrations yet</h3>
                     <p>Create an integration above, then add flows inside it.</p>
                 </div>
@@ -60,18 +61,18 @@
                                 <span>Flows: @integration.Flows.Count</span>
                                 <span>Updated: @integration.UpdatedAt.ToShortDateString()</span>
                             </div>
-                            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
+                            <div class="flow-list">
                                 @foreach (var flow in integration.Flows)
                                 {
-                                    <div class="card" style="padding: 12px; cursor: pointer;" @onclick="() => EditFlow(flow.Id)">
-                                        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center;">
+                                    <div class="card flow-list-item" @onclick="() => EditFlow(flow.Id)">
+                                        <div class="flow-list-row">
                                             <div>
-                                                <div style="font-weight: 600;">@flow.Name</div>
-                                                <div class="text-muted" style="font-size: 0.8rem;">Steps: @flow.Nodes.Count</div>
+                                                <div class="flow-list-name">@flow.Name</div>
+                                                <div class="text-muted">Steps: @flow.Nodes.Count</div>
                                             </div>
-                                            <div style="display: flex; gap: 6px;">
-                                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
-                                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => AskDeleteFlow(flow)" title="Delete Flow">Delete</button>
+                                            <div class="inline-actions">
+                                                <button class="btn btn-sm btn-outline" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                                                <button class="btn btn-sm btn-outline" @onclick:stopPropagation="true" @onclick="() => AskDeleteFlow(flow)" title="Delete Flow">Delete</button>
                                             </div>
                                         </div>
                                     </div>
@@ -111,9 +112,9 @@
                         </div>
                         <div class="card-footer">
                             <span class="text-muted">Updated @flow.UpdatedAt.ToShortDateString()</span>
-                            <div style="display: flex; gap: 6px;">
-                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
-                                <button class="btn btn-icon" @onclick:stopPropagation="true" @onclick="() => AskDeleteFlow(flow)" title="Delete Flow">Delete</button>
+                            <div class="inline-actions">
+                                <button class="btn btn-sm btn-outline" @onclick:stopPropagation="true" @onclick="() => RunFlow(flow.Id)" title="Run Flow">Run</button>
+                                <button class="btn btn-sm btn-outline" @onclick:stopPropagation="true" @onclick="() => AskDeleteFlow(flow)" title="Delete Flow">Delete</button>
                             </div>
                         </div>
                     </div>
@@ -136,7 +137,7 @@
                 <div class="form-group">
                     <input type="text" class="form-control" @bind="_deleteConfirmName" @bind:event="oninput" placeholder="@_deleteTarget.Name" />
                 </div>
-                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <div class="modal-actions">
                     <button class="btn btn-outline" @onclick="CancelDeleteFlow">Cancel</button>
                     <button class="btn btn-danger" @onclick="ConfirmDeleteFlow" disabled="@(!string.Equals(_deleteConfirmName, _deleteTarget.Name, StringComparison.Ordinal))">Delete</button>
                 </div>
@@ -192,17 +193,17 @@
 
     private void CreateStandaloneFlow()
     {
-        NavigationManager.NavigateTo("/flow-designer");
+        NavigationManager.NavigateTo("/flow");
     }
 
     private void CreateFlow(Guid integrationId)
     {
-        NavigationManager.NavigateTo($"/flow-designer?integrationId={integrationId}");
+        NavigationManager.NavigateTo($"/flow?integrationId={integrationId}");
     }
 
     private void EditFlow(Guid flowId)
     {
-        NavigationManager.NavigateTo($"/flow-designer/{flowId}");
+        NavigationManager.NavigateTo($"/flow/{flowId}");
     }
 
     private void RunFlow(Guid flowId)

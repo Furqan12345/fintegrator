@@ -31,4 +31,8 @@ public static class ConnectionReducers
 
         return new ConnectionState(isLoading: false, connections: list);
     }
+
+    [ReducerMethod]
+    public static ConnectionState ReduceSaveConnectionFailedAction(ConnectionState state, SaveConnectionFailedAction action) =>
+        new ConnectionState(isLoading: false, connections: state.Connections);
 }

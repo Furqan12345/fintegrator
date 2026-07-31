@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Polly;
 using SimpleIPaaS.Application.Interfaces;
@@ -47,8 +48,10 @@ public class TransportEngine : ITransportEngine
             .Build();
     }
 
-    public async Task<(int StatusCode, string Response)> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null)
+    public async Task<(int StatusCode, string Response)> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var client = _httpClientFactory.CreateClient();
 
         var url = step.EndpointUrl;
@@ -76,28 +79,46 @@ public class TransportEngine : ITransportEngine
         else
         {
             // Fallback to step level inline auth if no connection is provided
-            if (!string.IsNullOrWhiteSpace(step.AuthConfigJson))
+            var stepAuthConfigJson = await RevealAsync(step.AuthConfigJson);
+            var stepAuthToken = await RevealAsync(step.AuthToken);
+            var stepAuthUsername = await RevealAsync(step.AuthUsername);
+            var stepAuthPassword = await RevealAsync(step.AuthPassword);
+
+            if (!string.IsNullOrWhiteSpace(stepAuthConfigJson))
             {
-                configJson = step.AuthConfigJson;
+                configJson = stepAuthConfigJson;
             }
-            else if (step.AuthType == AuthType.Bearer && !string.IsNullOrWhiteSpace(step.AuthToken))
+            else if (step.AuthType == AuthType.Bearer && !string.IsNullOrWhiteSpace(stepAuthToken))
             {
-                configJson = $"{{\"token\":\"{step.AuthToken}\"}}";
+                configJson = SerializeAuthConfig(new Dictionary<string, string>
+                {
+                    ["token"] = stepAuthToken
+                });
             }
-            else if (step.AuthType == AuthType.Basic && !string.IsNullOrWhiteSpace(step.AuthUsername))
+            else if (step.AuthType == AuthType.Basic && !string.IsNullOrWhiteSpace(stepAuthUsername))
             {
-                configJson = $"{{\"username\":\"{step.AuthUsername}\", \"password\":\"{step.AuthPassword}\"}}";
+                configJson = SerializeAuthConfig(new Dictionary<string, string>
+                {
+                    ["username"] = stepAuthUsername,
+                    ["password"] = stepAuthPassword
+                });
             }
-            else if (step.AuthType == AuthType.ApiKey && !string.IsNullOrWhiteSpace(step.AuthUsername))
+            else if (step.AuthType == AuthType.ApiKey && !string.IsNullOrWhiteSpace(stepAuthUsername))
             {
-                configJson = $"{{\"headerName\":\"{step.AuthUsername}\", \"apiKey\":\"{step.AuthToken}\"}}";
+                configJson = SerializeAuthConfig(new Dictionary<string, string>
+                {
+                    ["headerName"] = stepAuthUsername,
+                    ["apiKey"] = stepAuthToken
+                });
             }
             else if (step.AuthType == AuthType.OAuth2RefreshToken || step.AuthType == AuthType.OAuth2AuthCode)
             {
-                var tokenUrl = step.AuthUsername ?? string.Empty;
-                var refreshToken = step.AuthPassword ?? string.Empty;
-                var accessToken = step.AuthToken ?? string.Empty;
-                configJson = $"{{\"tokenUrl\":\"{tokenUrl}\", \"refreshToken\":\"{refreshToken}\", \"accessToken\":\"{accessToken}\"}}";
+                configJson = SerializeAuthConfig(new Dictionary<string, string>
+                {
+                    ["tokenUrl"] = stepAuthUsername,
+                    ["refreshToken"] = stepAuthPassword,
+                    ["accessToken"] = stepAuthToken
+                });
             }
         }
 
@@ -141,12 +162,12 @@ public class TransportEngine : ITransportEngine
 
         async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
         {
-            return await _resiliencePipeline.ExecuteAsync(async cancellationToken =>
+            return await _resiliencePipeline.ExecuteAsync(async attemptToken =>
             {
                 // We need to clone the request because HttpClient disposes the request after SendAsync
                 var clonedRequest = await CloneHttpRequestMessageAsync(request);
-                return await client.SendAsync(clonedRequest, cancellationToken);
-            });
+                return await client.SendAsync(clonedRequest, attemptToken);
+            }, cancellationToken);
         }
 
         var authHandler = _authFactory.GetHandler(authType);
@@ -167,8 +188,30 @@ public class TransportEngine : ITransportEngine
             response = await SendAsync(retryRequest);
         }
 
-        var content = await response.Content.ReadAsStringAsync();
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
         return ((int)response.StatusCode, content);
+    }
+
+    private static string SerializeAuthConfig(Dictionary<string, string> values)
+    {
+        return JsonSerializer.Serialize(values);
+    }
+
+    private async Task<string> RevealAsync(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return await _encryptionService.DecryptAsync(value);
+        }
+        catch (Exception)
+        {
+            return value;
+        }
     }
 
     private async Task<HttpRequestMessage> CloneHttpRequestMessageAsync(HttpRequestMessage req)

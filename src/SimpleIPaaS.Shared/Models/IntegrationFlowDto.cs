@@ -16,7 +16,9 @@ public class IntegrationFlowDto
     public string TriggerType { get; set; } = "Manual";
     public string CronExpression { get; set; } = string.Empty;
     public string WebhookSecret { get; set; } = string.Empty;
-    
+    public DateTime? RunAt { get; set; }
+    public bool AllowPostReplay { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     
@@ -55,6 +57,19 @@ public class IntegrationStepDto
     public string PostFlightCode { get; set; } = string.Empty;
 
     public string StepConfig { get; set; } = string.Empty;
+}
+
+public class CronPreviewRequestDto
+{
+    public string CronExpression { get; set; } = string.Empty;
+    public int Count { get; set; } = 3;
+}
+
+public class CronPreviewResponseDto
+{
+    public string CronExpression { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public List<DateTime> NextOccurrences { get; set; } = new();
 }
 
 public class IntegrationEdgeDto

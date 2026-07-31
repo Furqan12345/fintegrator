@@ -29,9 +29,18 @@ public class DeadLetterController : ControllerBase
     [HttpPost("{id}/retry")]
     public async Task<IActionResult> Retry(Guid id)
     {
-        var entry = await _deadLetterService.ReplayEntryAsync(id, force: true, HttpContext.RequestAborted);
-        if (entry == null) return NotFound();
-        return Ok(ToDto(entry));
+        var result = await _deadLetterService.ReplayEntryAsync(id, force: true, HttpContext.RequestAborted);
+        if (result.Outcome == DeadLetterReplayOutcome.NotFound || result.Entry == null) return NotFound();
+
+        if (result.Outcome == DeadLetterReplayOutcome.PostReplayNotAllowed)
+        {
+            return Problem(
+                title: "Replay not permitted",
+                detail: "This flow does not permit replaying POST steps. Enable POST replay on the flow to retry this entry.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return Ok(ToDto(result.Entry));
     }
 
     [HttpPost("{id}/discard")]
@@ -49,11 +58,16 @@ public class DeadLetterController : ControllerBase
             Id = entry.Id,
             FlowExecutionId = entry.FlowExecutionId,
             StepId = entry.StepId,
+            FlowName = entry.FlowName,
+            IntegrationName = entry.IntegrationName,
+            NodeName = entry.NodeName,
             Payload = entry.Payload,
             ErrorMessage = entry.ErrorMessage,
+            AttemptHistoryJson = entry.AttemptHistoryJson,
             RetryCount = entry.RetryCount,
             CreatedAt = entry.CreatedAt,
             LastRetriedAt = entry.LastRetriedAt,
+            ResolvedAt = entry.ResolvedAt,
             Status = entry.Status
         };
     }

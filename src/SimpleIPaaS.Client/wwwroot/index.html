@@ -6,32 +6,78 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SimpleIPaaS — Integration Builder</title>
     <base href="/" />
+    <script>
+        (function () {
+            var stored = null;
+            try { stored = localStorage.getItem('simpleipaas-theme'); } catch (e) { }
+            var theme = stored === 'dark' || stored === 'light'
+                ? stored
+                : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-theme', theme);
+            window.simpleIPaaSTheme = {
+                get: function () {
+                    return document.documentElement.getAttribute('data-theme') || 'light';
+                },
+                set: function (value) {
+                    var next = value === 'dark' ? 'dark' : 'light';
+                    document.documentElement.setAttribute('data-theme', next);
+                    try { localStorage.setItem('simpleipaas-theme', next); } catch (e) { }
+                    return next;
+                }
+            };
+        })();
+    </script>
     <link rel="preload" id="webassembly" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link href="_content/Z.Blazor.Diagrams/style.css" rel="stylesheet" />
     <link href="_content/Z.Blazor.Diagrams/default.styles.css" rel="stylesheet" />
     <link rel="stylesheet" href="css/app.css" />
     <link rel="icon" type="image/png" href="favicon.png" />
     <link href="SimpleIPaaS.Client.styles.css" rel="stylesheet" />
+    <style>
+        #app-splash {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background: #f5f6f8;
+            color: #697586;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
+        }
+
+        #app-splash .app-splash-spinner {
+            width: 34px;
+            height: 34px;
+            margin: 0 auto 16px;
+            border: 3px solid #e2e5ea;
+            border-top-color: #4f46e5;
+            border-radius: 50%;
+            animation: app-splash-spin 0.9s linear infinite;
+        }
+
+        html[data-theme="dark"] #app-splash { background: #0d1117; color: #8792a4; }
+        html[data-theme="dark"] #app-splash .app-splash-spinner { border-color: #2a3240; border-top-color: #8b95ff; }
+
+        @keyframes app-splash-spin { to { transform: rotate(360deg); } }
+    </style>
     <script type="importmap"></script>
     <script src="_content/Z.Blazor.Diagrams/script.min.js"></script>
 </head>
 
 <body>
     <div id="app">
-        <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;color:#94a3b8;font-family:Inter,system-ui,sans-serif;">
-            <div style="text-align:center;">
-                <div style="width:40px;height:40px;border:3px solid #334155;border-top:3px solid #3b82f6;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;"></div>
-                <p>Loading iPaaS Builder...</p>
+        <div id="app-splash">
+            <div>
+                <div class="app-splash-spinner"></div>
+                <p>Loading SimpleIPaaS...</p>
             </div>
         </div>
-        <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
     </div>
 
-    <div id="blazor-error-ui" style="display:none;position:fixed;bottom:0;left:0;right:0;padding:12px 20px;background:#dc2626;color:white;z-index:9999;font-family:Inter,system-ui,sans-serif;font-size:14px;">
+    <div id="blazor-error-ui" style="display:none;">
         An unhandled error has occurred.
-        <a href="." style="color:white;font-weight:600;margin-left:8px;">Reload</a>
-        <span class="dismiss" style="cursor:pointer;margin-left:12px;">✕</span>
+        <a href=".">Reload</a>
+        <span class="dismiss">✕</span>
     </div>
 
     <script src="_framework/blazor.webassembly.js"></script>

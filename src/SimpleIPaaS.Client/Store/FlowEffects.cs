@@ -19,7 +19,7 @@ public class FlowEffects
     [EffectMethod]
     public async Task HandleLoadFlowAction(LoadFlowAction action, IDispatcher dispatcher)
     {
-        var flow = await _http.GetFromJsonAsync<IntegrationFlowDto>($"api/integrationflow/{action.Id}");
+        var flow = await SafeFetch.GetAsync<IntegrationFlowDto>(_http, $"api/integrationflow/{action.Id}", dispatcher, "the flow");
         if (flow != null)
         {
             dispatcher.Dispatch(new LoadFlowResultAction { Flow = flow });
@@ -29,7 +29,7 @@ public class FlowEffects
     [EffectMethod]
     public async Task HandleLoadFlowsAction(LoadFlowsAction action, IDispatcher dispatcher)
     {
-        var flows = await _http.GetFromJsonAsync<IntegrationFlowDto[]>("api/integrationflow");
+        var flows = await SafeFetch.GetAsync<IntegrationFlowDto[]>(_http, "api/integrationflow", dispatcher, "flows");
         if (flows != null)
         {
             dispatcher.Dispatch(new LoadFlowsResultAction { Flows = flows });
@@ -40,34 +40,32 @@ public class FlowEffects
     public async Task HandleSaveFlowAction(SaveFlowAction action, IDispatcher dispatcher)
     {
         IntegrationFlowDto savedFlow;
-        if (action.Flow.Id == Guid.Empty)
+        try
         {
-            // Create new flow
-            var response = await _http.PostAsJsonAsync("api/integrationflow", action.Flow);
+            var response = action.Flow.Id == Guid.Empty
+                ? await _http.PostAsJsonAsync("api/integrationflow", action.Flow)
+                : await _http.PutAsJsonAsync($"api/integrationflow/{action.Flow.Id}", action.Flow);
+
             if (!response.IsSuccessStatusCode)
             {
                 dispatcher.Dispatch(new RunFlowResultAction { Result = await response.Content.ReadAsStringAsync() });
+                dispatcher.Dispatch(new ShowToastAction { Message = "Flow could not be saved.", Level = "error" });
                 return;
             }
 
             savedFlow = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>() ?? action.Flow;
         }
-        else
+        catch (Exception)
         {
-            // Update existing flow
-            var response = await _http.PutAsJsonAsync($"api/integrationflow/{action.Flow.Id}", action.Flow);
-            if (!response.IsSuccessStatusCode)
-            {
-                dispatcher.Dispatch(new RunFlowResultAction { Result = await response.Content.ReadAsStringAsync() });
-                return;
-            }
-
-            savedFlow = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>() ?? action.Flow;
+            dispatcher.Dispatch(new ShowToastAction { Message = "Flow could not be saved. The API may be unavailable.", Level = "error" });
+            return;
         }
-        
+
+
         if (savedFlow != null)
         {
             dispatcher.Dispatch(new SaveFlowResultAction { Flow = savedFlow });
+            dispatcher.Dispatch(new ShowToastAction { Message = $"Flow \"{savedFlow.Name}\" saved." });
             if (action.RunAfterSave && savedFlow.Id != Guid.Empty)
             {
                 dispatcher.Dispatch(new RunFlowAction { Id = savedFlow.Id });
@@ -78,8 +76,19 @@ public class FlowEffects
     [EffectMethod]
     public async Task HandleRunFlowAction(RunFlowAction action, IDispatcher dispatcher)
     {
-        var response = await _http.PostAsync($"api/integrationflow/{action.Id}/run", null);
-        var resultStr = await response.Content.ReadAsStringAsync();
+        HttpResponseMessage response;
+        string resultStr;
+        try
+        {
+            response = await _http.PostAsync($"api/integrationflow/{action.Id}/run", null);
+            resultStr = await response.Content.ReadAsStringAsync();
+        }
+        catch (Exception)
+        {
+            dispatcher.Dispatch(new ShowToastAction { Message = "Flow run could not be started. The API may be unavailable.", Level = "error" });
+            return;
+        }
+
         Guid? executionId = null;
 
         try
@@ -97,5 +106,8 @@ public class FlowEffects
         }
 
         dispatcher.Dispatch(new RunFlowResultAction { Result = resultStr, ExecutionId = executionId });
+        dispatcher.Dispatch(response.IsSuccessStatusCode
+            ? new ShowToastAction { Message = "Flow run started." }
+            : new ShowToastAction { Message = "Flow run could not be started.", Level = "error" });
     }
 }

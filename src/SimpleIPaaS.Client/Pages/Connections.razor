@@ -27,7 +27,7 @@
     else if (!ConnectionState.Value.Connections.Any())
     {
         <div class="empty-state">
-            <span class="empty-icon">🔌</span>
+            <span class="empty-icon"><AppIcon Name="connections" Class="icon icon-lg" /></span>
             <h3>No connections yet</h3>
             <p>Create a connection to authenticate with external APIs.</p>
             <button class="btn btn-primary" @onclick="CreateNewConnection">Create Connection</button>

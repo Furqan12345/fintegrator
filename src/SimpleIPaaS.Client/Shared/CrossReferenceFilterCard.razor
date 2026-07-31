@@ -1,0 +1,95 @@
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<CrossReferenceState> CrossReferenceState
+@inject IDispatcher Dispatcher
+
+<div class="card-header node-header node-header-pink">
+    <h3 class="card-title">Cross-Reference Filter</h3>
+</div>
+<div class="card-body">
+    <p class="node-hint">
+        Emits only the records whose key is not already in the list. The output is always an array.
+    </p>
+
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. SkipProcessed" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">List Name</label>
+        <input type="text" class="form-control" list="@ListsId" @bind="Config.ListName" @bind:after="Save" placeholder="processed-orders" />
+        <datalist id="@ListsId">
+            @foreach (var list in CrossReferenceState.Value.Lists)
+            {
+                <option value="@list.Name"></option>
+            }
+        </datalist>
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Array Path</label>
+        <input type="text" class="form-control" @bind="Config.ArrayPath" @bind:after="Save" placeholder="orders (blank = whole payload)" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Key Paths</label>
+    </div>
+    @foreach (var path in Config.KeyPaths)
+    {
+        <div class="node-field-row">
+            <input type="text" class="form-control" @bind="path.Value" @bind:after="Save" placeholder="id or order.id" />
+            <button class="btn btn-outline btn-sm" @onclick="() => RemoveKeyPath(path)">x</button>
+        </div>
+    }
+    <div class="node-field">
+        <button class="btn btn-outline btn-sm btn-block" @onclick="AddKeyPath">Add Key Path</button>
+    </div>
+</div>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+    [CascadingParameter] public SimpleIPaaS.Client.Pages.FlowDesigner Designer { get; set; } = default!;
+
+    private CrossReferenceCardConfig Config { get; set; } = new();
+    private Guid _hydratedStepId;
+
+    private string ListsId => $"xref-lists-{Step.Id}";
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+
+        if (!CrossReferenceState.Value.Lists.Any() && !CrossReferenceState.Value.IsLoading)
+        {
+            Dispatcher.Dispatch(new LoadCrossReferenceListsAction());
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Step.Id != _hydratedStepId)
+        {
+            _hydratedStepId = Step.Id;
+            Config = CrossReferenceCardConfig.Read(Step.StepConfig, valuePaths: false);
+        }
+    }
+
+    private void AddKeyPath()
+    {
+        Config.KeyPaths.Add(new CrossReferenceCardConfig.PathEntry());
+        Save();
+    }
+
+    private void RemoveKeyPath(CrossReferenceCardConfig.PathEntry path)
+    {
+        Config.KeyPaths.Remove(path);
+        Save();
+    }
+
+    private void Save()
+    {
+        Step.StepConfig = Config.Write(Step.StepConfig);
+    }
+}

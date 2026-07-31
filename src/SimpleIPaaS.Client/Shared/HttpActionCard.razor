@@ -1,20 +1,19 @@
 @using System.Text.Json
 @using SimpleIPaaS.Shared.Models
-@using System.Text.Json
 @using System.Text.Json.Nodes
 
-<div class="card-header" style="background: var(--primary);">
-    <h3 class="card-title" style="color: white;">HTTP Action</h3>
+<div class="card-header node-header node-header-primary">
+    <h3 class="card-title">HTTP Action</h3>
 </div>
 <div class="card-body">
-    <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Node Name</label>
-        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. FetchUsers" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. FetchUsers" />
     </div>
 
-    <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Method</label>
-        <select class="form-control" @bind="Step.HttpMethod" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+    <div class="node-field">
+        <label class="node-label">Method</label>
+        <select class="form-control" @bind="Step.HttpMethod">
             <option value="GET">GET</option>
             <option value="POST">POST</option>
             <option value="PUT">PUT</option>
@@ -23,9 +22,9 @@
         </select>
     </div>
 
-    <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">URL Source</label>
-        <select class="form-control" value="@Step.UrlMode" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" @onchange="OnUrlModeChanged">
+    <div class="node-field">
+        <label class="node-label">URL Source</label>
+        <select class="form-control" value="@Step.UrlMode" @onchange="OnUrlModeChanged">
             <option value="Manual">Manual Full URL</option>
             <option value="Connection">Predefined Connection</option>
         </select>
@@ -33,9 +32,9 @@
 
     @if (Step.UrlMode == "Connection")
     {
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Connection</label>
-            <select class="form-control" value="@ConnectionValue" @onchange="OnConnectionChanged" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+        <div class="node-field">
+            <label class="node-label">Connection</label>
+            <select class="form-control" value="@ConnectionValue" @onchange="OnConnectionChanged">
                 <option value="">Select connection</option>
                 @foreach (var connection in AvailableConnections)
                 {
@@ -43,25 +42,25 @@
                 }
             </select>
         </div>
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Base URL</label>
-            <input type="text" class="form-control" value="@SelectedConnectionBaseUrl" readonly style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-app);" />
+        <div class="node-field">
+            <label class="node-label">Base URL</label>
+            <input type="text" class="form-control" value="@SelectedConnectionBaseUrl" readonly />
         </div>
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Remaining URL / Path</label>
-            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="/users/123 or users?status=active" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        <div class="node-field">
+            <label class="node-label">Remaining URL / Path</label>
+            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="/users/123 or users?status=active" />
         </div>
     }
     else
     {
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Full URL</label>
-            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="https://api.example.com/users" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        <div class="node-field">
+            <label class="node-label">Full URL</label>
+            <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="https://api.example.com/users" />
         </div>
 
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Auth Type</label>
-            <select class="form-control" @bind="Step.AuthType" @bind:after="SyncAuthConfig" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+        <div class="node-field">
+            <label class="node-label">Auth Type</label>
+            <select class="form-control" @bind="Step.AuthType" @bind:after="SyncAuthConfig">
                 <option value="None">None</option>
                 <option value="Basic">Basic Auth</option>
                 <option value="Bearer">Bearer Token</option>
@@ -75,89 +74,89 @@
 
         @if (Step.AuthType == "Basic")
         {
-            <div class="form-group" style="margin-bottom: 8px; display: flex; gap: 4px;">
-                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Username" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
-                <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Password" style="width: 50%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field-row">
+                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Username" />
+                <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Password" />
             </div>
         }
         else if (Step.AuthType == "Bearer")
         {
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Bearer token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Bearer token" />
             </div>
         }
         else if (Step.AuthType == "ApiKey")
         {
-            <div class="form-group" style="margin-bottom: 8px;">
-                <select class="form-control" @bind="_apiKeyPlacement" @bind:after="SyncAuthConfig" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+            <div class="node-field">
+                <select class="form-control" @bind="_apiKeyPlacement" @bind:after="SyncAuthConfig">
                     <option value="header">Header</option>
                     <option value="query">Query Parameter</option>
                 </select>
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="text" class="form-control" @bind="Step.AuthUsername" @bind:after="SyncAuthConfig" placeholder="@(_apiKeyPlacement == "query" ? "Parameter name (e.g. api_key)" : "Header name (e.g. X-Api-Key)")" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="text" class="form-control" @bind="Step.AuthUsername" @bind:after="SyncAuthConfig" placeholder="@(_apiKeyPlacement == "query" ? "Parameter name (e.g. api_key)" : "Header name (e.g. X-Api-Key)")" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="Step.AuthToken" @bind:after="SyncAuthConfig" placeholder="API key value" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="Step.AuthToken" @bind:after="SyncAuthConfig" placeholder="API key value" />
             </div>
         }
         else if (Step.AuthType == "OAuth2ClientCredentials")
         {
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="text" class="form-control" @bind="_tokenUrl" @bind:after="SyncAuthConfig" placeholder="Token URL" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="text" class="form-control" @bind="_tokenUrl" @bind:after="SyncAuthConfig" placeholder="Token URL" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="text" class="form-control" @bind="_clientId" @bind:after="SyncAuthConfig" placeholder="Client ID" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="text" class="form-control" @bind="_clientId" @bind:after="SyncAuthConfig" placeholder="Client ID" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="_clientSecret" @bind:after="SyncAuthConfig" placeholder="Client secret" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="_clientSecret" @bind:after="SyncAuthConfig" placeholder="Client secret" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="text" class="form-control" @bind="_scope" @bind:after="SyncAuthConfig" placeholder="Scope (optional)" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="text" class="form-control" @bind="_scope" @bind:after="SyncAuthConfig" placeholder="Scope (optional)" />
             </div>
         }
         else if (Step.AuthType == "OAuth2RefreshToken")
         {
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Token URL" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Token URL" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Refresh token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Refresh token" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Access token (optional)" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Access token (optional)" />
             </div>
         }
         else if (Step.AuthType == "OAuth2AuthCode")
         {
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="text" class="form-control" @bind="_tokenUrl" @bind:after="SyncAuthConfig" placeholder="Token URL" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="text" class="form-control" @bind="_tokenUrl" @bind:after="SyncAuthConfig" placeholder="Token URL" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="text" class="form-control" @bind="_clientId" @bind:after="SyncAuthConfig" placeholder="Client ID" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="text" class="form-control" @bind="_clientId" @bind:after="SyncAuthConfig" placeholder="Client ID" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="_clientSecret" @bind:after="SyncAuthConfig" placeholder="Client secret" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="_clientSecret" @bind:after="SyncAuthConfig" placeholder="Client secret" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="_accessToken" @bind:after="SyncAuthConfig" placeholder="Access token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="_accessToken" @bind:after="SyncAuthConfig" placeholder="Access token" />
             </div>
-            <div class="form-group" style="margin-bottom: 8px;">
-                <input type="password" class="form-control" @bind="_refreshToken" @bind:after="SyncAuthConfig" placeholder="Refresh token" style="width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+            <div class="node-field">
+                <input type="password" class="form-control" @bind="_refreshToken" @bind:after="SyncAuthConfig" placeholder="Refresh token" />
             </div>
         }
         else if (Step.AuthType == "Custom")
         {
             @foreach (var header in _customHeaders)
             {
-                <div class="form-group" style="margin-bottom: 8px; display: flex; gap: 4px;">
-                    <input type="text" class="form-control" @bind="header.Name" @bind:after="SyncAuthConfig" placeholder="Header name" style="width: 45%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
-                    <input type="text" class="form-control" @bind="header.Value" @bind:after="SyncAuthConfig" placeholder="Value" style="width: 45%; padding: 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
-                    <button class="btn btn-outline" style="font-size: 0.75rem; padding: 4px;" @onclick="() => RemoveCustomHeader(header)">x</button>
+                <div class="node-field-row">
+                    <input type="text" class="form-control" @bind="header.Name" @bind:after="SyncAuthConfig" placeholder="Header name" />
+                    <input type="text" class="form-control" @bind="header.Value" @bind:after="SyncAuthConfig" placeholder="Value" />
+                    <button class="btn btn-outline btn-sm" @onclick="() => RemoveCustomHeader(header)">x</button>
                 </div>
             }
-            <div class="form-group" style="margin-bottom: 8px;">
-                <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick="AddCustomHeader">Add Header</button>
+            <div class="node-field">
+                <button class="btn btn-outline btn-sm btn-block" @onclick="AddCustomHeader">Add Header</button>
             </div>
         }
     }
@@ -165,36 +164,36 @@
     <div class="api-packet-section">
         <div class="api-packet-title">API Packet Details</div>
 
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Headers</label>
+        <div class="node-field">
+            <label class="node-label">Headers</label>
             <textarea class="form-control api-packet-textarea" @bind="PacketHeadersJson" @bind:event="oninput" placeholder="{ &quot;Accept&quot;: &quot;application/json&quot; }"></textarea>
         </div>
 
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Query Params</label>
+        <div class="node-field">
+            <label class="node-label">Query Params</label>
             <textarea class="form-control api-packet-textarea" @bind="PacketQueryParamsJson" @bind:event="oninput" placeholder="{ &quot;limit&quot;: &quot;25&quot; }"></textarea>
         </div>
 
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Content-Type</label>
-            <input type="text" class="form-control" @bind="PacketContentType" @bind:event="oninput" placeholder="application/json" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+        <div class="node-field">
+            <label class="node-label">Content-Type</label>
+            <input type="text" class="form-control" @bind="PacketContentType" @bind:event="oninput" placeholder="application/json" />
         </div>
 
-        <div class="form-group" style="margin-bottom: 8px;">
-            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Body</label>
+        <div class="node-field">
+            <label class="node-label">Body</label>
             <textarea class="form-control api-packet-body" @bind="PacketRequestBody" @bind:event="oninput" placeholder="{ }"></textarea>
         </div>
     </div>
 
-    <div class="script-buttons" style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 2px;">Scripts (C#)</label>
-        <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("UrlCode")'>
+    <div class="node-script-buttons">
+        <label class="node-label">Scripts (C#)</label>
+        <button class="btn btn-outline btn-sm btn-block" @onclick='() => OpenEditor("UrlCode")'>
             @(string.IsNullOrWhiteSpace(Step.UrlCode) ? "Dynamic URL Script" : "Edit Dynamic URL Script")
         </button>
-        <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("PreFlightCode")'>
+        <button class="btn btn-outline btn-sm btn-block" @onclick='() => OpenEditor("PreFlightCode")'>
             @(string.IsNullOrWhiteSpace(Step.PreFlightCode) ? "Pre-Request Body Script" : "Edit Pre-Request Body Script")
         </button>
-        <button class="btn btn-outline" style="width: 100%; font-size: 0.75rem; padding: 4px;" @onclick='() => OpenEditor("PostFlightCode")'>
+        <button class="btn btn-outline btn-sm btn-block" @onclick='() => OpenEditor("PostFlightCode")'>
             @(string.IsNullOrWhiteSpace(Step.PostFlightCode) ? "Post-Response Script" : "Edit Post-Response Script")
         </button>
     </div>
@@ -313,6 +312,11 @@
 
     private void SyncAuthConfig()
     {
+        if (!HasAuthInput())
+        {
+            return;
+        }
+
         object? payload = Step.AuthType switch
         {
             "ApiKey" => new { headerName = Step.AuthUsername, apiKey = Step.AuthToken, placement = _apiKeyPlacement },
@@ -323,6 +327,18 @@
         };
 
         Step.AuthConfigJson = payload == null ? string.Empty : JsonSerializer.Serialize(payload);
+    }
+
+    private bool HasAuthInput()
+    {
+        return Step.AuthType switch
+        {
+            "ApiKey" => !string.IsNullOrWhiteSpace(Step.AuthUsername) || !string.IsNullOrWhiteSpace(Step.AuthToken),
+            "OAuth2ClientCredentials" => !string.IsNullOrWhiteSpace(_tokenUrl) || !string.IsNullOrWhiteSpace(_clientId) || !string.IsNullOrWhiteSpace(_clientSecret) || !string.IsNullOrWhiteSpace(_scope),
+            "OAuth2AuthCode" => !string.IsNullOrWhiteSpace(_tokenUrl) || !string.IsNullOrWhiteSpace(_clientId) || !string.IsNullOrWhiteSpace(_clientSecret) || !string.IsNullOrWhiteSpace(_accessToken) || !string.IsNullOrWhiteSpace(_refreshToken),
+            "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
+            _ => false
+        };
     }
 
     private void AddCustomHeader()

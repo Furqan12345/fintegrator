@@ -1,0 +1,241 @@
+@using System.Globalization
+@using System.Net.Http.Json
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+
+<div class="card-header node-header node-header-violet">
+    <h3 class="card-title">Schedule</h3>
+</div>
+<div class="card-body">
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. NightlyRun" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Mode</label>
+        <select class="form-control" value="@Mode" @onchange="OnModeChanged">
+            <option value="Cron">Recurring (cron)</option>
+            <option value="OneTime">One-time (date &amp; time)</option>
+        </select>
+    </div>
+
+    @if (Mode == "OneTime")
+    {
+        <div class="node-field">
+            <label class="node-label">Run At (local time)</label>
+            <input type="datetime-local" class="form-control" value="@RunAtLocal" @onchange="OnRunAtChanged" />
+        </div>
+        <div class="node-hint">@OneTimeDescription</div>
+    }
+    else
+    {
+        <div class="node-field">
+            <label class="node-label">Cron Expression</label>
+            <input type="text" class="form-control" value="@CronExpression" @onchange="OnCronChanged" placeholder="*/5 * * * *" />
+        </div>
+        <div class="node-hint">@CronDescription</div>
+        @if (_nextOccurrences.Count > 0)
+        {
+            <div class="node-field">
+                <label class="node-label">Next Runs</label>
+                @foreach (var occurrence in _nextOccurrences)
+                {
+                    <span class="node-hint">@occurrence.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                }
+            </div>
+        }
+    }
+
+    <div class="node-hint">This node is the flow trigger — saving writes it onto the flow. The flow must be Active to run.</div>
+</div>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+    [CascadingParameter] public SimpleIPaaS.Client.Pages.FlowDesigner Designer { get; set; } = default!;
+
+    private static readonly JsonSerializerOptions StepConfigJsonOptions = new() { WriteIndented = false };
+
+    private List<DateTime> _nextOccurrences = new();
+    private string _cronDescription = string.Empty;
+    private string _cronError = string.Empty;
+    private string _previewedExpression = string.Empty;
+
+    private string Mode
+    {
+        get => GetScheduleValue("mode", "Cron") == "OneTime" ? "OneTime" : "Cron";
+        set => SetScheduleValue("mode", value);
+    }
+
+    private string CronExpression
+    {
+        get => GetScheduleValue("cronExpression", string.Empty);
+        set => SetScheduleValue("cronExpression", value);
+    }
+
+    private string RunAtUtc
+    {
+        get => GetScheduleValue("runAtUtc", string.Empty);
+        set => SetScheduleValue("runAtUtc", value);
+    }
+
+    private string RunAtLocal => TryGetRunAtUtc(out var runAt)
+        ? runAt.ToLocalTime().ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture)
+        : string.Empty;
+
+    private string CronDescription
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(_cronError))
+            {
+                return _cronError;
+            }
+
+            return string.IsNullOrWhiteSpace(_cronDescription)
+                ? "Enter a cron expression — 5 fields, or 6 to include seconds."
+                : _cronDescription;
+        }
+    }
+
+    private string OneTimeDescription
+    {
+        get
+        {
+            if (!TryGetRunAtUtc(out var runAt))
+            {
+                return "Pick the date and time this flow should run once.";
+            }
+
+            return runAt > DateTime.UtcNow
+                ? $"Runs once at {runAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}, then stops."
+                : "This time is in the past — the flow will not run. Pick a future time.";
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Mode != "Cron")
+        {
+            return;
+        }
+
+        var expression = CronExpression;
+        if (expression == _previewedExpression)
+        {
+            return;
+        }
+
+        _previewedExpression = expression;
+        await LoadCronPreviewAsync(expression);
+        StateHasChanged();
+    }
+
+    private async Task LoadCronPreviewAsync(string expression)
+    {
+        _nextOccurrences = new List<DateTime>();
+        _cronDescription = string.Empty;
+        _cronError = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return;
+        }
+
+        try
+        {
+            var response = await Http.PostAsJsonAsync("api/integrationflow/cron-preview", new CronPreviewRequestDto
+            {
+                CronExpression = expression,
+                Count = 3
+            });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _cronError = "Invalid cron expression.";
+                return;
+            }
+
+            var preview = await response.Content.ReadFromJsonAsync<CronPreviewResponseDto>();
+            if (preview == null)
+            {
+                return;
+            }
+
+            _cronDescription = preview.Description;
+            _nextOccurrences = preview.NextOccurrences;
+        }
+        catch (HttpRequestException)
+        {
+            _cronError = "Could not reach the server to preview this schedule.";
+        }
+    }
+
+    private void OnModeChanged(ChangeEventArgs args)
+    {
+        Mode = args.Value?.ToString() == "OneTime" ? "OneTime" : "Cron";
+        _previewedExpression = string.Empty;
+    }
+
+    private void OnCronChanged(ChangeEventArgs args)
+    {
+        CronExpression = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnRunAtChanged(ChangeEventArgs args)
+    {
+        var value = args.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(value) ||
+            !DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var local))
+        {
+            RunAtUtc = string.Empty;
+            return;
+        }
+
+        RunAtUtc = DateTime.SpecifyKind(local, DateTimeKind.Local).ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+    }
+
+    private bool TryGetRunAtUtc(out DateTime runAtUtc)
+    {
+        return DateTime.TryParse(
+            RunAtUtc,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+            out runAtUtc);
+    }
+
+    private string GetScheduleValue(string key, string fallback)
+    {
+        var schedule = ParseStepConfig()["schedule"] as JsonObject;
+        var value = schedule?[key]?.GetValue<string>();
+        return string.IsNullOrWhiteSpace(value) ? fallback : value;
+    }
+
+    private void SetScheduleValue(string key, string value)
+    {
+        var root = ParseStepConfig();
+        var schedule = root["schedule"] as JsonObject ?? new JsonObject();
+        schedule[key] = value ?? string.Empty;
+        root["schedule"] = schedule;
+        Step.StepConfig = root.ToJsonString(StepConfigJsonOptions);
+    }
+
+    private JsonObject ParseStepConfig()
+    {
+        if (string.IsNullOrWhiteSpace(Step.StepConfig))
+        {
+            return new JsonObject();
+        }
+
+        try
+        {
+            return JsonNode.Parse(Step.StepConfig) as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            return new JsonObject();
+        }
+    }
+}

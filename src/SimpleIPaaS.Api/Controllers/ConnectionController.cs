@@ -126,6 +126,9 @@ public class ConnectionController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(Guid id)
     {
+        var connection = await _repository.GetByIdAsync(id);
+        if (connection == null) return NotFound();
+
         await _repository.DeleteAsync(id);
         return NoContent();
     }

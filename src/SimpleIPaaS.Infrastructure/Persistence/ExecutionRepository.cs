@@ -92,6 +92,14 @@ public class ExecutionRepository : IExecutionRepository
             .ToListAsync();
     }
 
+    public async Task<StepExecution?> GetStepExecutionAsync(Guid flowExecutionId, Guid stepId)
+    {
+        return await _context.StepExecutions
+            .Where(s => s.FlowExecutionId == flowExecutionId && s.StepId == stepId)
+            .OrderByDescending(s => s.StartedAt)
+            .FirstOrDefaultAsync();
+    }
+
     public async Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
     {
         if (entry.TenantId == Guid.Empty)
@@ -139,6 +147,14 @@ public class ExecutionRepository : IExecutionRepository
 
         return await query
             .OrderByDescending(d => d.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<IEnumerable<DeadLetterEntry>> GetDeadLettersByExecutionAsync(Guid flowExecutionId)
+    {
+        return await _context.DeadLetterEntries
+            .Where(d => d.FlowExecutionId == flowExecutionId)
+            .OrderBy(d => d.CreatedAt)
             .ToListAsync();
     }
 

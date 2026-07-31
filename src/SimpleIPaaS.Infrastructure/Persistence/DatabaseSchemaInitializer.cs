@@ -17,12 +17,28 @@ public static class DatabaseSchemaInitializer
 
         EnsureIntegrationsTable(connection);
         EnsureApiKeysTable(connection);
+        EnsureCrossReferenceTables(connection);
         EnsureColumn(connection, "IntegrationFlows", "IntegrationId", "TEXT NULL");
         EnsureColumn(connection, "IntegrationFlows", "PersistedStateJson", "TEXT NOT NULL DEFAULT '{}'");
         EnsureColumn(connection, "IntegrationSteps", "UrlMode", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "IntegrationSteps", "AuthConfigJson", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(connection, "IntegrationFlows", "NextRunAt", "TEXT NULL");
         EnsureColumn(connection, "FlowExecutions", "TriggerSource", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "IntegrationFlows", "AllowPostReplay", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "DeadLetterEntries", "FlowStateJson", "TEXT NOT NULL DEFAULT '{}'");
+        EnsureColumn(connection, "StepExecutions", "NodeName", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "StepExecutions", "RecoveredAt", "TEXT NULL");
+        EnsureColumn(connection, "StepExecutions", "RecoveredByDeadLetterId", "TEXT NULL");
+        EnsureColumn(connection, "FlowExecutions", "RecoveredAt", "TEXT NULL");
+        EnsureColumn(connection, "FlowExecutions", "FlowName", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "FlowExecutions", "IntegrationId", "TEXT NULL");
+        EnsureColumn(connection, "FlowExecutions", "IntegrationName", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "DeadLetterEntries", "ResolvedAt", "TEXT NULL");
+        EnsureColumn(connection, "DeadLetterEntries", "AttemptHistoryJson", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "DeadLetterEntries", "FlowName", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "DeadLetterEntries", "IntegrationName", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "DeadLetterEntries", "NodeName", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "IntegrationFlows", "RunAt", "TEXT NULL");
     }
 
     private static void EnsureIntegrationsTable(SqliteConnection connection)
@@ -53,6 +69,37 @@ public static class DatabaseSchemaInitializer
                 CreatedAt TEXT NOT NULL,
                 RevokedAt TEXT NULL
             );
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    private static void EnsureCrossReferenceTables(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS CrossReferenceLists (
+                Id TEXT NOT NULL CONSTRAINT PK_CrossReferenceLists PRIMARY KEY,
+                TenantId TEXT NOT NULL,
+                Name TEXT NOT NULL,
+                Description TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CrossReferenceLists_TenantId_Name
+                ON CrossReferenceLists (TenantId, Name);
+
+            CREATE TABLE IF NOT EXISTS CrossReferenceEntries (
+                Id TEXT NOT NULL CONSTRAINT PK_CrossReferenceEntries PRIMARY KEY,
+                TenantId TEXT NOT NULL,
+                ListName TEXT NOT NULL,
+                KeyValue TEXT NOT NULL,
+                ValueJson TEXT NOT NULL,
+                FlowId TEXT NULL,
+                CreatedAt TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CrossReferenceEntries_TenantId_ListName_KeyValue
+                ON CrossReferenceEntries (TenantId, ListName, KeyValue);
             """;
         command.ExecuteNonQuery();
     }

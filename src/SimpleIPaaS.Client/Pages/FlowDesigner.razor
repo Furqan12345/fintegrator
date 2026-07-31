@@ -1,6 +1,11 @@
+@page "/flow"
+@page "/flow/{FlowId:guid}"
 @page "/flow-designer"
 @page "/flow-designer/{FlowId:guid}"
+@using System.Globalization
 @using System.Net.Http.Json
+@using System.Text.Json
+@using System.Text.Json.Nodes
 @using Blazor.Diagrams
 @using Blazor.Diagrams.Components
 @using Blazor.Diagrams.Core
@@ -23,7 +28,7 @@
 <div class="diagram-container">
     <div class="diagram-toolbar">
         <input class="toolbar-input" type="text" @bind="FlowName" placeholder="Flow Name" />
-        <select class="toolbar-input" value="@IntegrationValue" @onchange="OnIntegrationChanged" style="min-width: 220px;">
+        <select class="toolbar-input toolbar-select" value="@IntegrationValue" @onchange="OnIntegrationChanged">
             <option value="">Unassigned flow</option>
             @foreach (var integration in AvailableIntegrations)
             {
@@ -31,9 +36,12 @@
             }
         </select>
         <div class="toolbar-divider"></div>
+        <button class="btn btn-outline" @onclick="() => AddNode(StepType.Schedule)">+ Schedule</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.HttpAction)">+ HTTP Action</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.Mapping)">+ Mapper</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.Branch)">+ Branch</button>
+        <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceStore)">+ XRef Store</button>
+        <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceFilter)">+ XRef Filter</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.PersistedState)">+ Persisted State</button>
         <button class="btn btn-outline" @onclick="() => AddNode(StepType.Debug)">+ Debug</button>
         <div class="toolbar-divider"></div>
@@ -79,7 +87,7 @@
         <div class="run-result-panel">
             <h4>Execution Result</h4>
             <div class="run-result">@FlowState.Value.RunResult</div>
-            <button class="btn btn-outline" style="margin-top: 8px; width: 100%;" @onclick="ClearResult">Dismiss</button>
+            <button class="btn btn-outline btn-block run-result-dismiss" @onclick="ClearResult">Dismiss</button>
         </div>
     }
 </div>
@@ -100,7 +108,7 @@
                 <h2 class="modal-title">Flow Settings</h2>
                 <button class="modal-close-btn" @onclick="CloseFlowSettings">✕</button>
             </div>
-            <div class="modal-body" style="overflow-y: auto;">
+            <div class="modal-body modal-body-scroll">
                 <div class="form-group">
                     <label>Flow Status</label>
                     <select class="form-control" @bind="settingsFlow.Status">
@@ -108,58 +116,77 @@
                         <option value="Active">Active</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label>Trigger Type</label>
-                    <select class="form-control" value="@settingsFlow.TriggerType" @onchange="OnTriggerTypeChanged">
-                        <option value="Manual">Manual</option>
-                        <option value="Webhook">Webhook</option>
-                        <option value="Cron">Cron</option>
-                    </select>
-                </div>
+                @if (HasScheduleNode)
+                {
+                    <div class="form-group">
+                        <label>Trigger Type</label>
+                        <input type="text" class="form-control" readonly value="Schedule node" />
+                        <small class="field-hint">@ScheduleNodeSummary</small>
+                    </div>
+                }
+                else
+                {
+                    <div class="form-group">
+                        <label>Trigger Type</label>
+                        <select class="form-control" value="@settingsFlow.TriggerType" @onchange="OnTriggerTypeChanged">
+                            <option value="Manual">Manual</option>
+                            <option value="Webhook">Webhook</option>
+                            <option value="Cron">Cron</option>
+                        </select>
+                    </div>
+                }
 
-                @if (settingsFlow.TriggerType == "Cron")
+                @if (!HasScheduleNode && settingsFlow.TriggerType == "Cron")
                 {
                     <div class="form-group">
                         <label>Cron Expression</label>
-                        <input type="text" class="form-control" @bind="settingsFlow.CronExpression" @bind:event="oninput" placeholder="*/5 * * * *" />
-                        <small class="text-muted">@DescribeCron(settingsFlow.CronExpression)</small>
+                        <input type="text" class="form-control" @bind="settingsFlow.CronExpression" @bind:event="oninput" @bind:after="RefreshCronPreview" placeholder="*/5 * * * *" />
+                        <small class="field-hint">@CronPreviewDescription</small>
                     </div>
-                    @if (TryGetNextFires(settingsFlow.CronExpression, out var nextFires))
+                    @if (_cronPreviewOccurrences.Count > 0)
                     {
                         <div class="form-group">
                             <label>Next runs</label>
-                            <ul style="margin: 0; padding-left: 18px;">
-                                @foreach (var fire in nextFires)
+                            <ul class="cron-preview-list">
+                                @foreach (var fire in _cronPreviewOccurrences)
                                 {
-                                    <li class="text-muted">@fire.ToLocalTime()</li>
+                                    <li class="text-muted">@fire.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</li>
                                 }
                             </ul>
                         </div>
                     }
                 }
-                else if (settingsFlow.TriggerType == "Webhook")
+                else if (!HasScheduleNode && settingsFlow.TriggerType == "Webhook")
                 {
                     <div class="form-group">
                         <label>Webhook URL</label>
-                        @if (settingsFlow.Id == Guid.Empty)
+                        @if (!HasWebhookSecret)
                         {
-                            <small class="text-muted">Save the flow first to get a webhook URL.</small>
+                            <small class="field-hint">Save the flow to generate the webhook URL.</small>
                         }
                         else
                         {
-                            <div style="display: flex; gap: 8px;">
+                            <div class="input-with-action">
                                 <input type="text" class="form-control" readonly value="@WebhookUrl" />
                                 <button class="btn btn-outline" @onclick="CopyWebhookUrl">@(_webhookCopied ? "Copied!" : "Copy")</button>
                             </div>
                         }
                     </div>
                     <div class="form-group">
-                        <button class="btn btn-outline" @onclick="RegenerateWebhookSecret">Regenerate Secret</button>
-                        <small class="text-muted" style="display: block; margin-top: 4px;">Regenerating invalidates the current URL after the next save.</small>
+                        <button class="btn btn-outline" @onclick="RegenerateWebhookSecret" disabled="@(!HasWebhookSecret || FlowState.Value.IsLoading)">Regenerate Secret</button>
+                        <small class="field-hint">The server issues the secret; regenerating invalidates the current URL immediately.</small>
                     </div>
                 }
 
-                <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" @bind="FlowState.Value.CurrentFlow!.AllowPostReplay" />
+                        Allow POST steps to be replayed from the dead-letter queue
+                    </label>
+                    <small class="field-hint">POST requests are not idempotent — replaying one can duplicate its effect on the target system. Leave off unless the endpoint is safe to call twice.</small>
+                </div>
+
+                <div class="modal-actions">
                     <button class="btn btn-outline" @onclick="CloseFlowSettings">Close</button>
                     <button class="btn" @onclick="SaveFlowSettings" disabled="@FlowState.Value.IsLoading">Save Settings</button>
                 </div>
@@ -190,6 +217,9 @@
     private bool _showFlowSettings;
     private bool _webhookCopied;
     private List<string> _validationErrors = new();
+    private List<DateTime> _cronPreviewOccurrences = new();
+    private string _cronPreviewDescription = string.Empty;
+    private string _cronPreviewError = string.Empty;
 
     private IEnumerable<IntegrationDto> AvailableIntegrations => _integrations;
     private string IntegrationValue => FlowState.Value.CurrentFlow?.IntegrationId?.ToString() ?? IntegrationIdQuery?.ToString() ?? string.Empty;
@@ -373,6 +403,8 @@
             });
         }
 
+        ApplyScheduleTrigger(flow);
+
         Dispatcher.Dispatch(new SaveFlowAction { Flow = flow, RunAfterSave = runAfterSave });
     }
 
@@ -512,10 +544,11 @@
         return adjacency.Keys.Any(Visit);
     }
 
-    private void OpenFlowSettings()
+    private async Task OpenFlowSettings()
     {
         _webhookCopied = false;
         _showFlowSettings = true;
+        await RefreshCronPreview();
     }
 
     private void CloseFlowSettings()
@@ -532,7 +565,7 @@
         }
     }
 
-    private void OnTriggerTypeChanged(ChangeEventArgs args)
+    private async Task OnTriggerTypeChanged(ChangeEventArgs args)
     {
         var flow = FlowState.Value.CurrentFlow;
         if (flow == null)
@@ -541,22 +574,39 @@
         }
 
         flow.TriggerType = args.Value?.ToString() ?? "Manual";
-        if (flow.TriggerType == "Webhook" && string.IsNullOrWhiteSpace(flow.WebhookSecret))
-        {
-            flow.WebhookSecret = Guid.NewGuid().ToString("N");
-        }
+        flow.RunAt = null;
+        _webhookCopied = false;
+        await RefreshCronPreview();
     }
 
-    private void RegenerateWebhookSecret()
+    private async Task RegenerateWebhookSecret()
     {
         var flow = FlowState.Value.CurrentFlow;
-        if (flow == null)
+        if (flow == null || flow.Id == Guid.Empty)
         {
             return;
         }
 
-        flow.WebhookSecret = Guid.NewGuid().ToString("N");
         _webhookCopied = false;
+
+        var response = await Http.PostAsync($"api/integrationflow/{flow.Id}/webhook-secret", null);
+        if (response.IsSuccessStatusCode)
+        {
+            var updated = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+            if (updated != null)
+            {
+                flow.WebhookSecret = updated.WebhookSecret;
+            }
+        }
+    }
+
+    private bool HasWebhookSecret
+    {
+        get
+        {
+            var flow = FlowState.Value.CurrentFlow;
+            return flow != null && flow.Id != Guid.Empty && !string.IsNullOrWhiteSpace(flow.WebhookSecret);
+        }
     }
 
     private string WebhookUrl
@@ -564,7 +614,7 @@
         get
         {
             var flow = FlowState.Value.CurrentFlow;
-            if (flow == null || flow.Id == Guid.Empty)
+            if (flow == null || flow.Id == Guid.Empty || string.IsNullOrWhiteSpace(flow.WebhookSecret))
             {
                 return string.Empty;
             }
@@ -580,133 +630,141 @@
         _webhookCopied = true;
     }
 
-    private static string DescribeCron(string expression)
+    private async Task RefreshCronPreview()
     {
+        _cronPreviewOccurrences = new List<DateTime>();
+        _cronPreviewDescription = string.Empty;
+        _cronPreviewError = string.Empty;
+
+        var expression = FlowState.Value.CurrentFlow?.CronExpression ?? string.Empty;
         if (string.IsNullOrWhiteSpace(expression))
         {
-            return "Enter a 5-field cron expression: minute hour day-of-month month day-of-week.";
+            return;
         }
 
-        var parts = expression.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 5)
+        try
         {
-            return "Invalid expression — expected 5 fields (minute hour day-of-month month day-of-week).";
+            var response = await Http.PostAsJsonAsync("api/integrationflow/cron-preview", new CronPreviewRequestDto
+            {
+                CronExpression = expression,
+                Count = 3
+            });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _cronPreviewError = "Invalid cron expression.";
+                return;
+            }
+
+            var preview = await response.Content.ReadFromJsonAsync<CronPreviewResponseDto>();
+            if (preview == null)
+            {
+                return;
+            }
+
+            _cronPreviewDescription = preview.Description;
+            _cronPreviewOccurrences = preview.NextOccurrences;
         }
-
-        static string Field(string value, string unit) => value switch
+        catch (HttpRequestException)
         {
-            "*" => $"every {unit}",
-            _ when value.StartsWith("*/") => $"every {value.Substring(2)} {unit}s",
-            _ => $"at {unit} {value}"
-        };
-
-        return $"Runs {Field(parts[0], "minute")}, {Field(parts[1], "hour")}, {Field(parts[2], "day")}, {Field(parts[3], "month")}, {Field(parts[4], "weekday")}.";
+            _cronPreviewError = "Could not reach the server to preview this schedule.";
+        }
     }
 
-    private static bool TryGetNextFires(string expression, out List<DateTime> nextFires)
+    private string CronPreviewDescription
     {
-        nextFires = new List<DateTime>();
-        if (string.IsNullOrWhiteSpace(expression))
+        get
         {
-            return false;
-        }
-
-        var parts = expression.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 5)
-        {
-            return false;
-        }
-
-        var minutes = ParseCronField(parts[0], 0, 59);
-        var hours = ParseCronField(parts[1], 0, 23);
-        var days = ParseCronField(parts[2], 1, 31);
-        var months = ParseCronField(parts[3], 1, 12);
-        var weekdays = ParseCronField(parts[4], 0, 7);
-        if (minutes == null || hours == null || days == null || months == null || weekdays == null)
-        {
-            return false;
-        }
-
-        if (weekdays.Contains(7))
-        {
-            weekdays.Add(0);
-        }
-
-        var candidate = DateTime.UtcNow.AddMinutes(1);
-        candidate = new DateTime(candidate.Year, candidate.Month, candidate.Day, candidate.Hour, candidate.Minute, 0, DateTimeKind.Utc);
-        var limit = candidate.AddDays(366);
-
-        while (candidate < limit && nextFires.Count < 3)
-        {
-            if (minutes.Contains(candidate.Minute) &&
-                hours.Contains(candidate.Hour) &&
-                days.Contains(candidate.Day) &&
-                months.Contains(candidate.Month) &&
-                weekdays.Contains((int)candidate.DayOfWeek))
+            if (!string.IsNullOrWhiteSpace(_cronPreviewError))
             {
-                nextFires.Add(candidate);
+                return _cronPreviewError;
             }
 
-            candidate = candidate.AddMinutes(1);
+            return string.IsNullOrWhiteSpace(_cronPreviewDescription)
+                ? "Enter a cron expression — 5 fields, or 6 to include seconds."
+                : _cronPreviewDescription;
         }
-
-        return nextFires.Any();
     }
 
-    private static HashSet<int>? ParseCronField(string field, int min, int max)
+    private IntegrationStepDto? ScheduleStep => Diagram?.Nodes
+        .OfType<IntegrationNodeModel>()
+        .Select(node => node.StepConfig)
+        .FirstOrDefault(step => step.StepType == StepType.Schedule.ToString());
+
+    private bool HasScheduleNode => ScheduleStep != null;
+
+    private string ScheduleNodeSummary
     {
-        var values = new HashSet<int>();
-        foreach (var part in field.Split(','))
+        get
         {
-            var segment = part;
-            var step = 1;
-            var stepIndex = segment.IndexOf('/');
-            if (stepIndex >= 0)
+            var schedule = ScheduleStep;
+            if (schedule == null)
             {
-                if (!int.TryParse(segment.Substring(stepIndex + 1), out step) || step <= 0)
-                {
-                    return null;
-                }
-
-                segment = segment.Substring(0, stepIndex);
+                return string.Empty;
             }
 
-            int rangeStart, rangeEnd;
-            if (segment == "*" || segment.Length == 0)
-            {
-                rangeStart = min;
-                rangeEnd = max;
-            }
-            else if (segment.Contains('-'))
-            {
-                var bounds = segment.Split('-');
-                if (bounds.Length != 2 || !int.TryParse(bounds[0], out rangeStart) || !int.TryParse(bounds[1], out rangeEnd))
-                {
-                    return null;
-                }
-            }
-            else
-            {
-                if (!int.TryParse(segment, out rangeStart))
-                {
-                    return null;
-                }
+            var name = string.IsNullOrWhiteSpace(schedule.NodeName) ? "Schedule" : schedule.NodeName;
 
-                rangeEnd = stepIndex >= 0 ? max : rangeStart;
+            if (ReadScheduleValue(schedule, "mode") == "OneTime")
+            {
+                return TryReadScheduleRunAt(schedule, out var runAt)
+                    ? $"The '{name}' node owns this trigger — one-time run at {runAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}. Edit it on the canvas."
+                    : $"The '{name}' node owns this trigger — no run time set yet. Edit it on the canvas.";
             }
 
-            if (rangeStart < min || rangeEnd > max || rangeStart > rangeEnd)
-            {
-                return null;
-            }
+            var expression = ReadScheduleValue(schedule, "cronExpression");
+            return string.IsNullOrWhiteSpace(expression)
+                ? $"The '{name}' node owns this trigger — no cron expression set yet. Edit it on the canvas."
+                : $"The '{name}' node owns this trigger — recurring '{expression}'. Edit it on the canvas.";
+        }
+    }
 
-            for (var value = rangeStart; value <= rangeEnd; value += step)
-            {
-                values.Add(value);
-            }
+    private void ApplyScheduleTrigger(IntegrationFlowDto flow)
+    {
+        var schedule = ScheduleStep;
+        if (schedule == null)
+        {
+            return;
         }
 
-        return values;
+        flow.TriggerType = "Cron";
+
+        if (ReadScheduleValue(schedule, "mode") == "OneTime")
+        {
+            flow.CronExpression = string.Empty;
+            flow.RunAt = TryReadScheduleRunAt(schedule, out var runAt) ? runAt : null;
+            return;
+        }
+
+        flow.CronExpression = ReadScheduleValue(schedule, "cronExpression");
+        flow.RunAt = null;
+    }
+
+    private static bool TryReadScheduleRunAt(IntegrationStepDto step, out DateTime runAtUtc)
+    {
+        return DateTime.TryParse(
+            ReadScheduleValue(step, "runAtUtc"),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+            out runAtUtc);
+    }
+
+    private static string ReadScheduleValue(IntegrationStepDto step, string key)
+    {
+        if (string.IsNullOrWhiteSpace(step.StepConfig))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var schedule = JsonNode.Parse(step.StepConfig)?["schedule"] as JsonObject;
+            return schedule?[key]?.GetValue<string>() ?? string.Empty;
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
     }
 
     public enum StepType
@@ -715,6 +773,9 @@
         Mapping,
         Branch,
         Debug,
-        PersistedState
+        PersistedState,
+        Schedule,
+        CrossReferenceStore,
+        CrossReferenceFilter
     }
 }

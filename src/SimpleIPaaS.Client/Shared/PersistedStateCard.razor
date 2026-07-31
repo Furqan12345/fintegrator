@@ -1,22 +1,22 @@
 @using SimpleIPaaS.Shared.Models
 
-<div class="card-header" style="background: #1f6f5f;">
-    <h3 class="card-title" style="color: white;">Persisted State</h3>
+<div class="card-header node-header node-header-teal">
+    <h3 class="card-title">Persisted State</h3>
 </div>
 <div class="card-body">
-    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0 0 8px 0;">
+    <p class="node-hint">
         Update the flow-level persisted object. Only this card type can save it back to the database.
     </p>
-    <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Node Name</label>
-        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. SaveCursorState" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. SaveCursorState" />
     </div>
-    <button class="btn" style="width: 100%;" @onclick="OpenEditor">
+    <button class="btn btn-block" @onclick="OpenEditor">
         @(string.IsNullOrWhiteSpace(Step.MappingCode) ? "Open Persisted State Script" : "Edit Persisted State Script")
     </button>
     @if (!string.IsNullOrWhiteSpace(Step.MappingCode))
     {
-        <div style="margin-top: 8px; padding: 6px 10px; background: var(--bg-app); border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.7rem; color: var(--text-secondary); font-family: 'Cascadia Code', Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+        <div class="node-code-preview">
             @Step.MappingCode.Split('\n').FirstOrDefault(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("//"))
         </div>
     }

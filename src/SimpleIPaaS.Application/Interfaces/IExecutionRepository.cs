@@ -17,11 +17,13 @@ public interface IExecutionRepository
     Task AddStepExecutionAsync(StepExecution execution);
     Task UpdateStepExecutionAsync(StepExecution execution);
     Task<IEnumerable<StepExecution>> GetStepExecutionsAsync(Guid flowExecutionId);
-    
+    Task<StepExecution?> GetStepExecutionAsync(Guid flowExecutionId, Guid stepId);
+
     Task AddDeadLetterEntryAsync(DeadLetterEntry entry);
     Task<DeadLetterEntry?> GetDeadLetterAsync(Guid id);
     Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize);
     Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAcrossTenantsAsync(int batchSize);
     Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync(string? status = null);
+    Task<IEnumerable<DeadLetterEntry>> GetDeadLettersByExecutionAsync(Guid flowExecutionId);
     Task UpdateDeadLetterEntryAsync(DeadLetterEntry entry);
 }

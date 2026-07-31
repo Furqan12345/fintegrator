@@ -1,0 +1,22 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: simpleipaas-api:latest
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Data Source=/data/ipaas.db"
+      Encryption__Key: "${IPAAS_ENCRYPTION_KEY:?set IPAAS_ENCRYPTION_KEY to a 32-byte value}"
+      Cors__AllowedOrigins__0: "${IPAAS_CLIENT_ORIGIN:-http://localhost:5001}"
+      Execution__MaxConcurrency: "4"
+      Execution__MaxFlowDurationSeconds: "600"
+      Scripting__TimeoutSeconds: "10"
+    volumes:
+      - ipaas-data:/data
+    restart: unless-stopped
+
+volumes:
+  ipaas-data:

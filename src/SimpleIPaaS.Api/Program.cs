@@ -1,5 +1,8 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Api.HealthChecks;
 using SimpleIPaaS.Api.Middleware;
@@ -17,6 +20,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -45,9 +49,11 @@ builder.Services.AddScoped<ITenantContext, TenantContext>();
 // Dependency Injection
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<IIntegrationRepository, IntegrationRepository>();
+builder.Services.AddScoped<ICronScheduleRepository, IntegrationRepository>();
 builder.Services.AddScoped<IIntegrationCatalogRepository, IntegrationCatalogRepository>();
 builder.Services.AddScoped<IConnectionRepository, ConnectionRepository>();
 builder.Services.AddScoped<IExecutionRepository, ExecutionRepository>();
+builder.Services.AddScoped<ICrossReferenceRepository, CrossReferenceRepository>();
 
 builder.Services.AddScoped<ITransportEngine, TransportEngine>();
 builder.Services.AddScoped<IAuthenticationHandlerFactory, AuthenticationHandlerFactory>();
@@ -74,6 +80,42 @@ builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("database");
 
 var app = builder.Build();
+
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var feature = context.Features.Get<IExceptionHandlerFeature>();
+        if (feature?.Error != null)
+        {
+            app.Logger.LogError(
+                feature.Error,
+                "Unhandled exception processing {Method} {Path}",
+                context.Request.Method,
+                feature.Path ?? context.Request.Path.Value);
+        }
+
+        if (context.Response.HasStarted)
+        {
+            return;
+        }
+
+        context.Response.Clear();
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/problem+json";
+
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status500InternalServerError,
+            Title = "An unexpected error occurred.",
+            Detail = "The request could not be completed. Quote the trace identifier when reporting this problem.",
+            Instance = context.Request.Path
+        };
+        problem.Extensions["traceId"] = Activity.Current?.Id ?? context.TraceIdentifier;
+
+        await context.Response.WriteAsJsonAsync(problem, options: null, contentType: "application/problem+json");
+    });
+});
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())

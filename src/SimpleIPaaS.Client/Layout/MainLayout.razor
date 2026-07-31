@@ -1,37 +1,44 @@
 @inherits LayoutComponentBase
+@implements IDisposable
+@using SimpleIPaaS.Client.Shared
+@inject NavigationManager NavigationManager
+@inject HttpClient Http
+@inject IJSRuntime JSRuntime
+
+<ToastHost />
 
 <div class="app-layout">
     <!-- Sidebar -->
     <aside class="app-sidebar">
         <div class="sidebar-brand">
-            <span class="brand-icon">⚡</span>
+            <span class="brand-icon"><AppIcon Name="brand" Class="icon icon-sm" /></span>
             <span class="brand-text">SimpleIPaaS</span>
         </div>
 
         <nav class="sidebar-nav">
-            <NavLink class="sidebar-link" href="" Match="NavLinkMatch.All">
-                <span class="sidebar-icon">🔗</span>
+            <NavLink class="sidebar-link" href="" Match="NavLinkMatch.All" title="Integrations">
+                <span class="sidebar-icon"><AppIcon Name="integrations" /></span>
                 <span>Integrations</span>
             </NavLink>
-            <NavLink class="sidebar-link" href="connections">
-                <span class="sidebar-icon">🔌</span>
+            <NavLink class="sidebar-link" href="connections" title="Connections">
+                <span class="sidebar-icon"><AppIcon Name="connections" /></span>
                 <span>Connections</span>
             </NavLink>
-            <NavLink class="sidebar-link" href="activity-log">
-                <span class="sidebar-icon">📊</span>
+            <NavLink class="sidebar-link" href="activity" title="Activity Log">
+                <span class="sidebar-icon"><AppIcon Name="activity" /></span>
                 <span>Activity Log</span>
             </NavLink>
-            <NavLink class="sidebar-link" href="transaction-history">
-                <span class="sidebar-icon">TX</span>
+            <NavLink class="sidebar-link" href="transaction-history" title="Transactions">
+                <span class="sidebar-icon"><AppIcon Name="transactions" /></span>
                 <span>Transactions</span>
             </NavLink>
-            <NavLink class="sidebar-link" href="deadletters">
-                <span class="sidebar-icon">📭</span>
+            <NavLink class="sidebar-link" href="deadletters" title="Dead Letters">
+                <span class="sidebar-icon"><AppIcon Name="deadletters" /></span>
                 <span>Dead Letters</span>
             </NavLink>
-            <NavLink class="sidebar-link" href="settings">
-                <span class="sidebar-icon">⚙️</span>
-                <span>Settings</span>
+            <NavLink class="sidebar-link" href="cross-references" title="Cross-References">
+                <span class="sidebar-icon"><AppIcon Name="crossreferences" /></span>
+                <span>Cross-References</span>
             </NavLink>
         </nav>
 
@@ -45,11 +52,15 @@
         <!-- Top bar -->
         <header class="app-topbar">
             <div class="topbar-left">
-                <h1 class="topbar-title">Integration Builder</h1>
+                <h1 class="topbar-title">@PageHeading</h1>
             </div>
             <div class="topbar-right">
-                <span class="topbar-status">● Connected</span>
-                <div class="topbar-avatar">U</div>
+                <span class="topbar-status @HealthCssClass" title="@HealthDetail">
+                    <span class="status-dot"></span>@HealthLabel
+                </span>
+                <button type="button" class="topbar-icon-btn" title="@ThemeToggleLabel" aria-label="@ThemeToggleLabel" @onclick="ToggleThemeAsync">
+                    <AppIcon Name="@(_isDarkTheme ? "sun" : "moon")" Class="icon icon-sm" />
+                </button>
             </div>
         </header>
 
@@ -60,7 +71,7 @@
                     @Body
                 </ChildContent>
                 <ErrorContent>
-                    <div style="padding: 2rem; text-align: center; color: #ef4444;">
+                    <div class="app-error-boundary">
                         <h3>Something went wrong</h3>
                         <p>@context.Message</p>
                         <button class="btn" onclick="location.reload()">Reload Page</button>
@@ -70,3 +81,139 @@
         </div>
     </div>
 </div>
+
+@code {
+    private enum ApiHealth { Unknown, Healthy, Degraded, Offline }
+
+    private ApiHealth _health = ApiHealth.Unknown;
+    private bool _isDarkTheme;
+    private System.Threading.Timer? _healthTimer;
+
+    private string PageHeading => HeadingFor(NavigationManager.ToBaseRelativePath(NavigationManager.Uri));
+
+    private string HealthLabel => _health switch
+    {
+        ApiHealth.Healthy => "API healthy",
+        ApiHealth.Degraded => "API degraded",
+        ApiHealth.Offline => "API offline",
+        _ => "Checking API"
+    };
+
+    private string HealthCssClass => _health switch
+    {
+        ApiHealth.Healthy => "is-healthy",
+        ApiHealth.Degraded => "is-degraded",
+        ApiHealth.Offline => "is-offline",
+        _ => string.Empty
+    };
+
+    private string HealthDetail => _health switch
+    {
+        ApiHealth.Healthy => "The API health endpoint reported Healthy.",
+        ApiHealth.Degraded => "The API responded, but reported a degraded or unhealthy state.",
+        ApiHealth.Offline => "The API could not be reached.",
+        _ => "Contacting the API health endpoint..."
+    };
+
+    private string ThemeToggleLabel => _isDarkTheme ? "Switch to light theme" : "Switch to dark theme";
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        NavigationManager.LocationChanged += OnLocationChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await base.OnAfterRenderAsync(firstRender);
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await LoadThemeAsync();
+        await CheckHealthAsync();
+        _healthTimer = new System.Threading.Timer(_ => InvokeAsync(CheckHealthAsync), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+
+    private async Task LoadThemeAsync()
+    {
+        try
+        {
+            var theme = await JSRuntime.InvokeAsync<string>("simpleIPaaSTheme.get");
+            _isDarkTheme = string.Equals(theme, "dark", StringComparison.OrdinalIgnoreCase);
+            StateHasChanged();
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task ToggleThemeAsync()
+    {
+        var next = _isDarkTheme ? "light" : "dark";
+        try
+        {
+            var applied = await JSRuntime.InvokeAsync<string>("simpleIPaaSTheme.set", next);
+            _isDarkTheme = string.Equals(applied, "dark", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task CheckHealthAsync()
+    {
+        ApiHealth result;
+        try
+        {
+            using var response = await Http.GetAsync("health");
+            var body = (await response.Content.ReadAsStringAsync()).Trim();
+            result = response.IsSuccessStatusCode && body.Equals("Healthy", StringComparison.OrdinalIgnoreCase)
+                ? ApiHealth.Healthy
+                : ApiHealth.Degraded;
+        }
+        catch (Exception)
+        {
+            result = ApiHealth.Offline;
+        }
+
+        if (result != _health)
+        {
+            _health = result;
+            StateHasChanged();
+        }
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args)
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    private static string HeadingFor(string relativePath)
+    {
+        var path = relativePath.Split('?')[0].Split('#')[0].Trim('/');
+        var segment = path.Split('/')[0].ToLowerInvariant();
+
+        return segment switch
+        {
+            "" => "Integrations",
+            "connections" => "Connections",
+            "connection-wizard" => "Connection Setup",
+            "flow" or "flow-designer" => "Flow Designer",
+            "activity" or "activity-log" => "Activity Log",
+            "transaction-history" => "Transaction History",
+            "execution" or "execution-detail" => "Execution Details",
+            "deadletters" => "Dead Letters",
+            "cross-references" => "Cross-References",
+            _ => "SimpleIPaaS"
+        };
+    }
+
+    public void Dispose()
+    {
+        NavigationManager.LocationChanged -= OnLocationChanged;
+        _healthTimer?.Dispose();
+        _healthTimer = null;
+    }
+}

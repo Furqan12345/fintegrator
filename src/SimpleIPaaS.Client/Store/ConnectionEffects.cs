@@ -18,7 +18,7 @@ public class ConnectionEffects
     [EffectMethod]
     public async Task HandleLoadConnectionsAction(LoadConnectionsAction action, IDispatcher dispatcher)
     {
-        var connections = await _http.GetFromJsonAsync<ConnectionDto[]>("api/connections");
+        var connections = await SafeFetch.GetAsync<ConnectionDto[]>(_http, "api/connections", dispatcher, "connections");
         if (connections != null)
         {
             dispatcher.Dispatch(new LoadConnectionsResultAction { Connections = connections });
@@ -28,13 +28,21 @@ public class ConnectionEffects
     [EffectMethod]
     public async Task HandleSaveConnectionAction(SaveConnectionAction action, IDispatcher dispatcher)
     {
-        var response = action.Connection.Id == Guid.Empty
-            ? await _http.PostAsJsonAsync("api/connections", action.Connection)
-            : await _http.PutAsJsonAsync($"api/connections/{action.Connection.Id}", action.Connection);
-        var savedConnection = await response.Content.ReadFromJsonAsync<ConnectionDto>();
-        if (savedConnection != null)
+        var isNew = action.Connection.Id == Guid.Empty;
+        var savedConnection = await SafeFetch.SendAsync<ConnectionDto>(
+            () => isNew
+                ? _http.PostAsJsonAsync("api/connections", action.Connection)
+                : _http.PutAsJsonAsync($"api/connections/{action.Connection.Id}", action.Connection),
+            dispatcher,
+            "the connection");
+
+        if (savedConnection == null)
         {
-            dispatcher.Dispatch(new SaveConnectionResultAction { Connection = savedConnection });
+            dispatcher.Dispatch(new SaveConnectionFailedAction());
+            return;
         }
+
+        dispatcher.Dispatch(new SaveConnectionResultAction { Connection = savedConnection });
+        dispatcher.Dispatch(new ShowToastAction { Message = isNew ? "Connection created." : "Connection saved." });
     }
 }

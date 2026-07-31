@@ -8,13 +8,19 @@ public class DeadLetterEntry
     public Guid FlowExecutionId { get; set; }
     public Guid StepId { get; set; }
     public Guid TenantId { get; set; }
-    
+    public string FlowName { get; set; } = string.Empty;
+    public string IntegrationName { get; set; } = string.Empty;
+    public string NodeName { get; set; } = string.Empty;
+
     public string Payload { get; set; } = string.Empty;
+    public string FlowStateJson { get; set; } = "{}";
     public string ErrorMessage { get; set; } = string.Empty;
-    
+    public string AttemptHistoryJson { get; set; } = "[]";
+
     public int RetryCount { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastRetriedAt { get; set; }
-    
+    public DateTime? ResolvedAt { get; set; }
+
     public string Status { get; set; } = "Pending"; // Pending, Retried, Discarded
 }

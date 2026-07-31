@@ -58,11 +58,26 @@ public class CronTriggerScheduler : BackgroundService
     {
         using var scanScope = _serviceProvider.CreateScope();
         var repository = scanScope.ServiceProvider.GetRequiredService<IIntegrationRepository>();
+        var scheduleRepository = scanScope.ServiceProvider.GetRequiredService<ICronScheduleRepository>();
         var flows = await repository.GetActiveCronFlowsAcrossTenantsAsync();
 
         foreach (var flow in flows)
         {
             stoppingToken.ThrowIfCancellationRequested();
+
+            var now = DateTime.UtcNow;
+
+            if (flow.RunAt != null)
+            {
+                if (flow.NextRunAt == null || flow.NextRunAt > now)
+                {
+                    continue;
+                }
+
+                await scheduleRepository.UpdateNextRunAtAsync(flow.Id, flow.TenantId, null);
+                await EnqueueAsync(flow.Id, flow.TenantId, "Schedule", stoppingToken);
+                continue;
+            }
 
             CronExpression expression;
             try
@@ -75,12 +90,10 @@ public class CronTriggerScheduler : BackgroundService
                 continue;
             }
 
-            var now = DateTime.UtcNow;
-
             if (flow.NextRunAt == null)
             {
                 var next = expression.GetNextOccurrence(now);
-                await repository.UpdateNextRunAtAsync(flow.Id, next);
+                await scheduleRepository.UpdateNextRunAtAsync(flow.Id, flow.TenantId, next);
                 continue;
             }
 
@@ -89,23 +102,28 @@ public class CronTriggerScheduler : BackgroundService
                 continue;
             }
 
-            try
-            {
-                using var runScope = _serviceProvider.CreateScope();
-                var tenantContext = runScope.ServiceProvider.GetRequiredService<ITenantContext>();
-                tenantContext.SetTenantId(flow.TenantId);
-
-                var runService = runScope.ServiceProvider.GetRequiredService<FlowRunService>();
-                var executionId = await runService.EnqueueAsync(flow.Id, flow.TenantId, "Cron", null, stoppingToken);
-                _logger.LogInformation("Cron trigger enqueued execution {ExecutionId} for flow {FlowId}", executionId, flow.Id);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to enqueue cron execution for flow {FlowId}", flow.Id);
-            }
+            await EnqueueAsync(flow.Id, flow.TenantId, "Cron", stoppingToken);
 
             var nextRun = expression.GetNextOccurrence(now);
-            await repository.UpdateNextRunAtAsync(flow.Id, nextRun);
+            await scheduleRepository.UpdateNextRunAtAsync(flow.Id, flow.TenantId, nextRun);
+        }
+    }
+
+    private async Task EnqueueAsync(Guid flowId, Guid tenantId, string triggerSource, CancellationToken stoppingToken)
+    {
+        try
+        {
+            using var runScope = _serviceProvider.CreateScope();
+            var tenantContext = runScope.ServiceProvider.GetRequiredService<ITenantContext>();
+            tenantContext.SetTenantId(tenantId);
+
+            var runService = runScope.ServiceProvider.GetRequiredService<FlowRunService>();
+            var executionId = await runService.EnqueueAsync(flowId, tenantId, triggerSource, null, stoppingToken);
+            _logger.LogInformation("{TriggerSource} trigger enqueued execution {ExecutionId} for flow {FlowId}", triggerSource, executionId, flowId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to enqueue {TriggerSource} execution for flow {FlowId}", triggerSource, flowId);
         }
     }
 

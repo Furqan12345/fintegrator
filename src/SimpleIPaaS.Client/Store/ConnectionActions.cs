@@ -9,3 +9,4 @@ public class LoadConnectionsResultAction { public IEnumerable<ConnectionDto> Con
 
 public class SaveConnectionAction { public ConnectionDto Connection { get; set; } = null!; }
 public class SaveConnectionResultAction { public ConnectionDto Connection { get; set; } = null!; }
+public class SaveConnectionFailedAction { }

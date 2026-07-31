@@ -39,15 +39,15 @@
                             <span class="panel-label">Output</span>
                             @if (_isRunning)
                             {
-                                <span class="panel-hint" style="color: var(--primary);">Running...</span>
+                                <span class="panel-hint panel-hint-running">Running...</span>
                             }
                             else if (_hasError)
                             {
-                                <span class="panel-hint" style="color: var(--danger);">Error</span>
+                                <span class="panel-hint panel-hint-error">Error</span>
                             }
                             else if (_hasResult)
                             {
-                                <span class="panel-hint" style="color: var(--success);">Success</span>
+                                <span class="panel-hint panel-hint-success">Success</span>
                             }
                         </div>
                         <textarea class="code-textarea io-textarea output-textarea" readonly value="@Output"></textarea>
@@ -57,7 +57,7 @@
 
             <div class="modal-footer">
                 <button class="btn btn-outline" @onclick="ResetToSample">Reset to Sample</button>
-                <div style="flex: 1;"></div>
+                <div class="modal-footer-spacer"></div>
                 <button class="btn" @onclick="TestRun" disabled="@_isRunning">
                     @(_isRunning ? "Running..." : "Test Run")
                 </button>

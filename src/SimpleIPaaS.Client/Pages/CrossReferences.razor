@@ -1,0 +1,325 @@
+@page "/cross-references"
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IState<CrossReferenceState> CrossReferenceState
+@inject IDispatcher Dispatcher
+
+<PageTitle>Cross-References — SimpleIPaaS</PageTitle>
+
+<div class="page-header">
+    <div class="header-left">
+        <h2>Cross-References</h2>
+        <p class="subtitle">Named key lists used by Store and Filter nodes to deduplicate records</p>
+    </div>
+    <div class="header-right">
+        @if (IsListOpen)
+        {
+            <input type="text" class="form-control xref-search" placeholder="Search keys or values" value="@_search" @onchange="OnSearchChanged" />
+            <button class="btn btn-outline" @onclick="CloseList">Back to lists</button>
+        }
+        else
+        {
+            <button class="btn btn-primary" @onclick="OpenCreateDialog">New list</button>
+        }
+    </div>
+</div>
+
+<div class="activity-log-container">
+    @if (IsListOpen)
+    {
+        @if (CrossReferenceState.Value.IsLoading && !CrossReferenceState.Value.Entries.Any())
+        {
+            <div class="loading-state">Loading entries...</div>
+        }
+        else if (!CrossReferenceState.Value.Entries.Any())
+        {
+            <div class="empty-state">
+                <span class="empty-icon"><AppIcon Name="search" Class="icon icon-lg" /></span>
+                <h3>No entries</h3>
+                <p>Nothing has been stored in <strong>@CrossReferenceState.Value.SelectedList</strong>@(string.IsNullOrWhiteSpace(_search) ? " yet" : " for this search").</p>
+            </div>
+        }
+        else
+        {
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Key</th>
+                        <th>Stored value</th>
+                        <th>Flow</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var entry in CrossReferenceState.Value.Entries)
+                    {
+                        <tr>
+                            <td title="@entry.KeyValue">@Truncate(entry.KeyValue, 60)</td>
+                            <td title="@entry.ValueJson">@Truncate(entry.ValueJson, 80)</td>
+                            <td>@(entry.FlowId.HasValue ? ShortId(entry.FlowId.Value) : "-")</td>
+                            <td>@entry.CreatedAt.ToLocalTime()</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline" @onclick="() => AskDeleteEntry(entry)">Delete</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        <div class="table-pagination">
+            <button class="btn btn-sm btn-outline" @onclick="PreviousPage" disabled="@(CrossReferenceState.Value.Page <= 1)">◀ Prev</button>
+            <span class="text-muted">Page @CrossReferenceState.Value.Page · @CrossReferenceState.Value.TotalCount entries</span>
+            <button class="btn btn-sm btn-outline" @onclick="NextPage" disabled="@(!HasNextPage)">Next ▶</button>
+        </div>
+    }
+    else if (CrossReferenceState.Value.IsLoading && !CrossReferenceState.Value.Lists.Any())
+    {
+        <div class="loading-state">Loading cross-reference lists...</div>
+    }
+    else if (!CrossReferenceState.Value.Lists.Any())
+    {
+        <div class="empty-state">
+            <span class="empty-icon"><AppIcon Name="crossreferences" Class="icon icon-lg" /></span>
+            <h3>No cross-reference lists</h3>
+            <p>Create a list here, or let a Cross-Reference Store node create one on its first run.</p>
+        </div>
+    }
+    else
+    {
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Description</th>
+                    <th>Entries</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var list in CrossReferenceState.Value.Lists)
+                {
+                    <tr>
+                        <td><strong>@list.Name</strong></td>
+                        <td>@(string.IsNullOrWhiteSpace(list.Description) ? "-" : list.Description)</td>
+                        <td>@list.EntryCount</td>
+                        <td>@list.CreatedAt.ToLocalTime()</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline" @onclick="() => OpenList(list.Name)">Inspect</button>
+                            <button class="btn btn-sm btn-outline" @onclick="() => AskClear(list)" disabled="@(list.EntryCount == 0)">Clear</button>
+                            <button class="btn btn-sm btn-outline" @onclick="() => AskDeleteList(list)">Delete</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@if (_showCreate)
+{
+    <div class="modal-overlay" @onclick="CancelCreate">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">New cross-reference list</h2>
+                <button class="modal-close-btn" @onclick="CancelCreate">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="node-field">
+                    <label class="node-label">Name</label>
+                    <input type="text" class="form-control" @bind="_newName" placeholder="processed-orders" />
+                </div>
+                <div class="node-field">
+                    <label class="node-label">Description</label>
+                    <input type="text" class="form-control" @bind="_newDescription" placeholder="Orders already pushed downstream" />
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CancelCreate">Cancel</button>
+                    <button class="btn" @onclick="ConfirmCreate" disabled="@string.IsNullOrWhiteSpace(_newName)">Create</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_deleteListTarget != null)
+{
+    <div class="modal-overlay" @onclick="CancelDeleteList">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Delete list</h2>
+                <button class="modal-close-btn" @onclick="CancelDeleteList">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Delete <strong>@_deleteListTarget.Name</strong> and its @_deleteListTarget.EntryCount entries? Flows referencing this list will start storing from scratch.</p>
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CancelDeleteList">Cancel</button>
+                    <button class="btn btn-danger" @onclick="ConfirmDeleteList">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_clearTarget != null)
+{
+    <div class="modal-overlay" @onclick="CancelClear">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Clear list</h2>
+                <button class="modal-close-btn" @onclick="CancelClear">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Remove all @_clearTarget.EntryCount entries from <strong>@_clearTarget.Name</strong>? The list itself is kept, but every record will be treated as unseen again.</p>
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CancelClear">Cancel</button>
+                    <button class="btn btn-danger" @onclick="ConfirmClear">Clear</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_deleteEntryTarget != null)
+{
+    <div class="modal-overlay" @onclick="CancelDeleteEntry">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Delete entry</h2>
+                <button class="modal-close-btn" @onclick="CancelDeleteEntry">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Delete key <strong>@Truncate(_deleteEntryTarget.KeyValue, 80)</strong>? The matching record will pass the filter again on the next run.</p>
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CancelDeleteEntry">Cancel</button>
+                    <button class="btn btn-danger" @onclick="ConfirmDeleteEntry">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string _search = string.Empty;
+    private bool _showCreate;
+    private string _newName = string.Empty;
+    private string _newDescription = string.Empty;
+    private CrossReferenceListDto? _deleteListTarget;
+    private CrossReferenceListDto? _clearTarget;
+    private CrossReferenceEntryDto? _deleteEntryTarget;
+
+    private bool IsListOpen => !string.IsNullOrWhiteSpace(CrossReferenceState.Value.SelectedList);
+
+    private bool HasNextPage =>
+        CrossReferenceState.Value.Page * CrossReferenceState.Value.PageSize < CrossReferenceState.Value.TotalCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        Dispatcher.Dispatch(new LoadCrossReferenceListsAction());
+    }
+
+    private void OpenList(string name)
+    {
+        _search = string.Empty;
+        Dispatcher.Dispatch(new LoadCrossReferenceEntriesAction { ListName = name, Page = 1 });
+    }
+
+    private void CloseList()
+    {
+        _search = string.Empty;
+        Dispatcher.Dispatch(new CloseCrossReferenceListAction());
+        Dispatcher.Dispatch(new LoadCrossReferenceListsAction());
+    }
+
+    private void OnSearchChanged(ChangeEventArgs args)
+    {
+        _search = args.Value?.ToString() ?? string.Empty;
+        Reload(1);
+    }
+
+    private void PreviousPage() => Reload(Math.Max(1, CrossReferenceState.Value.Page - 1));
+
+    private void NextPage() => Reload(CrossReferenceState.Value.Page + 1);
+
+    private void Reload(int page)
+    {
+        Dispatcher.Dispatch(new LoadCrossReferenceEntriesAction
+        {
+            ListName = CrossReferenceState.Value.SelectedList,
+            Search = _search,
+            Page = page
+        });
+    }
+
+    private void OpenCreateDialog()
+    {
+        _newName = string.Empty;
+        _newDescription = string.Empty;
+        _showCreate = true;
+    }
+
+    private void CancelCreate() => _showCreate = false;
+
+    private void ConfirmCreate()
+    {
+        Dispatcher.Dispatch(new CreateCrossReferenceListAction { Name = _newName.Trim(), Description = _newDescription.Trim() });
+        _showCreate = false;
+    }
+
+    private void AskDeleteList(CrossReferenceListDto list) => _deleteListTarget = list;
+
+    private void CancelDeleteList() => _deleteListTarget = null;
+
+    private void ConfirmDeleteList()
+    {
+        if (_deleteListTarget != null)
+        {
+            Dispatcher.Dispatch(new DeleteCrossReferenceListAction { Name = _deleteListTarget.Name });
+        }
+
+        _deleteListTarget = null;
+    }
+
+    private void AskClear(CrossReferenceListDto list) => _clearTarget = list;
+
+    private void CancelClear() => _clearTarget = null;
+
+    private void ConfirmClear()
+    {
+        if (_clearTarget != null)
+        {
+            Dispatcher.Dispatch(new ClearCrossReferenceListAction { Name = _clearTarget.Name });
+        }
+
+        _clearTarget = null;
+    }
+
+    private void AskDeleteEntry(CrossReferenceEntryDto entry) => _deleteEntryTarget = entry;
+
+    private void CancelDeleteEntry() => _deleteEntryTarget = null;
+
+    private void ConfirmDeleteEntry()
+    {
+        if (_deleteEntryTarget != null)
+        {
+            Dispatcher.Dispatch(new DeleteCrossReferenceEntryAction
+            {
+                Id = _deleteEntryTarget.Id,
+                ListName = CrossReferenceState.Value.SelectedList,
+                Search = _search,
+                Page = CrossReferenceState.Value.Page
+            });
+        }
+
+        _deleteEntryTarget = null;
+    }
+
+    private static string ShortId(Guid id) => id == Guid.Empty ? "-" : $"{id.ToString()[..8]}…";
+
+    private static string Truncate(string value, int maxLength) =>
+        string.IsNullOrEmpty(value) || value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
+}

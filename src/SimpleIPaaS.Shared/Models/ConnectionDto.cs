@@ -4,7 +4,7 @@ namespace SimpleIPaaS.Shared.Models;
 
 public class ConnectionDto
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid Id { get; set; }
     public Guid TenantId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;

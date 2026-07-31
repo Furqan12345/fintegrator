@@ -38,7 +38,7 @@ public abstract class AuthenticationHandlerBase : IAuthenticationHandler
 
         queryString += $"{Uri.EscapeDataString(name)}={Uri.EscapeDataString(value)}";
 
-        var newUri = new UriBuilder(uri.Scheme, uri.Host, uri.Port, uri.AbsolutePath, queryString);
+        var newUri = new UriBuilder(uri.Scheme, uri.Host, uri.Port, uri.AbsolutePath, "?" + queryString);
         request.RequestUri = newUri.Uri;
     }
 }

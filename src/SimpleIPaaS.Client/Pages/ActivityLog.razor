@@ -1,3 +1,4 @@
+@page "/activity"
 @page "/activity-log"
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
@@ -15,20 +16,21 @@
         <p class="subtitle">Monitor integration execution history and status</p>
     </div>
     <div class="header-right">
-        <select class="form-control" value="@_flowFilter" @onchange="OnFlowFilterChanged" style="min-width: 180px;">
+        <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
             <option value="">All flows</option>
             @foreach (var flow in FlowState.Value.Flows)
             {
                 <option value="@flow.Id">@flow.Name</option>
             }
         </select>
-        <select class="form-control" value="@_statusFilter" @onchange="OnStatusFilterChanged" style="min-width: 150px;">
+        <select class="form-control filter-select-sm" value="@_statusFilter" @onchange="OnStatusFilterChanged">
             <option value="">All statuses</option>
             <option value="Queued">Queued</option>
             <option value="InProgress">Running</option>
             <option value="Success">Success</option>
             <option value="PartialSuccess">Partial Success</option>
             <option value="Failed">Failed</option>
+            <option value="Recovered">Recovered</option>
             <option value="Cancelled">Cancelled</option>
         </select>
     </div>
@@ -42,7 +44,7 @@
     else if (!ExecutionState.Value.Executions.Any())
     {
         <div class="empty-state">
-            <span class="empty-icon">📈</span>
+            <span class="empty-icon"><AppIcon Name="activity" Class="icon icon-lg" /></span>
             <h3>No executions yet</h3>
             <p>Run an integration flow to see activity here.</p>
         </div>
@@ -65,9 +67,19 @@
                 @foreach (var exec in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
                 {
                     <tr>
-                        <td>@ResolveFlowName(exec.FlowId)</td>
+                        <td>
+                            @ResolveFlowName(exec)
+                            @if (!string.IsNullOrWhiteSpace(exec.IntegrationName))
+                            {
+                                <div class="text-muted">@exec.IntegrationName</div>
+                            }
+                        </td>
                         <td>
                             <span class="status-badge @(exec.Status.ToLower())">@exec.Status</span>
+                            @if (IsRecovered(exec))
+                            {
+                                <div class="text-muted" title="This run failed initially and was resynced">Failed earlier · resynced @RecoveredLabel(exec)</div>
+                            }
                         </td>
                         <td>@(string.IsNullOrWhiteSpace(exec.TriggerSource) ? "-" : exec.TriggerSource)</td>
                         <td>@exec.StartedAt.ToLocalTime()</td>
@@ -85,7 +97,7 @@
             </tbody>
         </table>
 
-        <div style="display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px;">
+        <div class="table-pagination">
             <button class="btn btn-sm btn-outline" @onclick="PreviousPage" disabled="@(_page <= 1)">◀ Prev</button>
             <span class="text-muted">Page @_page</span>
             <button class="btn btn-sm btn-outline" @onclick="NextPage" disabled="@(ExecutionState.Value.Executions.Count < PageSize)">Next ▶</button>
@@ -178,15 +190,26 @@
         });
     }
 
-    private string ResolveFlowName(Guid flowId)
+    private string ResolveFlowName(FlowExecutionDto exec)
     {
-        var flow = FlowState.Value.Flows.FirstOrDefault(f => f.Id == flowId);
-        return flow?.Name ?? $"{flowId.ToString().Substring(0, 8)}...";
+        if (!string.IsNullOrWhiteSpace(exec.FlowName))
+        {
+            return exec.FlowName;
+        }
+
+        var flow = FlowState.Value.Flows.FirstOrDefault(f => f.Id == exec.FlowId);
+        return flow?.Name ?? $"{exec.FlowId.ToString().Substring(0, 8)}...";
     }
+
+    private static bool IsRecovered(FlowExecutionDto exec) =>
+        exec.Status.Equals("Recovered", StringComparison.OrdinalIgnoreCase);
+
+    private static string RecoveredLabel(FlowExecutionDto exec) =>
+        exec.RecoveredAt.HasValue ? exec.RecoveredAt.Value.ToLocalTime().ToString("MMM d, h:mm tt") : "on retry";
 
     private void ViewDetails(Guid executionId)
     {
-        NavigationManager.NavigateTo($"/execution-detail/{executionId}");
+        NavigationManager.NavigateTo($"/execution/{executionId}");
     }
 
     protected override ValueTask DisposeAsyncCore(bool disposing)

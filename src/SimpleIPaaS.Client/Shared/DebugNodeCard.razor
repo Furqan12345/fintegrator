@@ -7,33 +7,33 @@
 @inject IState<FlowState> FlowState
 @inject HttpClient Http
 
-<div class="card-header" style="background: #334155;">
-    <h3 class="card-title" style="color: white;">Debug / Inspect</h3>
+<div class="card-header node-header node-header-slate">
+    <h3 class="card-title">Debug / Inspect</h3>
 </div>
 <div class="card-body" @onwheel:stopPropagation="true">
-    <div class="form-group" style="margin-bottom: 8px;">
-        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Node Name</label>
-        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. InspectPayload" style="width: 100%; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);" />
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. InspectPayload" />
     </div>
 
-    <div style="padding: 8px; background: var(--bg-app); border: 1px solid var(--border-color); border-radius: var(--radius-sm);" @onwheel:stopPropagation="true">
-        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 8px;">View Incoming Data</div>
-        <div style="display: flex; gap: 6px;">
-            <button class="btn btn-outline" style="flex: 1; font-size: 0.75rem; padding: 4px;" @onclick="ViewState" disabled="@_isLoading">
+    <div class="node-panel" @onwheel:stopPropagation="true">
+        <div class="node-panel-title">View Incoming Data</div>
+        <div class="node-btn-row">
+            <button class="btn btn-outline btn-sm node-btn-grow" @onclick="ViewState" disabled="@_isLoading">
                 @(_isLoading ? "Loading..." : "View State")
             </button>
-            <button class="btn btn-outline" style="padding: 4px 10px; font-size: 0.75rem;" @onclick="OpenFullscreenViewer" disabled="@_isLoading">
+            <button class="btn btn-outline btn-sm" @onclick="OpenFullscreenViewer" disabled="@_isLoading">
                 []
             </button>
         </div>
 
         @if (!string.IsNullOrWhiteSpace(_error))
         {
-            <div style="margin-top: 8px; color: var(--danger); font-size: 0.75rem;">@_error</div>
+            <div class="node-error">@_error</div>
         }
         else if (!string.IsNullOrWhiteSpace(_stateJson))
         {
-            <pre style="margin: 8px 0 0 0; max-height: 220px; overflow: auto; overscroll-behavior: contain; background: #0f172a; color: #e2e8f0; padding: 8px; border-radius: var(--radius-sm); font-size: 0.7rem; line-height: 1.4;" @onwheel:stopPropagation="true"><code>@_stateJson</code></pre>
+            <pre class="node-json-preview" @onwheel:stopPropagation="true"><code>@_stateJson</code></pre>
         }
     </div>
 </div>
