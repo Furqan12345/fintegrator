@@ -1,4 +1,6 @@
 @using SimpleIPaaS.Shared.Models
+@using System.Text.Json
+@using System.Text.Json.Nodes
 @inject HttpClient Http
 
 @if (IsVisible)
@@ -138,14 +140,80 @@
             };
 
             Code = string.IsNullOrWhiteSpace(existingCode) ? GetDefaultCode() : existingCode;
-            SampleInput = TargetProperty == "PostFlightCode" ? DefaultResponseInput : DefaultSampleInput;
-            PersistedStateInput = DefaultPersistedStateInput;
+            LoadSamples();
             Output = string.Empty;
             _hasError = false;
             _hasResult = false;
         }
 
         _wasVisible = IsVisible;
+    }
+
+    private const string SamplesConfigKey = "mapperSamples";
+
+    private static readonly JsonSerializerOptions StepConfigJsonOptions = new() { WriteIndented = false };
+
+    private string DefaultSampleForTarget => TargetProperty == "PostFlightCode" ? DefaultResponseInput : DefaultSampleInput;
+
+    private void LoadSamples()
+    {
+        SampleInput = DefaultSampleForTarget;
+        PersistedStateInput = DefaultPersistedStateInput;
+
+        var root = ParseStepConfig();
+        var samples = root[SamplesConfigKey] as JsonObject;
+        if (samples == null)
+        {
+            return;
+        }
+
+        var perTarget = samples[TargetProperty] as JsonObject;
+        if (perTarget == null)
+        {
+            return;
+        }
+
+        var flowState = perTarget["flowState"]?.GetValue<string>();
+        var persistedState = perTarget["persistedState"]?.GetValue<string>();
+
+        if (!string.IsNullOrWhiteSpace(flowState))
+        {
+            SampleInput = flowState;
+        }
+
+        if (!string.IsNullOrWhiteSpace(persistedState))
+        {
+            PersistedStateInput = persistedState;
+        }
+    }
+
+    private void SaveSamples()
+    {
+        var root = ParseStepConfig();
+        var samples = root[SamplesConfigKey] as JsonObject ?? new JsonObject();
+        var perTarget = samples[TargetProperty] as JsonObject ?? new JsonObject();
+        perTarget["flowState"] = SampleInput;
+        perTarget["persistedState"] = PersistedStateInput;
+        samples[TargetProperty] = perTarget;
+        root[SamplesConfigKey] = samples;
+        Step.StepConfig = root.ToJsonString(StepConfigJsonOptions);
+    }
+
+    private JsonObject ParseStepConfig()
+    {
+        if (string.IsNullOrWhiteSpace(Step?.StepConfig))
+        {
+            return new JsonObject();
+        }
+
+        try
+        {
+            return JsonNode.Parse(Step.StepConfig) as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            return new JsonObject();
+        }
     }
 
     private string GetDefaultCode()
@@ -296,6 +364,7 @@ return JsonConvert.SerializeObject(result);"
                 break;
         }
 
+        SaveSamples();
         await Close();
     }
 

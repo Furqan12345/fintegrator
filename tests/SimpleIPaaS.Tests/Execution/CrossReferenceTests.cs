@@ -273,4 +273,35 @@ public class CrossReferenceNodeTests
         Assert.Equal(new[] { "Nightly", "Inspect" }, _executions.StepExecutions.Select(s => s.NodeName));
         Assert.Equal(5, JObject.Parse(_executions.StepExecutions[0].ResponsePayload)["orders"]!.Count());
     }
+
+    [Fact]
+    public async Task CrossReferenceStore_ResolvesAFlowStatePrefixedPathAgainstTheWholeTree()
+    {
+        var wrappedPayload = """
+            { "processedData": [
+                { "id": "1", "status": "new" },
+                { "id": "2", "status": "new" },
+                { "id": "3", "status": "new" }
+            ] }
+            """;
+
+        var store = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "RememberOrders",
+            StepType = StepType.CrossReferenceStore,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "flowState.trigger.processedData",
+                  "keyPaths": ["id"], "valuePaths": ["status"] }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { store } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, wrappedPayload, CancellationToken.None);
+
+        Assert.Equal(3, _crossReferences.Entries.Count);
+        Assert.Equal(new[] { "1", "2", "3" }, _crossReferences.Entries.Select(e => e.KeyValue));
+    }
 }

@@ -492,6 +492,18 @@ public class FlowExecutor
             return input;
         }
 
+        // A path prefixed with "flowState." resolves against the whole flow-state
+        // tree (the map of node name -> output) - the same shape exposed in the
+        // Debug / Sample Flow State JSON view - so a cross-reference can reference
+        // any upstream node's output by name instead of only the directly
+        // connected upstream node's output.
+        if (arrayPath.StartsWith("flowState.", StringComparison.Ordinal))
+        {
+            var treePath = arrayPath.Substring("flowState.".Length);
+            return CrossReferenceKeyBuilder.ResolvePath(flowStateContext, treePath)
+                ?? CrossReferenceKeyBuilder.ResolvePath(input, treePath);
+        }
+
         return CrossReferenceKeyBuilder.ResolvePath(input, arrayPath)
             ?? CrossReferenceKeyBuilder.ResolvePath(flowStateContext, arrayPath);
     }
