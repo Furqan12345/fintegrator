@@ -25,6 +25,39 @@
                     return next;
                 }
             };
+
+            window.simpleIPaaSLayout = {
+                getSidebar: function () {
+                    try { return localStorage.getItem('simpleipaas-sidebar') || 'expanded'; } catch (e) { return 'expanded'; }
+                },
+                setSidebar: function (value) {
+                    try { localStorage.setItem('simpleipaas-sidebar', value); } catch (e) { }
+                    return value;
+                }
+            };
+
+            window.simpleIPaaSFullscreen = {
+                isEnabled: function () {
+                    return document.fullscreenEnabled !== undefined;
+                },
+                isActive: function () {
+                    return document.fullscreenElement !== undefined && document.fullscreenElement !== null;
+                },
+                enter: function (selector) {
+                    var el = selector ? document.querySelector(selector) : (document.fullscreenElement || document.documentElement);
+                    if (!el) { return Promise.reject('element not found'); }
+                    return el.requestFullscreen();
+                },
+                exit: function () {
+                    if (document.exitFullscreen) { return document.exitFullscreen(); }
+                    return Promise.resolve();
+                },
+                onFullScreenChange: function (dotNetHelper) {
+                    document.addEventListener('fullscreenchange', function () {
+                        dotNetHelper.invokeMethodAsync('NotifyFullscreenChange').catch(function () { });
+                    });
+                }
+            };
         })();
     </script>
     <link rel="preload" id="webassembly" />

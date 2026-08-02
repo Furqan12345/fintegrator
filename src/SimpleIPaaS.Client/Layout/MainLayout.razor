@@ -7,9 +7,9 @@
 
 <ToastHost />
 
-<div class="app-layout">
-    <!-- Sidebar -->
-    <aside class="app-sidebar">
+<div class="app-layout @SidebarLayoutClass">
+ <!-- Sidebar -->
+ <aside class="app-sidebar">
         <div class="sidebar-brand">
             <span class="brand-icon"><AppIcon Name="brand" Class="icon icon-sm" /></span>
             <span class="brand-text">SimpleIPaaS</span>
@@ -52,6 +52,9 @@
         <!-- Top bar -->
         <header class="app-topbar">
             <div class="topbar-left">
+                <button type="button" class="topbar-icon-btn sidebar-toggle" @onclick="ToggleSidebar" title="@SidebarToggleLabel" aria-label="@SidebarToggleLabel">
+                    <AppIcon Name="@(_sidebarCollapsed ? "chevron-right" : "chevron-left")" Class="icon icon-sm" />
+                </button>
                 <h1 class="topbar-title">@PageHeading</h1>
             </div>
             <div class="topbar-right">
@@ -87,7 +90,11 @@
 
     private ApiHealth _health = ApiHealth.Unknown;
     private bool _isDarkTheme;
+    private bool _sidebarCollapsed;
     private System.Threading.Timer? _healthTimer;
+
+    private string SidebarLayoutClass => _sidebarCollapsed ? "sidebar-collapsed" : string.Empty;
+    private string SidebarToggleLabel => _sidebarCollapsed ? "Show navigation" : "Hide navigation";
 
     private string PageHeading => HeadingFor(NavigationManager.ToBaseRelativePath(NavigationManager.Uri));
 
@@ -132,6 +139,7 @@
         }
 
         await LoadThemeAsync();
+        await LoadSidebarAsync();
         await CheckHealthAsync();
         _healthTimer = new System.Threading.Timer(_ => InvokeAsync(CheckHealthAsync), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
@@ -156,6 +164,31 @@
         {
             var applied = await JSRuntime.InvokeAsync<string>("simpleIPaaSTheme.set", next);
             _isDarkTheme = string.Equals(applied, "dark", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task LoadSidebarAsync()
+    {
+        try
+        {
+            var saved = await JSRuntime.InvokeAsync<string>("simpleIPaaSLayout.getSidebar");
+            _sidebarCollapsed = string.Equals(saved, "collapsed", StringComparison.OrdinalIgnoreCase);
+            StateHasChanged();
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task ToggleSidebar()
+    {
+        _sidebarCollapsed = !_sidebarCollapsed;
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSLayout.setSidebar", _sidebarCollapsed ? "collapsed" : "expanded");
         }
         catch (JSException)
         {

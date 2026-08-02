@@ -17,7 +17,9 @@
 @using SimpleIPaaS.Client.Shared
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
+@using Microsoft.JSInterop
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@implements IDisposable
 @inject IState<FlowState> FlowState
 @inject IDispatcher Dispatcher
 @inject HttpClient Http
@@ -25,34 +27,44 @@
 
 <PageTitle>Flow Designer - SimpleIPaaS</PageTitle>
 
-<div class="diagram-container">
-    <div class="diagram-toolbar">
-        <input class="toolbar-input" type="text" @bind="FlowName" placeholder="Flow Name" />
-        <select class="toolbar-input toolbar-select" value="@IntegrationValue" @onchange="OnIntegrationChanged">
-            <option value="">Unassigned flow</option>
-            @foreach (var integration in AvailableIntegrations)
-            {
-                <option value="@integration.Id">@integration.Name</option>
-            }
-        </select>
-        <div class="toolbar-divider"></div>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.Schedule)">+ Schedule</button>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.HttpAction)">+ HTTP Action</button>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.Mapping)">+ Mapper</button>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.Branch)">+ Branch</button>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceStore)">+ XRef Store</button>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceFilter)">+ XRef Filter</button>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.PersistedState)">+ Persisted State</button>
-        <button class="btn btn-outline" @onclick="() => AddNode(StepType.Debug)">+ Debug</button>
-        <div class="toolbar-divider"></div>
-        <button class="btn btn-outline" @onclick="DeleteSelectedNodes" title="Delete selected node(s)">Delete Node</button>
-        <button class="btn btn-outline" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)">Flow Settings</button>
-        <div class="toolbar-divider"></div>
-        <button class="btn" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
-            @(FlowState.Value.IsLoading ? "Saving..." : "Save")
+<div class="diagram-container @CanvasContainerClass">
+    <div class="diagram-toolbar @ToolbarClass">
+        <button class="btn btn-icon toolbar-toggle" @onclick="ToggleToolbar" title="@ToolbarToggleLabel" aria-label="@ToolbarToggleLabel">
+            <AppIcon Name="@(_toolbarCollapsed ? "chevron-down" : "chevron-up")" Class="icon icon-sm" />
         </button>
-        <button class="btn btn-success" @onclick="RunFlow" disabled="@(FlowState.Value.IsLoading || FlowState.Value.CurrentFlow == null)">
-            Run
+
+        <div class="toolbar-content">
+            <input class="toolbar-input" type="text" @bind="FlowName" placeholder="Flow Name" />
+            <select class="toolbar-input toolbar-select" value="@IntegrationValue" @onchange="OnIntegrationChanged">
+                <option value="">Unassigned flow</option>
+                @foreach (var integration in AvailableIntegrations)
+                {
+                    <option value="@integration.Id">@integration.Name</option>
+                }
+            </select>
+            <div class="toolbar-divider"></div>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Schedule)">+ Schedule</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.HttpAction)">+ HTTP Action</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Mapping)">+ Mapper</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Branch)">+ Branch</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceStore)">+ XRef Store</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceFilter)">+ XRef Filter</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.PersistedState)">+ Persisted State</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Debug)">+ Debug</button>
+            <div class="toolbar-divider"></div>
+            <button class="btn btn-outline" @onclick="DeleteSelectedNodes" title="Delete selected node(s)">Delete Node</button>
+            <button class="btn btn-outline" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)">Flow Settings</button>
+            <div class="toolbar-divider"></div>
+            <button class="btn" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
+                @(FlowState.Value.IsLoading ? "Saving..." : "Save")
+            </button>
+            <button class="btn btn-success" @onclick="RunFlow" disabled="@(FlowState.Value.IsLoading || FlowState.Value.CurrentFlow == null)">
+                Run
+            </button>
+        </div>
+
+        <button class="btn btn-icon canvas-fullscreen" @onclick="ToggleFullscreen" title="@FullscreenLabel" aria-label="@FullscreenLabel">
+            <AppIcon Name="@(_isFullscreen ? "minimize" : "maximize")" Class="icon icon-sm" />
         </button>
     </div>
 
@@ -220,6 +232,14 @@
     private List<DateTime> _cronPreviewOccurrences = new();
     private string _cronPreviewDescription = string.Empty;
     private string _cronPreviewError = string.Empty;
+    private bool _toolbarCollapsed;
+    private bool _isFullscreen;
+    private DotNetObjectReference<FlowDesigner>? _dotnetHelper;
+
+    private string ToolbarClass => _toolbarCollapsed ? "diagram-toolbar collapsed" : "diagram-toolbar";
+    private string ToolbarToggleLabel => _toolbarCollapsed ? "Show node panel" : "Hide node panel";
+    private string CanvasContainerClass => _isFullscreen ? "diagram-container canvas-fullscreen" : "diagram-container";
+    private string FullscreenLabel => _isFullscreen ? "Exit fullscreen" : "Enter fullscreen";
 
     private IEnumerable<IntegrationDto> AvailableIntegrations => _integrations;
     private string IntegrationValue => FlowState.Value.CurrentFlow?.IntegrationId?.ToString() ?? IntegrationIdQuery?.ToString() ?? string.Empty;
@@ -266,6 +286,21 @@
 
     protected override void OnAfterRender(bool firstRender)
     {
+        if (firstRender)
+        {
+            _dotnetHelper = DotNetObjectReference.Create(this);
+            _ = InvokeAsync(async () =>
+            {
+                try
+                {
+                    await JSRuntime.InvokeVoidAsync("simpleIPaaSFullscreen.onFullScreenChange", _dotnetHelper);
+                }
+                catch (JSException)
+                {
+                }
+            });
+        }
+
         if (FlowState.Value.CurrentFlow == null)
         {
             return;
@@ -447,6 +482,51 @@
 
     private void ZoomIn() => Diagram.SetZoom(Diagram.Zoom * 1.2);
     private void ZoomOut() => Diagram.SetZoom(Diagram.Zoom / 1.2);
+
+    private void ToggleToolbar()
+    {
+        _toolbarCollapsed = !_toolbarCollapsed;
+    }
+
+    private async Task ToggleFullscreen()
+    {
+        try
+        {
+            var isEnabled = await JSRuntime.InvokeAsync<bool>("simpleIPaaSFullscreen.isEnabled");
+            if (!isEnabled)
+            {
+                return;
+            }
+
+            if (_isFullscreen)
+            {
+                await JSRuntime.InvokeVoidAsync("simpleIPaaSFullscreen.exit");
+            }
+            else
+            {
+                await JSRuntime.InvokeVoidAsync("simpleIPaaSFullscreen.enter", ".diagram-container");
+            }
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    [JSInvokable]
+    public async void NotifyFullscreenChange()
+    {
+        await InvokeAsync(async () =>
+        {
+            try
+            {
+                _isFullscreen = await JSRuntime.InvokeAsync<bool>("simpleIPaaSFullscreen.isActive");
+            }
+            catch (JSException)
+            {
+            }
+            StateHasChanged();
+        });
+    }
 
     private void DeleteSelectedNodes()
     {
@@ -775,7 +855,13 @@
         Debug,
         PersistedState,
         Schedule,
-        CrossReferenceStore,
+         CrossReferenceStore,
         CrossReferenceFilter
+    }
+
+    public void Dispose()
+    {
+        _dotnetHelper?.Dispose();
+        _dotnetHelper = null;
     }
 }
