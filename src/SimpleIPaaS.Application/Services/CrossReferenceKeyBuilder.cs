@@ -51,6 +51,151 @@ public static class CrossReferenceKeyBuilder
         return current == null || current.Type == JTokenType.Null ? null : current;
     }
 
+    public static IEnumerable<JToken> ResolvePaths(JToken? root, string? path)
+    {
+        if (root == null || root.Type == JTokenType.Null) yield break;
+        if (string.IsNullOrWhiteSpace(path)) { yield return root; yield break; }
+
+        var segments = SplitPath(path).ToList();
+        foreach (var token in ResolvePathsRecursive(root, segments, 0))
+            yield return token;
+    }
+
+    private static IEnumerable<JToken> ResolvePathsRecursive(JToken current, List<string> segments, int index)
+    {
+        if (current == null || current.Type == JTokenType.Null) yield break;
+
+        if (index >= segments.Count)
+        {
+            yield return current;
+            yield break;
+        }
+
+        var segment = segments[index];
+
+        if (current is JObject obj)
+        {
+            if (obj.TryGetValue(segment, out var child))
+            {
+                foreach (var token in ResolvePathsRecursive(child, segments, index + 1))
+                    yield return token;
+            }
+        }
+        else if (current is JArray array)
+        {
+            if (segment == "*" || segment.Length == 0)
+            {
+                foreach (var element in array)
+                {
+                    foreach (var token in ResolvePathsRecursive(element, segments, index + 1))
+                        yield return token;
+                }
+            }
+            else if (int.TryParse(segment, NumberStyles.Integer, CultureInfo.InvariantCulture, out var arrIndex))
+            {
+                if (arrIndex >= 0 && arrIndex < array.Count)
+                {
+                    foreach (var token in ResolvePathsRecursive(array[arrIndex], segments, index + 1))
+                        yield return token;
+                }
+            }
+        }
+    }
+
+    public static bool ContainsWildcard(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        return SplitPath(path).Any(segment => segment == "*" || segment.Length == 0);
+    }
+
+    public static JToken? FilterArrayPreservingStructure(JToken? input, string? path, ISet<string> knownKeys, IReadOnlyList<string> keyPaths)
+    {
+        if (input == null) return null;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            var key = BuildKey(input, keyPaths);
+            return ShouldPass(key, knownKeys, new HashSet<string>(StringComparer.Ordinal)) ? input.DeepClone() : null;
+        }
+
+        var segments = SplitPath(path).ToList();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+        return FilterRecursive(input, segments, 0, knownKeys, seenKeys, keyPaths);
+    }
+
+    private static bool ShouldPass(string key, ISet<string> knownKeys, ISet<string> seenKeys)
+    {
+        if (string.IsNullOrEmpty(key)) return true;
+        if (knownKeys.Contains(key)) return false;
+        return seenKeys.Add(key);
+    }
+
+    private static JToken? FilterRecursive(JToken current, List<string> segments, int index, ISet<string> knownKeys, ISet<string> seenKeys, IReadOnlyList<string> keyPaths)
+    {
+        if (current == null || current.Type == JTokenType.Null) return null;
+
+        if (index >= segments.Count)
+        {
+            var key = BuildKey(current, keyPaths);
+            return ShouldPass(key, knownKeys, seenKeys) ? current.DeepClone() : null;
+        }
+
+        var segment = segments[index];
+
+        if (current is JObject obj)
+        {
+            if (obj.TryGetValue(segment, out var child))
+            {
+                var newObj = (JObject)obj.DeepClone();
+                var filteredChild = FilterRecursive(child, segments, index + 1, knownKeys, seenKeys, keyPaths);
+
+                if (filteredChild == null)
+                {
+                    if (child is JArray)
+                        newObj[segment] = new JArray();
+                    else
+                        newObj.Remove(segment);
+                }
+                else
+                {
+                    newObj[segment] = filteredChild;
+                }
+
+                return newObj;
+            }
+            return (JObject)obj.DeepClone();
+        }
+
+        if (current is JArray array)
+        {
+            if (segment == "*" || segment.Length == 0)
+            {
+                var newItems = new JArray();
+                foreach (var item in array)
+                {
+                    var filtered = FilterRecursive(item, segments, index + 1, knownKeys, seenKeys, keyPaths);
+                    if (filtered != null)
+                        newItems.Add(filtered);
+                }
+                return newItems;
+            }
+
+            if (int.TryParse(segment, NumberStyles.Integer, CultureInfo.InvariantCulture, out var arrIndex))
+            {
+                if (arrIndex >= 0 && arrIndex < array.Count)
+                {
+                    var result = (JArray)array.DeepClone();
+                    var filtered = FilterRecursive(array[arrIndex], segments, index + 1, knownKeys, seenKeys, keyPaths);
+                    if (filtered != null)
+                        result[arrIndex] = filtered;
+                    return result;
+                }
+                return (JArray)array.DeepClone();
+            }
+        }
+
+        return current.DeepClone();
+    }
+
     public static IReadOnlyList<JToken> ToRecords(JToken? token)
     {
         if (token == null || token.Type == JTokenType.Null)
@@ -64,6 +209,20 @@ public static class CrossReferenceKeyBuilder
         }
 
         return new[] { token };
+    }
+
+    public static IReadOnlyList<JToken> ToRecords(IEnumerable<JToken> tokens)
+    {
+        var records = new List<JToken>();
+        foreach (var token in tokens)
+        {
+            if (token == null || token.Type == JTokenType.Null) continue;
+            if (token is JArray array)
+                records.AddRange(array);
+            else
+                records.Add(token);
+        }
+        return records;
     }
 
     public static string BuildKey(JToken? record, IReadOnlyList<string> keyPaths)

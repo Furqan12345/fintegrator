@@ -70,6 +70,97 @@ public class CrossReferenceKeyBuilderTests
     }
 
     [Fact]
+    public void ResolvePaths_ReturnsSingleTokenForATopLevelField()
+    {
+        var input = JObject.Parse("""{ "id": 42 }""");
+        var results = CrossReferenceKeyBuilder.ResolvePaths(input, "id").ToList();
+        Assert.Single(results);
+        Assert.Equal(42, results[0]!.Value<int>());
+    }
+
+    [Fact]
+    public void ResolvePaths_ExpandsAWildcardArraySegment()
+    {
+        var input = JObject.Parse("""{ "orders": [ { "id": "1" }, { "id": "2" } ] }""");
+        var results = CrossReferenceKeyBuilder.ResolvePaths(input, "orders[*]").ToList();
+        Assert.Equal(2, results.Count);
+        Assert.Equal("1", results[0]!["id"]!.ToString());
+        Assert.Equal("2", results[1]!["id"]!.ToString());
+    }
+
+    [Fact]
+    public void ResolvePaths_ExpandsNestedWildcards()
+    {
+        var input = JObject.Parse("""
+        { "orders": [
+            { "id": "1", "items": [{ "sku": "A" }, { "sku": "B" }] },
+            { "id": "2", "items": [{ "sku": "C" }] }
+        ] }
+        """);
+        var results = CrossReferenceKeyBuilder.ResolvePaths(input, "orders[*].items[*]").ToList();
+        Assert.Equal(3, results.Count);
+        Assert.Equal("A", results[0]!["sku"]!.ToString());
+        Assert.Equal("B", results[1]!["sku"]!.ToString());
+        Assert.Equal("C", results[2]!["sku"]!.ToString());
+    }
+
+    [Fact]
+    public void ContainsWildcard_DetectsAsteriskInPath()
+    {
+        Assert.True(CrossReferenceKeyBuilder.ContainsWildcard("orders[*]"));
+        Assert.True(CrossReferenceKeyBuilder.ContainsWildcard("orders[*].items[*]"));
+        Assert.False(CrossReferenceKeyBuilder.ContainsWildcard("orders"));
+        Assert.False(CrossReferenceKeyBuilder.ContainsWildcard("orders.0"));
+    }
+
+    [Fact]
+    public void FilterArrayPreservingStructure_FiltersNestedArrayElements()
+    {
+        var input = JObject.Parse("""
+        { "orders": [
+            { "id": "1", "items": [
+                { "sku": "A", "qty": 1 },
+                { "sku": "B", "qty": 2 }
+            ] },
+            { "id": "2", "items": [
+                { "sku": "C", "qty": 3 }
+            ] }
+        ] }
+        """);
+
+        var knownKeys = new HashSet<string>(new[] { "A", "C" }, StringComparer.Ordinal);
+        var result = CrossReferenceKeyBuilder.FilterArrayPreservingStructure(
+            input, "orders[*].items[*]", knownKeys, new[] { "sku" });
+
+        var orders = (JArray)result!["orders"]!;
+        Assert.NotNull(orders);
+        Assert.Equal(2, orders.Count);
+        Assert.Single((JArray)orders[0]!["items"]!);
+        Assert.Equal("B", orders[0]!["items"]![0]!["sku"]!.ToString());
+        Assert.Empty((JArray)orders[1]!["items"]!);
+    }
+
+    [Fact]
+    public void FilterArrayPreservingStructure_PreservesParentObjectFields()
+    {
+        var input = JObject.Parse("""
+        { "orders": [
+            { "id": "1", "status": "new", "items": [
+                { "sku": "A" }
+            ] }
+        ] }
+        """);
+
+        var knownKeys = new HashSet<string>(StringComparer.Ordinal);
+        var result = CrossReferenceKeyBuilder.FilterArrayPreservingStructure(
+            input, "orders[*].items[*]", knownKeys, new[] { "sku" });
+
+        Assert.NotNull(result!["orders"]![0]!["id"]);
+        Assert.Equal("1", result!["orders"]![0]!["id"]!.ToString());
+        Assert.Equal("new", result!["orders"]![0]!["status"]!.ToString());
+    }
+
+    [Fact]
     public void BuildKey_FormatsNonStringScalarsInvariantly()
     {
         Assert.Equal("true", CrossReferenceKeyBuilder.BuildKey(Record, new[] { "active" }));
@@ -303,5 +394,107 @@ public class CrossReferenceNodeTests
 
         Assert.Equal(3, _crossReferences.Entries.Count);
         Assert.Equal(new[] { "1", "2", "3" }, _crossReferences.Entries.Select(e => e.KeyValue));
+    }
+
+    [Fact]
+    public async Task CrossReferenceStore_ResolvesNestedArrayWildcardForKeys()
+    {
+        var payload = """
+        { "orders": [
+            { "id": "1", "items": [
+                { "sku": "A", "qty": 1 },
+                { "sku": "B", "qty": 2 }
+            ] },
+            { "id": "2", "items": [
+                { "sku": "C", "qty": 3 }
+            ] }
+        ] }
+        """;
+
+        var store = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "RememberItems",
+            StepType = StepType.CrossReferenceStore,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "orders[*].items[*]",
+                  "keyPaths": ["sku"], "valuePaths": ["qty"] }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { store } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, payload, CancellationToken.None);
+
+        Assert.Equal(3, _crossReferences.Entries.Count);
+        Assert.Equal(new[] { "A", "B", "C" }, _crossReferences.Entries.Select(e => e.KeyValue));
+    }
+
+    [Fact]
+    public async Task CrossReferenceFilter_PreservesStructureWithNestedWildcardPath()
+    {
+        var payload = """
+        { "orders": [
+            { "id": "1", "items": [
+                { "sku": "A", "qty": 1 },
+                { "sku": "B", "qty": 2 }
+            ] },
+            { "id": "2", "items": [
+                { "sku": "C", "qty": 3 }
+            ] }
+        ] }
+        """;
+
+        _crossReferences.SeedKeys(ListName, "A", "C");
+
+        var filter = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "SkipProcessed",
+            StepType = StepType.CrossReferenceFilter,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "orders[*].items[*]",
+                  "keyPaths": ["sku"] }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, payload, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        var result = JObject.Parse(step.ResponsePayload);
+
+        // Structure is preserved — original object shape
+        var orders = (JArray)result["orders"]!;
+        Assert.NotNull(orders);
+        Assert.Equal(2, orders.Count);
+
+        // order 1: sku A is known (filtered out), sku B is kept
+        Assert.Single((JArray)orders[0]!["items"]!);
+        Assert.Equal("B", orders[0]!["items"]![0]!["sku"]!.ToString());
+
+        // order 2: sku C is known (filtered out), items empty
+        Assert.Empty((JArray)orders[1]!["items"]!);
+    }
+
+    [Fact]
+    public async Task CrossReferenceFilter_WithoutWildcardEmitsFlatArrayForBackwardCompatibility()
+    {
+        _crossReferences.SeedKeys(ListName, "1", "2");
+
+        var filter = Node("SkipProcessed", StepType.CrossReferenceFilter);
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, Payload, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        var emitted = JArray.Parse(step.ResponsePayload);
+
+        Assert.Equal(3, emitted.Count);
+        Assert.Equal(new[] { "3", "4", "5" }, emitted.Select(record => record["id"]!.ToString()));
     }
 }

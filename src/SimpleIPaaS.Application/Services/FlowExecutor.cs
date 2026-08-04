@@ -244,7 +244,7 @@ public class FlowExecutor
                         var config = ReadCrossReferenceConfig(node);
                         var input = ResolveNodeInput(flow, node, flowStateContext);
                         var records = CrossReferenceKeyBuilder.ToRecords(
-                            ResolveRecordSource(input, flowStateContext, config.ArrayPath));
+                            ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
 
                         await _crossReferenceRepository.EnsureListAsync(config.ListName, string.Empty);
 
@@ -288,7 +288,7 @@ public class FlowExecutor
                         var config = ReadCrossReferenceConfig(node);
                         var input = ResolveNodeInput(flow, node, flowStateContext);
                         var records = CrossReferenceKeyBuilder.ToRecords(
-                            ResolveRecordSource(input, flowStateContext, config.ArrayPath));
+                            ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
 
                         var keyed = records
                             .Select(record => (Record: record, Key: CrossReferenceKeyBuilder.BuildKey(record, config.KeyPaths)))
@@ -302,26 +302,41 @@ public class FlowExecutor
 
                         var knownKeys = await _crossReferenceRepository.GetExistingKeysAsync(config.ListName, lookupKeys);
 
-                        var emitted = new JArray();
+                        var knownKeySet = new HashSet<string>(knownKeys, StringComparer.Ordinal);
                         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+                        var emitted = new JArray();
+                        var passedCount = 0;
 
                         foreach (var candidate in keyed)
                         {
                             if (!string.IsNullOrEmpty(candidate.Key) &&
-                                (knownKeys.Contains(candidate.Key) || !seenKeys.Add(candidate.Key)))
+                                (knownKeySet.Contains(candidate.Key) || !seenKeys.Add(candidate.Key)))
                             {
                                 continue;
                             }
 
                             emitted.Add(candidate.Record.DeepClone());
+                            passedCount++;
                         }
 
-                        currentPayload = emitted.ToString(Newtonsoft.Json.Formatting.None);
+                        if (CrossReferenceKeyBuilder.ContainsWildcard(config.ArrayPath))
+                        {
+                            var (sourceRoot, actualPath) = ResolveFilterSource(input, flowStateContext, config.ArrayPath);
+                            var filtered = CrossReferenceKeyBuilder.FilterArrayPreservingStructure(
+                                sourceRoot, actualPath, knownKeySet, config.KeyPaths);
+                            currentPayload = filtered?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
+                        }
+                        else
+                        {
+                            currentPayload = emitted.ToString(Newtonsoft.Json.Formatting.None);
+                        }
+
                         stepExecution.ResponsePayload = currentPayload;
 
                         _logger.LogInformation(
                             "Execution {ExecutionId}: node {NodeName} passed {Passed} of {Total} records from list {ListName}",
-                            executionId, node.NodeName, emitted.Count, records.Count, config.ListName);
+                            executionId, node.NodeName, passedCount, records.Count, config.ListName);
 
                         var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                         foreach (var edge in outgoing)
@@ -485,27 +500,58 @@ public class FlowExecutor
         return upstream ?? flowStateContext["trigger"] ?? flowStateContext;
     }
 
-    private static JToken? ResolveRecordSource(JToken input, JObject flowStateContext, string arrayPath)
+    private static IEnumerable<JToken> ResolveRecordSourcePaths(JToken input, JObject flowStateContext, string arrayPath)
     {
         if (string.IsNullOrWhiteSpace(arrayPath))
         {
-            return input;
+            yield return input;
+            yield break;
         }
 
-        // A path prefixed with "flowState." resolves against the whole flow-state
-        // tree (the map of node name -> output) - the same shape exposed in the
-        // Debug / Sample Flow State JSON view - so a cross-reference can reference
-        // any upstream node's output by name instead of only the directly
-        // connected upstream node's output.
         if (arrayPath.StartsWith("flowState.", StringComparison.Ordinal))
         {
             var treePath = arrayPath.Substring("flowState.".Length);
-            return CrossReferenceKeyBuilder.ResolvePath(flowStateContext, treePath)
-                ?? CrossReferenceKeyBuilder.ResolvePath(input, treePath);
+            var fromFlowState = CrossReferenceKeyBuilder.ResolvePaths(flowStateContext, treePath).ToList();
+            if (fromFlowState.Any())
+            {
+                foreach (var token in fromFlowState) yield return token;
+            }
+            else
+            {
+                foreach (var token in CrossReferenceKeyBuilder.ResolvePaths(input, treePath)) yield return token;
+            }
+            yield break;
         }
 
-        return CrossReferenceKeyBuilder.ResolvePath(input, arrayPath)
-            ?? CrossReferenceKeyBuilder.ResolvePath(flowStateContext, arrayPath);
+        var fromInput = CrossReferenceKeyBuilder.ResolvePaths(input, arrayPath).ToList();
+        if (fromInput.Any())
+        {
+            foreach (var token in fromInput) yield return token;
+        }
+        else
+        {
+            foreach (var token in CrossReferenceKeyBuilder.ResolvePaths(flowStateContext, arrayPath)) yield return token;
+        }
+    }
+
+    private static (JToken Root, string ActualPath) ResolveFilterSource(JToken input, JObject flowStateContext, string arrayPath)
+    {
+        if (string.IsNullOrWhiteSpace(arrayPath))
+            return (input, string.Empty);
+
+        if (arrayPath.StartsWith("flowState.", StringComparison.Ordinal))
+        {
+            var treePath = arrayPath.Substring("flowState.".Length);
+            var fromFlowState = CrossReferenceKeyBuilder.ResolvePaths(flowStateContext, treePath).ToList();
+            if (fromFlowState.Any())
+                return (flowStateContext, treePath);
+            return (input, treePath);
+        }
+
+        var fromInput = CrossReferenceKeyBuilder.ResolvePaths(input, arrayPath).ToList();
+        if (fromInput.Any())
+            return (input, arrayPath);
+        return (flowStateContext, arrayPath);
     }
 
     private List<IntegrationStep> TopologicalSort(IntegrationFlow flow)

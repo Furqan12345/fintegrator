@@ -9,7 +9,7 @@
 </div>
 <div class="card-body">
     <p class="node-hint">
-        Emits only the records whose key is not already in the list. The output is always an array.
+        Emits only the records whose key is not already in the list. With a wildcard path (e.g. <code>orders[*].items[*]</code>), the original JSON structure is preserved with only filtered nested values. Without a wildcard, the output is a flat array.
     </p>
 
     <div class="node-field">
@@ -30,7 +30,7 @@
 
     <div class="node-field">
         <label class="node-label">Array Path</label>
-        <input type="text" class="form-control" @bind="Config.ArrayPath" @bind:after="Save" placeholder="orders (blank = whole payload)" />
+        <input type="text" class="form-control" @bind="Config.ArrayPath" @bind:after="Save" placeholder="orders (blank = whole payload, e.g. orders[*].items[*])" />
     </div>
 
     <div class="node-field">
