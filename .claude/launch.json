@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "src/SimpleIPaaS.Api/SimpleIPaaS.Api.csproj", "--urls", "http://localhost:5000"],
+      "port": 5000
+    },
+    {
+      "name": "client",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "src/SimpleIPaaS.Client/SimpleIPaaS.Client.csproj", "--urls", "http://localhost:5001"],
+      "port": 5001
+    }
+  ]
+}

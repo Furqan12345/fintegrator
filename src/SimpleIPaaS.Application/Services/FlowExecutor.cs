@@ -90,8 +90,9 @@ public class FlowExecutor
                 flowStateContext["trigger"] = ParseTokenOrString(triggerPayload);
             }
 
-            var persistedStateContext = ParseObjectOrEmpty(flow.PersistedStateJson);
+            var persistedStateBox = new PersistedStateRef(ParseObjectOrEmpty(flow.PersistedStateJson));
             var activeNodes = new HashSet<Guid>();
+            var executedNodes = new HashSet<Guid>();
 
             foreach (var startNode in startNodes)
             {
@@ -102,300 +103,14 @@ public class FlowExecutor
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (!activeNodes.Contains(node.Id))
+                if (!activeNodes.Contains(node.Id) || executedNodes.Contains(node.Id))
                 {
                     continue;
                 }
 
-                var stepExecution = new StepExecution
-                {
-                    FlowExecutionId = flowExecution.Id,
-                    StepId = node.Id,
-                    NodeName = node.NodeName,
-                    Status = ExecutionStatus.InProgress,
-                    StartedAt = DateTime.UtcNow
-                };
-                await _executionRepository.AddStepExecutionAsync(stepExecution);
-                flowExecution.TotalRecords++;
-
-                string flowStateJson = flowStateContext.ToString(Newtonsoft.Json.Formatting.None);
-                string persistedStateJson = persistedStateContext.ToString(Newtonsoft.Json.Formatting.None);
-                string currentPayload = string.Empty;
-
-                _logger.LogInformation("Execution {ExecutionId}: running node {NodeName} ({StepType})",
-                    executionId, node.NodeName, node.StepType);
-
-                try
-                {
-                    if (node.StepType == StepType.HttpAction)
-                    {
-                        var (statusCode, response, requestPayload) =
-                            await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken);
-
-                        stepExecution.RequestPayload = requestPayload;
-                        stepExecution.HttpStatusCode = statusCode;
-                        stepExecution.ResponsePayload = response;
-
-                        if (statusCode < 200 || statusCode >= 300)
-                        {
-                            throw new Exception($"HTTP request failed with status code {statusCode}: {response}");
-                        }
-
-                        currentPayload = response;
-
-                        if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
-                        {
-                            currentPayload = await RunScriptAsync(node, "PostFlight",
-                                () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, response));
-                        }
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            activeNodes.Add(edge.TargetNodeId);
-                        }
-                    }
-                    else if (node.StepType == StepType.Mapping)
-                    {
-                        if (!string.IsNullOrWhiteSpace(node.MappingCode))
-                        {
-                            currentPayload = await RunScriptAsync(node, "Mapping",
-                                () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson));
-                            stepExecution.ResponsePayload = currentPayload;
-                        }
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            activeNodes.Add(edge.TargetNodeId);
-                        }
-                    }
-                    else if (node.StepType == StepType.Branch)
-                    {
-                        bool branchResult = false;
-                        if (!string.IsNullOrWhiteSpace(node.MappingCode))
-                        {
-                            branchResult = await RunScriptAsync(node, "Branch",
-                                () => _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson, persistedStateJson));
-                        }
-
-                        stepExecution.ResponsePayload = $"{{\"branchResult\": {branchResult.ToString().ToLower()}}}";
-                        currentPayload = stepExecution.ResponsePayload;
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            string port = (edge.SourcePortId ?? string.Empty).ToLower();
-                            if ((branchResult && port == "true") || (!branchResult && port == "false"))
-                            {
-                                activeNodes.Add(edge.TargetNodeId);
-                            }
-                        }
-                    }
-                    else if (node.StepType == StepType.Debug)
-                    {
-                        var inspectedAtUtc = DateTime.UtcNow;
-                        stepExecution.ResponsePayload = new JObject
-                        {
-                            ["flowState"] = flowStateContext.DeepClone(),
-                            ["persistedState"] = persistedStateContext.DeepClone()
-                        }.ToString(Newtonsoft.Json.Formatting.Indented);
-                        currentPayload = new JObject
-                        {
-                            ["inspectedAtUtc"] = inspectedAtUtc
-                        }.ToString(Newtonsoft.Json.Formatting.None);
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            activeNodes.Add(edge.TargetNodeId);
-                        }
-                    }
-                    else if (node.StepType == StepType.PersistedState)
-                    {
-                        if (!string.IsNullOrWhiteSpace(node.MappingCode))
-                        {
-                            currentPayload = await RunScriptAsync(node, "PersistedState",
-                                () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson));
-                            persistedStateContext = ParseObjectOrEmpty(currentPayload);
-                            await _repository.UpdatePersistedStateAsync(flow.Id, persistedStateContext.ToString(Newtonsoft.Json.Formatting.None));
-                            stepExecution.ResponsePayload = currentPayload;
-                        }
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            activeNodes.Add(edge.TargetNodeId);
-                        }
-                    }
-                    else if (node.StepType == StepType.Schedule)
-                    {
-                        currentPayload = (flowStateContext["trigger"] ?? new JObject()).ToString(Newtonsoft.Json.Formatting.None);
-                        stepExecution.ResponsePayload = currentPayload;
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            activeNodes.Add(edge.TargetNodeId);
-                        }
-                    }
-                    else if (node.StepType == StepType.CrossReferenceStore)
-                    {
-                        var config = ReadCrossReferenceConfig(node);
-                        var input = ResolveNodeInput(flow, node, flowStateContext);
-                        var records = CrossReferenceKeyBuilder.ToRecords(
-                            ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
-
-                        await _crossReferenceRepository.EnsureListAsync(config.ListName, string.Empty);
-
-                        var entries = records
-                            .Select(record => new
-                            {
-                                Record = record,
-                                Key = CrossReferenceKeyBuilder.BuildKey(record, config.KeyPaths)
-                            })
-                            .Where(candidate => !string.IsNullOrEmpty(candidate.Key))
-                            .Select(candidate => new CrossReferenceEntry
-                            {
-                                ListName = config.ListName,
-                                KeyValue = candidate.Key,
-                                ValueJson = CrossReferenceKeyBuilder.BuildValueJson(candidate.Record, config.ValuePaths),
-                                FlowId = flow.Id
-                            })
-                            .ToList();
-
-                        var stored = await _crossReferenceRepository.UpsertEntriesAsync(config.ListName, entries);
-
-                        stepExecution.ResponsePayload = new JObject
-                        {
-                            ["listName"] = config.ListName,
-                            ["recordsRead"] = records.Count,
-                            ["keysStored"] = stored,
-                            ["keysSkipped"] = entries.Count - stored,
-                            ["recordsWithoutKey"] = records.Count - entries.Count
-                        }.ToString(Newtonsoft.Json.Formatting.None);
-
-                        currentPayload = input.ToString(Newtonsoft.Json.Formatting.None);
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            activeNodes.Add(edge.TargetNodeId);
-                        }
-                    }
-                    else if (node.StepType == StepType.CrossReferenceFilter)
-                    {
-                        var config = ReadCrossReferenceConfig(node);
-                        var input = ResolveNodeInput(flow, node, flowStateContext);
-                        var records = CrossReferenceKeyBuilder.ToRecords(
-                            ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
-
-                        var keyed = records
-                            .Select(record => (Record: record, Key: CrossReferenceKeyBuilder.BuildKey(record, config.KeyPaths)))
-                            .ToList();
-
-                        var lookupKeys = keyed
-                            .Where(candidate => !string.IsNullOrEmpty(candidate.Key))
-                            .Select(candidate => candidate.Key)
-                            .Distinct(StringComparer.Ordinal)
-                            .ToList();
-
-                        var knownKeys = await _crossReferenceRepository.GetExistingKeysAsync(config.ListName, lookupKeys);
-
-                        var knownKeySet = new HashSet<string>(knownKeys, StringComparer.Ordinal);
-                        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
-
-                        var emitted = new JArray();
-                        var passedCount = 0;
-
-                        foreach (var candidate in keyed)
-                        {
-                            if (!string.IsNullOrEmpty(candidate.Key) &&
-                                (knownKeySet.Contains(candidate.Key) || !seenKeys.Add(candidate.Key)))
-                            {
-                                continue;
-                            }
-
-                            emitted.Add(candidate.Record.DeepClone());
-                            passedCount++;
-                        }
-
-                        if (CrossReferenceKeyBuilder.ContainsWildcard(config.ArrayPath))
-                        {
-                            var (sourceRoot, actualPath) = ResolveFilterSource(input, flowStateContext, config.ArrayPath);
-                            var filtered = CrossReferenceKeyBuilder.FilterArrayPreservingStructure(
-                                sourceRoot, actualPath, knownKeySet, config.KeyPaths);
-                            currentPayload = filtered?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
-                        }
-                        else
-                        {
-                            currentPayload = emitted.ToString(Newtonsoft.Json.Formatting.None);
-                        }
-
-                        stepExecution.ResponsePayload = currentPayload;
-
-                        _logger.LogInformation(
-                            "Execution {ExecutionId}: node {NodeName} passed {Passed} of {Total} records from list {ListName}",
-                            executionId, node.NodeName, passedCount, records.Count, config.ListName);
-
-                        var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
-                        foreach (var edge in outgoing)
-                        {
-                            activeNodes.Add(edge.TargetNodeId);
-                        }
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(node.NodeName))
-                    {
-                        try
-                        {
-                            flowStateContext[node.NodeName] = JToken.Parse(string.IsNullOrWhiteSpace(currentPayload) ? "{}" : currentPayload);
-                        }
-                        catch
-                        {
-                            flowStateContext[node.NodeName] = currentPayload;
-                        }
-                    }
-
-                    stepExecution.Status = ExecutionStatus.Success;
-                    stepExecution.CompletedAt = DateTime.UtcNow;
-                    flowExecution.SuccessRecords++;
-                }
-                catch (OperationCanceledException)
-                {
-                    stepExecution.Status = ExecutionStatus.Cancelled;
-                    stepExecution.ErrorMessage = "Execution was cancelled.";
-                    stepExecution.CompletedAt = DateTime.UtcNow;
-                    await _executionRepository.UpdateStepExecutionAsync(stepExecution);
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    stepExecution.Status = ExecutionStatus.Failed;
-                    stepExecution.ErrorMessage = ex.Message;
-                    stepExecution.CompletedAt = DateTime.UtcNow;
-                    flowExecution.FailedRecords++;
-
-                    _logger.LogError(ex, "Execution {ExecutionId}: node {NodeName} failed", executionId, node.NodeName);
-
-                    var deadLetter = new DeadLetterEntry
-                    {
-                        FlowExecutionId = flowExecution.Id,
-                        StepId = node.Id,
-                        FlowName = flow.Name,
-                        IntegrationName = flowExecution.IntegrationName,
-                        NodeName = string.IsNullOrWhiteSpace(node.NodeName) ? node.StepType.ToString() : node.NodeName,
-                        Payload = stepExecution.RequestPayload,
-                        FlowStateJson = flowStateJson,
-                        ErrorMessage = ex.Message,
-                        Status = "Pending"
-                    };
-                    await _executionRepository.AddDeadLetterEntryAsync(deadLetter);
-                    await _executionRepository.UpdateStepExecutionAsync(stepExecution);
-                    throw;
-                }
-
-                await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+                await RunStepAsync(node, flow, flowStateContext, persistedStateBox,
+                    flowExecution, executionId, sortedNodes, activeNodes, executedNodes,
+                    cancellationToken);
             }
 
             flowExecution.Status = ExecutionStatus.Success;
@@ -420,6 +135,438 @@ public class FlowExecutor
 
         await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
         return flowExecution;
+    }
+
+    private async Task<string> RunStepAsync(
+        IntegrationStep node,
+        IntegrationFlow flow,
+        JObject flowStateContext,
+        PersistedStateRef persistedStateBox,
+        FlowExecution flowExecution,
+        Guid executionId,
+        List<IntegrationStep> sortedNodes,
+        HashSet<Guid> activeNodes,
+        HashSet<Guid> executedNodes,
+        CancellationToken cancellationToken)
+    {
+        var stepExecution = new StepExecution
+        {
+            FlowExecutionId = flowExecution.Id,
+            StepId = node.Id,
+            NodeName = node.NodeName,
+            Status = ExecutionStatus.InProgress,
+            StartedAt = DateTime.UtcNow
+        };
+        await _executionRepository.AddStepExecutionAsync(stepExecution);
+        flowExecution.TotalRecords++;
+
+        string flowStateJson = flowStateContext.ToString(Newtonsoft.Json.Formatting.None);
+        string persistedStateJson = persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None);
+        string currentPayload = string.Empty;
+
+        _logger.LogInformation("Execution {ExecutionId}: running node {NodeName} ({StepType})",
+            executionId, node.NodeName, node.StepType);
+
+        try
+        {
+            if (node.StepType == StepType.HttpAction)
+            {
+                var (statusCode, response, requestPayload) =
+                    await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken);
+
+                stepExecution.RequestPayload = requestPayload;
+                stepExecution.HttpStatusCode = statusCode;
+                stepExecution.ResponsePayload = response;
+
+                if (statusCode < 200 || statusCode >= 300)
+                {
+                    throw new Exception($"HTTP request failed with status code {statusCode}: {response}");
+                }
+
+                currentPayload = response;
+
+                if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
+                {
+                    currentPayload = await RunScriptAsync(node, "PostFlight",
+                        () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, response));
+                }
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.Mapping)
+            {
+                if (!string.IsNullOrWhiteSpace(node.MappingCode))
+                {
+                    currentPayload = await RunScriptAsync(node, "Mapping",
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson));
+                    stepExecution.ResponsePayload = currentPayload;
+                }
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.Branch)
+            {
+                bool branchResult = false;
+                if (!string.IsNullOrWhiteSpace(node.MappingCode))
+                {
+                    branchResult = await RunScriptAsync(node, "Branch",
+                        () => _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson, persistedStateJson));
+                }
+
+                stepExecution.ResponsePayload = $"{{\"branchResult\": {branchResult.ToString().ToLower()}}}";
+                currentPayload = stepExecution.ResponsePayload;
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    string port = (edge.SourcePortId ?? string.Empty).ToLower();
+                    if ((branchResult && port == "true") || (!branchResult && port == "false"))
+                    {
+                        activeNodes.Add(edge.TargetNodeId);
+                    }
+                }
+            }
+            else if (node.StepType == StepType.Debug)
+            {
+                var inspectedAtUtc = DateTime.UtcNow;
+                stepExecution.ResponsePayload = new JObject
+                {
+                    ["flowState"] = flowStateContext.DeepClone(),
+                    ["persistedState"] = persistedStateBox.Value.DeepClone()
+                }.ToString(Newtonsoft.Json.Formatting.Indented);
+                currentPayload = new JObject
+                {
+                    ["inspectedAtUtc"] = inspectedAtUtc
+                }.ToString(Newtonsoft.Json.Formatting.None);
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.PersistedState)
+            {
+                if (!string.IsNullOrWhiteSpace(node.MappingCode))
+                {
+                    currentPayload = await RunScriptAsync(node, "PersistedState",
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson));
+                    persistedStateBox.Value = ParseObjectOrEmpty(currentPayload);
+                    await _repository.UpdatePersistedStateAsync(flow.Id, persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None));
+                    stepExecution.ResponsePayload = currentPayload;
+                }
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.Schedule)
+            {
+                currentPayload = (flowStateContext["trigger"] ?? new JObject()).ToString(Newtonsoft.Json.Formatting.None);
+                stepExecution.ResponsePayload = currentPayload;
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.CrossReferenceStore)
+            {
+                var config = ReadCrossReferenceConfig(node);
+                var input = ResolveNodeInput(flow, node, flowStateContext);
+                var records = CrossReferenceKeyBuilder.ToRecords(
+                    ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
+
+                await _crossReferenceRepository.EnsureListAsync(config.ListName, string.Empty);
+
+                var entries = records
+                    .Select(record => new
+                    {
+                        Record = record,
+                        Key = CrossReferenceKeyBuilder.BuildKey(record, config.KeyPaths)
+                    })
+                    .Where(candidate => !string.IsNullOrEmpty(candidate.Key))
+                    .Select(candidate => new CrossReferenceEntry
+                    {
+                        ListName = config.ListName,
+                        KeyValue = candidate.Key,
+                        ValueJson = CrossReferenceKeyBuilder.BuildValueJson(candidate.Record, config.ValuePaths),
+                        FlowId = flow.Id
+                    })
+                    .ToList();
+
+                var stored = await _crossReferenceRepository.UpsertEntriesAsync(config.ListName, entries);
+
+                stepExecution.ResponsePayload = new JObject
+                {
+                    ["listName"] = config.ListName,
+                    ["recordsRead"] = records.Count,
+                    ["keysStored"] = stored,
+                    ["keysSkipped"] = entries.Count - stored,
+                    ["recordsWithoutKey"] = records.Count - entries.Count
+                }.ToString(Newtonsoft.Json.Formatting.None);
+
+                currentPayload = input.ToString(Newtonsoft.Json.Formatting.None);
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.CrossReferenceFilter)
+            {
+                var config = ReadCrossReferenceConfig(node);
+                var input = ResolveNodeInput(flow, node, flowStateContext);
+                var records = CrossReferenceKeyBuilder.ToRecords(
+                    ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
+
+                var keyed = records
+                    .Select(record => (Record: record, Key: CrossReferenceKeyBuilder.BuildKey(record, config.KeyPaths)))
+                    .ToList();
+
+                var lookupKeys = keyed
+                    .Where(candidate => !string.IsNullOrEmpty(candidate.Key))
+                    .Select(candidate => candidate.Key)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                var knownKeys = await _crossReferenceRepository.GetExistingKeysAsync(config.ListName, lookupKeys);
+
+                var knownKeySet = new HashSet<string>(knownKeys, StringComparer.Ordinal);
+                var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+                var emitted = new JArray();
+                var passedCount = 0;
+
+                foreach (var candidate in keyed)
+                {
+                    if (!string.IsNullOrEmpty(candidate.Key) &&
+                        (knownKeySet.Contains(candidate.Key) || !seenKeys.Add(candidate.Key)))
+                    {
+                        continue;
+                    }
+
+                    emitted.Add(candidate.Record.DeepClone());
+                    passedCount++;
+                }
+
+                if (CrossReferenceKeyBuilder.ContainsWildcard(config.ArrayPath))
+                {
+                    var (sourceRoot, actualPath) = ResolveFilterSource(input, flowStateContext, config.ArrayPath);
+                    var filtered = CrossReferenceKeyBuilder.FilterArrayPreservingStructure(
+                        sourceRoot, actualPath, knownKeySet, config.KeyPaths);
+                    currentPayload = filtered?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
+                }
+                else
+                {
+                    currentPayload = emitted.ToString(Newtonsoft.Json.Formatting.None);
+                }
+
+                stepExecution.ResponsePayload = currentPayload;
+
+                _logger.LogInformation(
+                    "Execution {ExecutionId}: node {NodeName} passed {Passed} of {Total} records from list {ListName}",
+                    executionId, node.NodeName, passedCount, records.Count, config.ListName);
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.ForEach)
+            {
+                var config = ForEachStepConfig.Parse(node.StepConfig);
+
+                if (string.IsNullOrWhiteSpace(config.ArrayPath))
+                {
+                    throw new InvalidOperationException(
+                        $"ForEach node {node.NodeName} has no array path configured.");
+                }
+
+                var input = ResolveNodeInput(flow, node, flowStateContext);
+                var arrayElements = CrossReferenceKeyBuilder.ResolvePath(input, config.ArrayPath)
+                    ?.ToArray() ?? Array.Empty<JToken>();
+
+                var subgraphNodeIds = IdentifySubgraphNodes(flow, node, sortedNodes);
+                var subgraphNodes = subgraphNodeIds
+                    .Select(id => sortedNodes.First(n => n.Id == id))
+                    .ToList();
+
+                executedNodes.UnionWith(subgraphNodeIds);
+
+                var combinedOutput = new JArray();
+
+                if (arrayElements.Length > 0 && subgraphNodes.Any())
+                {
+                    foreach (var element in arrayElements)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        var iterationState = (JObject)flowStateContext.DeepClone();
+                        iterationState[config.ItemVariable] = element;
+
+                        string lastPayload = string.Empty;
+
+                        foreach (var subNode in subgraphNodes)
+                        {
+                            lastPayload = await RunStepAsync(
+                                subNode, flow, iterationState, persistedStateBox,
+                                flowExecution, executionId, sortedNodes,
+                                activeNodes, executedNodes, cancellationToken);
+                        }
+
+                        var lastSubNode = subgraphNodes.Last();
+                        if (!string.IsNullOrWhiteSpace(lastSubNode.NodeName) &&
+                            iterationState.TryGetValue(lastSubNode.NodeName, out var stored))
+                        {
+                            combinedOutput.Add(stored.DeepClone());
+                        }
+                        else if (!string.IsNullOrWhiteSpace(lastPayload))
+                        {
+                            combinedOutput.Add(JToken.Parse(lastPayload));
+                        }
+                    }
+                }
+                else if (arrayElements.Length > 0 && !subgraphNodes.Any())
+                {
+                    foreach (var element in arrayElements)
+                    {
+                        combinedOutput.Add(element.DeepClone());
+                    }
+                }
+
+                currentPayload = combinedOutput.ToString(Newtonsoft.Json.Formatting.None);
+                stepExecution.ResponsePayload = currentPayload;
+
+                _logger.LogInformation(
+                    "Execution {ExecutionId}: ForEach node {NodeName} iterated {Count} items",
+                    executionId, node.NodeName, arrayElements.Length);
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(node.NodeName))
+            {
+                try
+                {
+                    flowStateContext[node.NodeName] = JToken.Parse(string.IsNullOrWhiteSpace(currentPayload) ? "{}" : currentPayload);
+                }
+                catch
+                {
+                    flowStateContext[node.NodeName] = currentPayload;
+                }
+            }
+
+            stepExecution.Status = ExecutionStatus.Success;
+            stepExecution.CompletedAt = DateTime.UtcNow;
+            flowExecution.SuccessRecords++;
+        }
+        catch (OperationCanceledException)
+        {
+            stepExecution.Status = ExecutionStatus.Cancelled;
+            stepExecution.ErrorMessage = "Execution was cancelled.";
+            stepExecution.CompletedAt = DateTime.UtcNow;
+            await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            stepExecution.Status = ExecutionStatus.Failed;
+            stepExecution.ErrorMessage = ex.Message;
+            stepExecution.CompletedAt = DateTime.UtcNow;
+            flowExecution.FailedRecords++;
+
+            _logger.LogError(ex, "Execution {ExecutionId}: node {NodeName} failed", executionId, node.NodeName);
+
+            var deadLetter = new DeadLetterEntry
+            {
+                FlowExecutionId = flowExecution.Id,
+                StepId = node.Id,
+                FlowName = flow.Name,
+                IntegrationName = flowExecution.IntegrationName,
+                NodeName = string.IsNullOrWhiteSpace(node.NodeName) ? node.StepType.ToString() : node.NodeName,
+                Payload = stepExecution.RequestPayload,
+                FlowStateJson = flowStateJson,
+                ErrorMessage = ex.Message,
+                Status = "Pending"
+            };
+            await _executionRepository.AddDeadLetterEntryAsync(deadLetter);
+            await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+            throw;
+        }
+
+        await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+        return currentPayload;
+    }
+
+    /// <summary>
+    /// Identifies the subgraph of nodes that are scoped inside a ForEach node's iteration.
+    /// A node is in-scope if ALL its predecessors are also in-scope (starting with the ForEach node itself).
+    /// The first node with an external predecessor is the merge boundary and is NOT included.
+    /// Returns node IDs in topological order.
+    /// </summary>
+    private static List<Guid> IdentifySubgraphNodes(IntegrationFlow flow, IntegrationStep forEach, List<IntegrationStep> sortedNodes)
+    {
+        var inScope = new HashSet<Guid> { forEach.Id };
+        var discovered = new HashSet<Guid>();
+        var queue = new Queue<Guid>();
+
+        foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == forEach.Id))
+        {
+            queue.Enqueue(edge.TargetNodeId);
+        }
+
+        while (queue.Any())
+        {
+            var nodeId = queue.Dequeue();
+            if (inScope.Contains(nodeId) || discovered.Contains(nodeId))
+            {
+                continue;
+            }
+
+            discovered.Add(nodeId);
+
+            var predecessors = flow.Edges
+                .Where(e => e.TargetNodeId == nodeId)
+                .Select(e => e.SourceNodeId);
+
+            if (predecessors.All(inScope.Contains))
+            {
+                inScope.Add(nodeId);
+
+                foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == nodeId))
+                {
+                    if (!inScope.Contains(edge.TargetNodeId) && !discovered.Contains(edge.TargetNodeId))
+                    {
+                        queue.Enqueue(edge.TargetNodeId);
+                    }
+                }
+            }
+        }
+
+        inScope.Remove(forEach.Id);
+
+        return sortedNodes
+            .Where(n => inScope.Contains(n.Id))
+            .Select(n => n.Id)
+            .ToList();
     }
 
     public async Task<(int StatusCode, string Response, string RequestPayload)> ExecuteHttpNodeAsync(
@@ -650,6 +797,21 @@ public class FlowExecutor
         catch (JsonException)
         {
             return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Mutable wrapper for the persisted state JObject. Needed because async methods
+    /// cannot have ref parameters, yet the PersistedState step type replaces the entire
+    /// JObject reference (not just mutates it).
+    /// </summary>
+    private sealed class PersistedStateRef
+    {
+        public JObject Value;
+
+        public PersistedStateRef(JObject value)
+        {
+            Value = value;
         }
     }
 }

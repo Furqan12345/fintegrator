@@ -1,0 +1,63 @@
+@using SimpleIPaaS.Shared.Models
+
+<div class="card-header node-header node-header-violet">
+    <h3 class="card-title">For Each</h3>
+</div>
+<div class="card-body">
+    <p class="node-hint">
+        Iterates an array and executes downstream nodes once per element. The current element is available in
+        downstream scripts as <code>flowState.&lt;itemVariable&gt;</code> (default <code>item</code>).
+        The combined output is a JSON array.
+    </p>
+
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. PerOrderItems" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Array Path</label>
+        <input type="text" class="form-control" @bind="Config.ArrayPath" @bind:after="Save" placeholder="orders (blank = whole payload)" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Item Variable</label>
+        <input type="text" class="form-control" @bind="Config.ItemVariable" @bind:after="Save" placeholder="item" />
+    </div>
+
+    <div class="node-field checkbox-label">
+        <label class="node-label">
+            Parallel execution
+        </label>
+        <input type="checkbox" class="form-check-input" @bind="Config.Parallel" @bind:after="Save" />
+    </div>
+
+    @if (Config.Parallel)
+    {
+        <div class="node-field">
+            <label class="node-label">Max Degree of Parallelism</label>
+            <input type="number" min="1" class="form-control" @bind="Config.MaxDegreeOfParallelism" @bind:after="Save" />
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+
+    private ForEachCardConfig Config { get; set; } = new();
+    private Guid _hydratedStepId;
+
+    protected override void OnParametersSet()
+    {
+        if (Step.Id != _hydratedStepId)
+        {
+            _hydratedStepId = Step.Id;
+            Config = ForEachCardConfig.Read(Step.StepConfig);
+        }
+    }
+
+    private void Save()
+    {
+        Step.StepConfig = Config.Write(Step.StepConfig);
+    }
+}

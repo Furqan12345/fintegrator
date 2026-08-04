@@ -36,6 +36,10 @@
     {
         <CrossReferenceFilterCard Step="Node.StepConfig" />
     }
+    else if (Node.StepConfig.StepType == "ForEach")
+    {
+        <ForEachCard Step="Node.StepConfig" />
+    }
 
     @foreach (var port in Node.Ports)
     {

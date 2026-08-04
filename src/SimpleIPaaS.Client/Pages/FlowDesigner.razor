@@ -51,6 +51,7 @@
             <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceFilter)">+ XRef Filter</button>
             <button class="btn btn-outline" @onclick="() => AddNode(StepType.PersistedState)">+ Persisted State</button>
             <button class="btn btn-outline" @onclick="() => AddNode(StepType.Debug)">+ Debug</button>
+            <button class="btn btn-outline" @onclick="() => AddNode(StepType.ForEach)">+ For Each</button>
             <div class="toolbar-divider"></div>
             <button class="btn btn-outline" @onclick="DeleteSelectedNodes" title="Delete selected node(s)">Delete Node</button>
             <button class="btn btn-outline" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)">Flow Settings</button>
@@ -856,7 +857,8 @@
         PersistedState,
         Schedule,
          CrossReferenceStore,
-        CrossReferenceFilter
+        CrossReferenceFilter,
+        ForEach
     }
 
     public void Dispose()

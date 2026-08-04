@@ -1,0 +1,13 @@
+# User Taste & Preferences
+- Always push to GitHub after making changes. Confidence: 0.95
+- Commit taste files to git so preferences are shared across machines. Confidence: 0.9
+- Keep commits focused by excluding unrelated file changes from staged area before committing. Confidence: 0.75
+- Investigate project setup files (docker-compose.yml, Dockerfile, launchSettings.json) before starting a project to understand configuration. Confidence: 0.85
+- Start dependent services in dependency order (e.g. API before the client that consumes it) so the client can connect immediately on first request. Confidence: 0.85
+- Verify a service is healthy (check /health endpoint or HTTP status code) before starting dependent services. Confidence: 0.85
+- Run long-lived servers in the background and report task IDs so they can be stopped later. Confidence: 0.8
+- Use `dotnet run --project <path> --urls http://localhost:<port>` to start .NET servers with explicit port bindings. Confidence: 0.85
+- Use `ping -n <seconds> 127.0.0.1 >nul 2>&1` as a Windows-compatible wait/sleep mechanism since `sleep` is not available in cmd.exe. Confidence: 0.85
+- Remove dead/unused code as part of refactoring (e.g., remove methods that are no longer called after feature changes). Confidence: 0.85
+- Prefer backward-compatible implementations: new features should preserve existing behavior for existing inputs (e.g., single-level paths keep existing flat-array output when wildcard paths add new behavior). Confidence: 0.8
+- For N+1 fan-out patterns (e.g., get orders then per-order API calls for line items), prefer creating a new ForEach/iterator node type that fans out array elements into per-element subgraph executions, rather than embedding HTTP calls in mapping scripts or working around the limitation. Confidence: 0.85
