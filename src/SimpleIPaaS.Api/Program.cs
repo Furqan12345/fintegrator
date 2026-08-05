@@ -173,37 +173,44 @@ using (var scope = app.Services.CreateScope())
         if (samplePath != null)
         {
             const string sampleFlowName = "Amazon SP-API Orders N+1 Sync + Nested Dedup";
-            var alreadySeeded = await db.IntegrationFlows
+
+            var existing = await db.IntegrationFlows
                 .IgnoreQueryFilters()
-                .AnyAsync(f => f.Name == sampleFlowName && f.TenantId == devTenantId);
+                .FirstOrDefaultAsync(f => f.Name == sampleFlowName && f.TenantId == devTenantId);
 
-            if (!alreadySeeded)
+            if (existing != null)
             {
-                var sampleJson = await File.ReadAllTextAsync(samplePath);
-                var sampleDto = JsonSerializer.Deserialize<IntegrationFlowDto>(sampleJson,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                    ?? throw new InvalidOperationException("Sample flow failed to deserialize.");
-
-                var flow = sampleDto.ToEntity();
-                flow.TenantId = devTenantId;
-                foreach (var node in flow.Nodes)
-                {
-                    node.TenantId = devTenantId;
-                    node.FlowId = flow.Id;
-                }
-
-                foreach (var edge in flow.Edges)
-                {
-                    edge.TenantId = devTenantId;
-                    edge.FlowId = flow.Id;
-                }
-
-                db.IntegrationFlows.Add(flow);
+                db.IntegrationFlows.Remove(existing);
                 await db.SaveChangesAsync();
                 app.Logger.LogInformation(
-                    "Seeded demo flow '{FlowName}' (id={FlowId}) for dev tenant {TenantId}",
-                    flow.Name, flow.Id, devTenantId);
+                    "Removed existing demo flow '{FlowName}' (id={FlowId}) to re-seed from latest sample.",
+                    existing.Name, existing.Id);
             }
+
+            var sampleJson = await File.ReadAllTextAsync(samplePath);
+            var sampleDto = JsonSerializer.Deserialize<IntegrationFlowDto>(sampleJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? throw new InvalidOperationException("Sample flow failed to deserialize.");
+
+            var flow = sampleDto.ToEntity();
+            flow.TenantId = devTenantId;
+            foreach (var node in flow.Nodes)
+            {
+                node.TenantId = devTenantId;
+                node.FlowId = flow.Id;
+            }
+
+            foreach (var edge in flow.Edges)
+            {
+                edge.TenantId = devTenantId;
+                edge.FlowId = flow.Id;
+            }
+
+            db.IntegrationFlows.Add(flow);
+            await db.SaveChangesAsync();
+            app.Logger.LogInformation(
+                "Seeded demo flow '{FlowName}' (id={FlowId}) for dev tenant {TenantId}",
+                flow.Name, flow.Id, devTenantId);
         }
         else
         {
