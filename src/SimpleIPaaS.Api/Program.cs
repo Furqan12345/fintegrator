@@ -1,10 +1,13 @@
 using System.Diagnostics;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Api.HealthChecks;
+using SimpleIPaaS.Api.Mappings;
 using SimpleIPaaS.Api.Middleware;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
@@ -15,6 +18,7 @@ using SimpleIPaaS.Infrastructure.Persistence;
 using SimpleIPaaS.Infrastructure.Services;
 using SimpleIPaaS.Infrastructure.Services.Auth;
 using SimpleIPaaS.Infrastructure.Services.Security;
+using SimpleIPaaS.Shared.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -161,7 +165,68 @@ using (var scope = app.Services.CreateScope())
         }
 
         app.Logger.LogInformation("Development API key provisioned. Send it via the X-Api-Key header: {ApiKey}", devApiKey);
+
+        // Seed the shipped demo flow (SP-API N+1 fan-out + nested cross-reference filter)
+        // for the dev tenant so it is runnable from the Flow Designer immediately.
+        var devTenantId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var samplePath = ResolveSamplePath();
+        if (samplePath != null)
+        {
+            const string sampleFlowName = "Amazon SP-API Orders N+1 Sync + Nested Dedup";
+            var alreadySeeded = await db.IntegrationFlows
+                .IgnoreQueryFilters()
+                .AnyAsync(f => f.Name == sampleFlowName && f.TenantId == devTenantId);
+
+            if (!alreadySeeded)
+            {
+                var sampleJson = await File.ReadAllTextAsync(samplePath);
+                var sampleDto = JsonSerializer.Deserialize<IntegrationFlowDto>(sampleJson,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ?? throw new InvalidOperationException("Sample flow failed to deserialize.");
+
+                var flow = sampleDto.ToEntity();
+                flow.TenantId = devTenantId;
+                foreach (var node in flow.Nodes)
+                {
+                    node.TenantId = devTenantId;
+                    node.FlowId = flow.Id;
+                }
+
+                foreach (var edge in flow.Edges)
+                {
+                    edge.TenantId = devTenantId;
+                    edge.FlowId = flow.Id;
+                }
+
+                db.IntegrationFlows.Add(flow);
+                await db.SaveChangesAsync();
+                app.Logger.LogInformation(
+                    "Seeded demo flow '{FlowName}' (id={FlowId}) for dev tenant {TenantId}",
+                    flow.Name, flow.Id, devTenantId);
+            }
+        }
+        else
+        {
+            app.Logger.LogWarning(
+                "Demo sample flow not found at samples/integrations/sp-api-orders-nplus1.json; skipping seed.");
+        }
     }
+}
+
+static string? ResolveSamplePath()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir.Parent != null)
+    {
+        if (File.Exists(Path.Combine(dir.FullName, "SimpleIPaaS.slnx")))
+        {
+            return Path.Combine(dir.FullName, "samples", "integrations", "sp-api-orders-nplus1.json");
+        }
+
+        dir = dir.Parent;
+    }
+
+    return null;
 }
 
 app.Run();
