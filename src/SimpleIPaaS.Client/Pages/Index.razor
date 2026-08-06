@@ -32,7 +32,14 @@
         <button class="btn btn-primary" @onclick="CreateIntegration" disabled="@_isLoading">Create Integration</button>
     </div>
 
-    @if (_isLoading)
+    @if (_loadError != null)
+    {
+        <div class="loading-state error-state">
+            <p class="error-text">@_loadError</p>
+            <button class="btn btn-outline btn-sm" @onclick="LoadDataAsync">Retry</button>
+        </div>
+    }
+    else if (_isLoading)
     {
         <div class="loading-state">Loading integrations...</div>
     }
@@ -152,6 +159,7 @@
     private string _newIntegrationName = string.Empty;
     private string _newIntegrationDescription = string.Empty;
     private bool _isLoading;
+    private string? _loadError;
     private IntegrationFlowDto? _deleteTarget;
     private string _deleteConfirmName = string.Empty;
 
@@ -164,10 +172,34 @@
     private async Task LoadDataAsync()
     {
         _isLoading = true;
-        _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
-        var allFlows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
-        _standaloneFlows = allFlows.Where(flow => flow.IntegrationId == null).OrderByDescending(flow => flow.UpdatedAt).ToList();
-        _isLoading = false;
+        _loadError = null;
+        try
+        {
+            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+            var allFlows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+            _standaloneFlows = allFlows.Where(flow => flow.IntegrationId == null).OrderByDescending(flow => flow.UpdatedAt).ToList();
+        }
+        catch (HttpRequestException ex)
+        {
+            // The API is frequently unreachable for a few seconds right after a build/restart.
+            // Reset the loading flag and surface a retry instead of pinning the page on
+            // "Loading..." until a manual browser refresh (the old behaviour).
+            _loadError = $"Could not reach the API: {ex.Message}";
+            _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => InvokeAsync(LoadDataAsync));
+        }
+        catch (TaskCanceledException ex)
+        {
+            _loadError = "The API is not responding yet. Retrying…";
+            _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => InvokeAsync(LoadDataAsync));
+        }
+        catch (Exception ex)
+        {
+            _loadError = $"Could not load integrations: {ex.Message}";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 
     private async Task CreateIntegration()
