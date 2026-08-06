@@ -407,6 +407,7 @@ public class FlowExecutor
 
                 executedNodes.UnionWith(subgraphNodeIds);
 
+                var perNodeAccumulators = new Dictionary<string, JArray>();
                 var combinedOutput = new JArray();
 
                 if (arrayElements.Length > 0 && subgraphNodes.Any())
@@ -426,6 +427,26 @@ public class FlowExecutor
                                 subNode, flow, iterationState, persistedStateBox,
                                 flowExecution, executionId, sortedNodes,
                                 activeNodes, executedNodes, cancellationToken);
+
+                            if (!string.IsNullOrWhiteSpace(subNode.NodeName))
+                            {
+                                var perIter = iterationState[subNode.NodeName];
+                                if ((perIter == null || perIter.Type == JTokenType.Null) &&
+                                    !string.IsNullOrWhiteSpace(lastPayload))
+                                {
+                                    perIter = JToken.Parse(lastPayload);
+                                }
+
+                                if (perIter != null && perIter.Type != JTokenType.Null)
+                                {
+                                    if (!perNodeAccumulators.TryGetValue(subNode.NodeName, out var arr))
+                                    {
+                                        perNodeAccumulators[subNode.NodeName] = arr = new JArray();
+                                    }
+
+                                    arr.Add(perIter.DeepClone());
+                                }
+                            }
                         }
 
                         var lastSubNode = subgraphNodes.Last();
@@ -449,6 +470,12 @@ public class FlowExecutor
                 }
 
                 currentPayload = combinedOutput.ToString(Newtonsoft.Json.Formatting.None);
+
+                foreach (var kv in perNodeAccumulators)
+                {
+                    flowStateContext[kv.Key] = kv.Value;
+                }
+
                 stepExecution.ResponsePayload = currentPayload;
 
                 _logger.LogInformation(
@@ -520,6 +547,9 @@ public class FlowExecutor
     /// Identifies the subgraph of nodes that are scoped inside a ForEach node's iteration.
     /// A node is in-scope if ALL its predecessors are also in-scope (starting with the ForEach node itself).
     /// The first node with an external predecessor is the merge boundary and is NOT included.
+    /// Outgoing edges carrying SourcePortId "completed" are the ForEach's declarative post-loop
+    /// completion activation (wired in the designer) and are excluded from the in-scope body so the
+    /// merge target runs once after the loop instead of per iteration.
     /// Returns node IDs in topological order.
     /// </summary>
     private static List<Guid> IdentifySubgraphNodes(IntegrationFlow flow, IntegrationStep forEach, List<IntegrationStep> sortedNodes)
@@ -528,7 +558,7 @@ public class FlowExecutor
         var discovered = new HashSet<Guid>();
         var queue = new Queue<Guid>();
 
-        foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == forEach.Id))
+        foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == forEach.Id && (e.SourcePortId ?? string.Empty) != "completed"))
         {
             queue.Enqueue(edge.TargetNodeId);
         }

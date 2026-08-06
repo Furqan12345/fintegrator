@@ -287,4 +287,56 @@ public class ForEachTests
         var combined = JArray.Parse(forEachStep.ResponsePayload);
         Assert.Equal(3, combined.Count);
     }
+
+    [Fact]
+    public async Task ForEach_CompletionPortRunsMergeOnceAndExposesPerNodeAccumulator()
+    {
+        var start = ScheduleNode("Nightly");
+        var forEach = ForEachNode("ForOrders", "orders");
+        var itemProcessor = DebugNode("ItemProcessor");
+        var merge = DebugNode("Merge");
+
+        var flow = new IntegrationFlow
+        {
+            Nodes = { start, forEach, itemProcessor, merge },
+            Edges =
+            {
+                Edge(start, forEach),
+                Edge(forEach, itemProcessor), // body fan-out (default port -> in-scope)
+                new IntegrationEdge
+                {
+                    SourceNodeId = forEach.Id,
+                    TargetNodeId = merge.Id,
+                    SourcePortId = "completed" // post-loop completion -> runs once, no external predecessor
+                }
+            }
+        };
+
+        var execution = SeedExecution(flow);
+
+        var result = await CreateExecutor(new UnreachableTransportEngine())
+            .ExecuteFlowAsync(flow.Id, execution.Id,
+                """{ "orders": [ { "id": 1 }, { "id": 2 } ] }""", CancellationToken.None);
+
+        Assert.Equal(ExecutionStatus.Success, result.Status);
+        // start + ForEach + ItemProcessor x2 + Merge = 5 steps
+        Assert.Equal(5, result.TotalRecords);
+
+        // The merge node is reached via the completion port and runs exactly once.
+        Assert.Single(_executions.StepExecutions, s => s.NodeName == "Merge");
+
+        var mergeStep = _executions.StepExecutions.Last(s => s.NodeName == "Merge");
+        var debugDump = JObject.Parse(mergeStep.ResponsePayload);
+        var flowState = debugDump["flowState"] as JObject;
+
+        // The ForEach's combined, order-preserving output under its own name.
+        var combined = flowState?["ForOrders"] as JArray;
+        Assert.NotNull(combined);
+        Assert.Equal(2, combined!.Count);
+
+        // Each body node's per-iteration output was accumulated, in order.
+        var processorAccumulated = flowState?["ItemProcessor"] as JArray;
+        Assert.NotNull(processorAccumulated);
+        Assert.Equal(2, processorAccumulated!.Count);
+    }
 }
