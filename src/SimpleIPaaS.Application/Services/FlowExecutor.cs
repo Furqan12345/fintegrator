@@ -397,7 +397,8 @@ public class FlowExecutor
                 }
 
                 var input = ResolveNodeInput(flow, node, flowStateContext);
-                var arrayElements = CrossReferenceKeyBuilder.ResolvePath(input, config.ArrayPath)
+                var (arrayRoot, arrayActualPath) = ResolveArraySource(input, flowStateContext, config.ArrayPath);
+                var arrayElements = CrossReferenceKeyBuilder.ResolvePath(arrayRoot, arrayActualPath)
                     ?.ToArray() ?? Array.Empty<JToken>();
 
                 var subgraphNodeIds = IdentifySubgraphNodes(flow, node, sortedNodes);
@@ -675,6 +676,21 @@ public class FlowExecutor
             .FirstOrDefault(token => token != null && token.Type != JTokenType.Null);
 
         return upstream ?? flowStateContext["trigger"] ?? flowStateContext;
+    }
+
+    private static (JToken Root, string ActualPath) ResolveArraySource(
+        JToken input, JObject flowStateContext, string arrayPath)
+    {
+        // Array paths are resolved through the central flow state first, consistent
+        // with the cross-reference nodes: a `flowState.<node>.<path>` prefix is
+        // resolved against the shared flowStateContext (the single source of truth),
+        // while a plain path resolves against the node's own upstream input.
+        if (!string.IsNullOrWhiteSpace(arrayPath) && arrayPath.StartsWith("flowState.", StringComparison.Ordinal))
+        {
+            return (flowStateContext, arrayPath.Substring("flowState.".Length));
+        }
+
+        return (input, arrayPath);
     }
 
     private static IEnumerable<JToken> ResolveRecordSourcePaths(JToken input, JObject flowStateContext, string arrayPath)

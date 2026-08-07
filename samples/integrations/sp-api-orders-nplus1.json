@@ -52,7 +52,7 @@
       "urlCode": "",
       "preFlightCode": "",
       "postFlightCode": "",
-      "stepConfig": "{\"forEach\":{\"arrayPath\":\"orders\",\"itemVariable\":\"order\",\"parallel\":false,\"maxDegreeOfParallelism\":1}}"
+      "stepConfig": "{\"forEach\":{\"arrayPath\":\"flowState.FetchOrders.orders\",\"itemVariable\":\"order\",\"parallel\":false,\"maxDegreeOfParallelism\":1}}"
     },
     {
       "id": "6941c21a-b463-4cd5-847c-cc9c7f2ec6c1",

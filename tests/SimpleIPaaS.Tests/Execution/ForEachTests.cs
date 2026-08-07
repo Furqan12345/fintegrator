@@ -339,4 +339,36 @@ public class ForEachTests
         Assert.NotNull(processorAccumulated);
         Assert.Equal(2, processorAccumulated!.Count);
     }
+
+    [Fact]
+    public async Task ForEach_ResolvesArrayPathFromCentralFlowState()
+    {
+        // A `flowState.<path>` arrayPath must be resolved against the shared
+        // flowStateContext (the central flow state), not the node's upstream input.
+        var forEach = ForEachNode("ForOrders", "flowState.trigger.orders");
+        var inspector = DebugNode("ItemInspector");
+
+        var flow = new IntegrationFlow
+        {
+            Nodes = { forEach, inspector },
+            Edges = { Edge(forEach, inspector) }
+        };
+
+        var execution = SeedExecution(flow);
+
+        var result = await CreateExecutor(new UnreachableTransportEngine())
+            .ExecuteFlowAsync(flow.Id, execution.Id,
+                """{ "orders": [ { "id": 1, "AmazonOrderId": "A111" }, { "id": 2, "AmazonOrderId": "A222" } ] }""",
+                CancellationToken.None);
+
+        Assert.Equal(ExecutionStatus.Success, result.Status);
+        Assert.Equal(3, result.TotalRecords); // 1 ForEach + 2 Debug
+
+        Assert.Equal(new[] { "ForOrders", "ItemInspector", "ItemInspector" },
+            _executions.StepExecutions.Select(s => s.NodeName));
+
+        var forEachOutput = JArray.Parse(
+            _executions.StepExecutions.First(s => s.NodeName == "ForOrders").ResponsePayload);
+        Assert.Equal(2, forEachOutput.Count);
+    }
 }
