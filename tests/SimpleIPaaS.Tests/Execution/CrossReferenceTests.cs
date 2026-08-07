@@ -481,6 +481,58 @@ public class CrossReferenceNodeTests
     }
 
     [Fact]
+    public async Task CrossReferenceFilter_PreservesStructureWithFlowStatePrefixedWildcardPath()
+    {
+        // A `flowState.<node>.<wildcard-path>` arrayPath must resolve the array from the
+        // central flow state and preserve the original structure relative to that node's
+        // output (not re-wrap the entire flow state under the node name).
+        var payload = """
+        { "orders": [
+            { "id": "1", "items": [
+                { "sku": "A", "qty": 1 },
+                { "sku": "B", "qty": 2 }
+            ] },
+            { "id": "2", "items": [
+                { "sku": "C", "qty": 3 }
+            ] }
+        ] }
+        """;
+
+        _crossReferences.SeedKeys(ListName, "A", "C");
+
+        var filter = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "SkipProcessed",
+            StepType = StepType.CrossReferenceFilter,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "flowState.trigger.orders[*].items[*]",
+                  "keyPaths": ["sku"] }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, payload, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        var result = JObject.Parse(step.ResponsePayload);
+
+        // Structure preserved relative to the flow-state node output (not wrapped under "trigger").
+        var orders = (JArray)result["orders"]!;
+        Assert.NotNull(orders);
+        Assert.Equal(2, orders.Count);
+
+        // order 1: sku A is known (filtered out), sku B is kept
+        Assert.Single((JArray)orders[0]!["items"]!);
+        Assert.Equal("B", orders[0]!["items"]![0]!["sku"]!.ToString());
+
+        // order 2: sku C is known (filtered out), items empty
+        Assert.Empty((JArray)orders[1]!["items"]!);
+    }
+
+    [Fact]
     public async Task CrossReferenceFilter_WithoutWildcardEmitsFlatArrayForBackwardCompatibility()
     {
         _crossReferences.SeedKeys(ListName, "1", "2");

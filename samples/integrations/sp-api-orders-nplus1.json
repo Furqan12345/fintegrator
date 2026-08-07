@@ -117,7 +117,7 @@
       "urlCode": "",
       "preFlightCode": "",
       "postFlightCode": "",
-      "stepConfig": "{\"listName\":\"processed-skus\",\"arrayPath\":\"orders[*].items[*]\",\"keyPaths\":[\"sku\"]}"
+      "stepConfig": "{\"listName\":\"processed-skus\",\"arrayPath\":\"flowState.RegroupItems.orders[*].items[*]\",\"keyPaths\":[\"sku\"]}"
     },
     {
       "id": "558e9d95-db86-43df-b08f-e932fd008602",
@@ -133,7 +133,7 @@
       "urlCode": "",
       "preFlightCode": "",
       "postFlightCode": "",
-      "stepConfig": "{\"listName\":\"processed-skus\",\"arrayPath\":\"orders[*].items[*]\",\"keyPaths\":[\"sku\"],\"valuePaths\":[\"qty\",\"asin\"]}"
+      "stepConfig": "{\"listName\":\"processed-skus\",\"arrayPath\":\"flowState.RegroupItems.orders[*].items[*]\",\"keyPaths\":[\"sku\"],\"valuePaths\":[\"qty\",\"asin\"]}"
     },
     {
       "id": "84bbb9ce-0007-488f-bb0b-56ec18425a3b",
