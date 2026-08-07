@@ -737,7 +737,18 @@ public class FlowExecutor
             var treePath = arrayPath.Substring("flowState.".Length);
             var fromFlowState = CrossReferenceKeyBuilder.ResolvePaths(flowStateContext, treePath).ToList();
             if (fromFlowState.Any())
-                return (flowStateContext, treePath);
+            {
+                // Peel the leading node name so a wildcard filter preserves structure
+                // relative to that node's outputs (the central flow state) instead of
+                // re-wrapping the entire flow state under the node name.
+                var dot = treePath.IndexOf('.');
+                var sourceName = dot < 0 ? treePath : treePath.Substring(0, dot);
+                var subPath = dot < 0 ? string.Empty : treePath.Substring(dot + 1);
+                var source = flowStateContext[sourceName];
+                if (source != null && source.Type != JTokenType.Null)
+                    return (source, subPath);
+                return (input, treePath);
+            }
             return (input, treePath);
         }
 
