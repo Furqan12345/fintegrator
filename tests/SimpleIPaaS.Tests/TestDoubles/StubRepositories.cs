@@ -102,6 +102,7 @@ public sealed class StubIntegrationRepository : IIntegrationRepository
 
 public sealed class StubExecutionRepository : IExecutionRepository
 {
+    private readonly object _lock = new();
     private readonly Dictionary<Guid, FlowExecution> _flowExecutions = new();
 
     public void Seed(FlowExecution execution) => _flowExecutions[execution.Id] = execution;
@@ -118,19 +119,19 @@ public sealed class StubExecutionRepository : IExecutionRepository
 
     public Task AddFlowExecutionAsync(FlowExecution execution)
     {
-        _flowExecutions[execution.Id] = execution;
+        lock (_lock) { _flowExecutions[execution.Id] = execution; }
         return Task.CompletedTask;
     }
 
     public Task UpdateFlowExecutionAsync(FlowExecution execution)
     {
-        _flowExecutions[execution.Id] = execution;
+        lock (_lock) { _flowExecutions[execution.Id] = execution; }
         return Task.CompletedTask;
     }
 
     public Task AddStepExecutionAsync(StepExecution execution)
     {
-        StepExecutions.Add(execution);
+        lock (_lock) { StepExecutions.Add(execution); }
         return Task.CompletedTask;
     }
 
@@ -144,7 +145,7 @@ public sealed class StubExecutionRepository : IExecutionRepository
 
     public Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
     {
-        DeadLetters.Add(entry);
+        lock (_lock) { DeadLetters.Add(entry); }
         return Task.CompletedTask;
     }
 
@@ -168,6 +169,7 @@ public sealed class StubExecutionRepository : IExecutionRepository
 
 public sealed class StubCrossReferenceRepository : ICrossReferenceRepository
 {
+    private readonly object _lock = new();
     private readonly Dictionary<string, CrossReferenceList> _lists = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<CrossReferenceEntry> _entries = new();
 
@@ -175,9 +177,12 @@ public sealed class StubCrossReferenceRepository : ICrossReferenceRepository
 
     public void SeedKeys(string listName, params string[] keys)
     {
-        foreach (var key in keys)
+        lock (_lock)
         {
-            _entries.Add(new CrossReferenceEntry { ListName = listName, KeyValue = key });
+            foreach (var key in keys)
+            {
+                _entries.Add(new CrossReferenceEntry { ListName = listName, KeyValue = key });
+            }
         }
     }
 
@@ -191,19 +196,24 @@ public sealed class StubCrossReferenceRepository : ICrossReferenceRepository
 
     public Task<CrossReferenceList> EnsureListAsync(string name, string description)
     {
-        if (!_lists.TryGetValue(name, out var list))
+        lock (_lock)
         {
-            list = new CrossReferenceList { Name = name, Description = description };
-            _lists[name] = list;
+            if (!_lists.TryGetValue(name, out var list))
+            {
+                list = new CrossReferenceList { Name = name, Description = description };
+                _lists[name] = list;
+            }
+            return Task.FromResult(list);
         }
-
-        return Task.FromResult(list);
     }
 
     public Task<bool> DeleteListAsync(string name)
     {
-        _entries.RemoveAll(e => e.ListName == name);
-        return Task.FromResult(_lists.Remove(name));
+        lock (_lock)
+        {
+            _entries.RemoveAll(e => e.ListName == name);
+            return Task.FromResult(_lists.Remove(name));
+        }
     }
 
     public Task<int> ClearListAsync(string name) =>
@@ -212,26 +222,32 @@ public sealed class StubCrossReferenceRepository : ICrossReferenceRepository
     public Task<IReadOnlyCollection<string>> GetExistingKeysAsync(string listName, IReadOnlyCollection<string> keys)
     {
         var wanted = new HashSet<string>(keys, StringComparer.Ordinal);
-        return Task.FromResult<IReadOnlyCollection<string>>(_entries
-            .Where(e => e.ListName == listName && wanted.Contains(e.KeyValue))
-            .Select(e => e.KeyValue)
-            .ToHashSet(StringComparer.Ordinal));
+        lock (_lock)
+        {
+            return Task.FromResult<IReadOnlyCollection<string>>(_entries
+                .Where(e => e.ListName == listName && wanted.Contains(e.KeyValue))
+                .Select(e => e.KeyValue)
+                .ToHashSet(StringComparer.Ordinal));
+        }
     }
 
     public Task<int> UpsertEntriesAsync(string listName, IReadOnlyCollection<CrossReferenceEntry> entries)
     {
         var inserted = 0;
 
-        foreach (var entry in entries)
+        lock (_lock)
         {
-            if (_entries.Any(e => e.ListName == listName && e.KeyValue == entry.KeyValue))
+            foreach (var entry in entries)
             {
-                continue;
-            }
+                if (_entries.Any(e => e.ListName == listName && e.KeyValue == entry.KeyValue))
+                {
+                    continue;
+                }
 
-            entry.ListName = listName;
-            _entries.Add(entry);
-            inserted++;
+                entry.ListName = listName;
+                _entries.Add(entry);
+                inserted++;
+            }
         }
 
         return Task.FromResult(inserted);
@@ -253,13 +269,16 @@ public sealed class StubTransportEngine : ITransportEngine
 
     public void Enqueue(int statusCode, string response) => _responses.Enqueue((statusCode, response));
 
-    public Task<(int StatusCode, string Response)> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default) =>
-        Task.FromResult(_responses.Count > 0 ? _responses.Dequeue() : (200, "{}"));
+    public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
+    {
+        var response = _responses.Count > 0 ? _responses.Dequeue() : (200, "{}");
+        return Task.FromResult(new TransportResponse(response.Item1, response.Item2, new Dictionary<string, string[]>(), step.EndpointUrl));
+    }
 }
 
 public sealed class UnreachableTransportEngine : ITransportEngine
 {
-    public Task<(int StatusCode, string Response)> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default) =>
+    public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default) =>
         throw new InvalidOperationException("No transport dispatch was expected in this test.");
 }
 

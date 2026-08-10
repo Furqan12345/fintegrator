@@ -22,6 +22,7 @@ public class FlowExecutor
     private readonly IExecutionRepository _executionRepository;
     private readonly ICrossReferenceRepository _crossReferenceRepository;
     private readonly ILogger<FlowExecutor> _logger;
+    private static readonly object _executionLock = new();
 
     public FlowExecutor(
         IIntegrationRepository repository,
@@ -38,6 +39,11 @@ public class FlowExecutor
         _crossReferenceRepository = crossReferenceRepository;
         _logger = logger;
     }
+
+    private sealed record IterationResult(
+        string LastPayload,
+        Dictionary<string, JToken> PerNodeOutputs,
+        JToken? IterationOutput);
 
     public async Task<FlowExecution> ExecuteFlowAsync(Guid flowId, Guid executionId, string? triggerPayload, CancellationToken cancellationToken)
     {
@@ -158,7 +164,7 @@ public class FlowExecutor
             StartedAt = DateTime.UtcNow
         };
         await _executionRepository.AddStepExecutionAsync(stepExecution);
-        flowExecution.TotalRecords++;
+        lock (_executionLock) { flowExecution.TotalRecords++; }
 
         string flowStateJson = flowStateContext.ToString(Newtonsoft.Json.Formatting.None);
         string persistedStateJson = persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None);
@@ -194,7 +200,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
             else if (node.StepType == StepType.Mapping)
@@ -209,7 +215,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
             else if (node.StepType == StepType.Branch)
@@ -230,7 +236,7 @@ public class FlowExecutor
                     string port = (edge.SourcePortId ?? string.Empty).ToLower();
                     if ((branchResult && port == "true") || (!branchResult && port == "false"))
                     {
-                        activeNodes.Add(edge.TargetNodeId);
+                        lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                     }
                 }
             }
@@ -250,7 +256,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
             else if (node.StepType == StepType.PersistedState)
@@ -267,7 +273,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
             else if (node.StepType == StepType.Schedule)
@@ -278,7 +284,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
             else if (node.StepType == StepType.CrossReferenceStore)
@@ -322,7 +328,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
             else if (node.StepType == StepType.CrossReferenceFilter)
@@ -383,7 +389,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
             else if (node.StepType == StepType.ForEach)
@@ -413,52 +419,131 @@ public class FlowExecutor
 
                 if (arrayElements.Length > 0 && subgraphNodes.Any())
                 {
-                    foreach (var element in arrayElements)
+                    if (config.Parallel)
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        var iterationState = (JObject)flowStateContext.DeepClone();
-                        iterationState[config.ItemVariable] = element;
-
-                        string lastPayload = string.Empty;
-
-                        foreach (var subNode in subgraphNodes)
+                        var parallelOptions = new ParallelOptions
                         {
-                            lastPayload = await RunStepAsync(
-                                subNode, flow, iterationState, persistedStateBox,
-                                flowExecution, executionId, sortedNodes,
-                                activeNodes, executedNodes, cancellationToken);
+                            MaxDegreeOfParallelism = config.MaxDegreeOfParallelism,
+                            CancellationToken = cancellationToken
+                        };
 
-                            if (!string.IsNullOrWhiteSpace(subNode.NodeName))
+                        var perIterationResults = new IterationResult[arrayElements.Length];
+
+                        await Parallel.ForEachAsync(
+                            arrayElements.Select((element, index) => (Element: element, Index: index)),
+                            parallelOptions,
+                            async (item, ct) =>
                             {
-                                var perIter = iterationState[subNode.NodeName];
-                                if ((perIter == null || perIter.Type == JTokenType.Null) &&
-                                    !string.IsNullOrWhiteSpace(lastPayload))
-                                {
-                                    perIter = JToken.Parse(lastPayload);
-                                }
+                                var iterationState = (JObject)flowStateContext.DeepClone();
+                                iterationState[config.ItemVariable] = item.Element;
 
-                                if (perIter != null && perIter.Type != JTokenType.Null)
+                                string lastPayload = string.Empty;
+                                var perNodeOutputs = new Dictionary<string, JToken>();
+
+                                foreach (var subNode in subgraphNodes)
                                 {
-                                    if (!perNodeAccumulators.TryGetValue(subNode.NodeName, out var arr))
+                                    lastPayload = await RunStepAsync(
+                                        subNode, flow, iterationState, persistedStateBox,
+                                        flowExecution, executionId, sortedNodes,
+                                        activeNodes, executedNodes, ct);
+
+                                    if (!string.IsNullOrWhiteSpace(subNode.NodeName))
                                     {
-                                        perNodeAccumulators[subNode.NodeName] = arr = new JArray();
-                                    }
+                                        var perIter = iterationState[subNode.NodeName];
+                                        if ((perIter == null || perIter.Type == JTokenType.Null) &&
+                                            !string.IsNullOrWhiteSpace(lastPayload))
+                                        {
+                                            perIter = JToken.Parse(lastPayload);
+                                        }
 
-                                    arr.Add(perIter.DeepClone());
+                                        if (perIter != null && perIter.Type != JTokenType.Null)
+                                        {
+                                            perNodeOutputs[subNode.NodeName] = perIter.DeepClone();
+                                        }
+                                    }
                                 }
+
+                                var lastSubNode = subgraphNodes.Last();
+                                JToken? iterationOutput = null;
+                                if (!string.IsNullOrWhiteSpace(lastSubNode.NodeName) &&
+                                    perNodeOutputs.TryGetValue(lastSubNode.NodeName, out var stored))
+                                {
+                                    iterationOutput = stored.DeepClone();
+                                }
+                                else if (!string.IsNullOrWhiteSpace(lastPayload))
+                                {
+                                    iterationOutput = JToken.Parse(lastPayload);
+                                }
+
+                                perIterationResults[item.Index] = new IterationResult(lastPayload, perNodeOutputs, iterationOutput);
+                            });
+
+                        foreach (var result in perIterationResults)
+                        {
+                            foreach (var kv in result.PerNodeOutputs)
+                            {
+                                if (!perNodeAccumulators.TryGetValue(kv.Key, out var arr))
+                                {
+                                    perNodeAccumulators[kv.Key] = arr = new JArray();
+                                }
+                                arr.Add(kv.Value);
+                            }
+
+                            if (result.IterationOutput != null)
+                            {
+                                combinedOutput.Add(result.IterationOutput);
                             }
                         }
+                    }
+                    else
+                    {
+                        foreach (var element in arrayElements)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
 
-                        var lastSubNode = subgraphNodes.Last();
-                        if (!string.IsNullOrWhiteSpace(lastSubNode.NodeName) &&
-                            iterationState.TryGetValue(lastSubNode.NodeName, out var stored))
-                        {
-                            combinedOutput.Add(stored.DeepClone());
-                        }
-                        else if (!string.IsNullOrWhiteSpace(lastPayload))
-                        {
-                            combinedOutput.Add(JToken.Parse(lastPayload));
+                            var iterationState = (JObject)flowStateContext.DeepClone();
+                            iterationState[config.ItemVariable] = element;
+
+                            string lastPayload = string.Empty;
+
+                            foreach (var subNode in subgraphNodes)
+                            {
+                                lastPayload = await RunStepAsync(
+                                    subNode, flow, iterationState, persistedStateBox,
+                                    flowExecution, executionId, sortedNodes,
+                                    activeNodes, executedNodes, cancellationToken);
+
+                                if (!string.IsNullOrWhiteSpace(subNode.NodeName))
+                                {
+                                    var perIter = iterationState[subNode.NodeName];
+                                    if ((perIter == null || perIter.Type == JTokenType.Null) &&
+                                        !string.IsNullOrWhiteSpace(lastPayload))
+                                    {
+                                        perIter = JToken.Parse(lastPayload);
+                                    }
+
+                                    if (perIter != null && perIter.Type != JTokenType.Null)
+                                    {
+                                        if (!perNodeAccumulators.TryGetValue(subNode.NodeName, out var arr))
+                                        {
+                                            perNodeAccumulators[subNode.NodeName] = arr = new JArray();
+                                        }
+
+                                        arr.Add(perIter.DeepClone());
+                                    }
+                                }
+                            }
+
+                            var lastSubNode = subgraphNodes.Last();
+                            if (!string.IsNullOrWhiteSpace(lastSubNode.NodeName) &&
+                                iterationState.TryGetValue(lastSubNode.NodeName, out var stored))
+                            {
+                                combinedOutput.Add(stored.DeepClone());
+                            }
+                            else if (!string.IsNullOrWhiteSpace(lastPayload))
+                            {
+                                combinedOutput.Add(JToken.Parse(lastPayload));
+                            }
                         }
                     }
                 }
@@ -486,7 +571,7 @@ public class FlowExecutor
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)
                 {
-                    activeNodes.Add(edge.TargetNodeId);
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
 
@@ -504,7 +589,7 @@ public class FlowExecutor
 
             stepExecution.Status = ExecutionStatus.Success;
             stepExecution.CompletedAt = DateTime.UtcNow;
-            flowExecution.SuccessRecords++;
+            lock (_executionLock) { flowExecution.SuccessRecords++; }
         }
         catch (OperationCanceledException)
         {
@@ -519,7 +604,7 @@ public class FlowExecutor
             stepExecution.Status = ExecutionStatus.Failed;
             stepExecution.ErrorMessage = ex.Message;
             stepExecution.CompletedAt = DateTime.UtcNow;
-            flowExecution.FailedRecords++;
+            lock (_executionLock) { flowExecution.FailedRecords++; }
 
             _logger.LogError(ex, "Execution {ExecutionId}: node {NodeName} failed", executionId, node.NodeName);
 
@@ -628,11 +713,130 @@ public class FlowExecutor
             AuthUsername = node.AuthUsername,
             AuthPassword = node.AuthPassword,
             AuthConfigJson = node.AuthConfigJson,
-            ConnectionId = node.ConnectionId
+            ConnectionId = node.ConnectionId,
+            StepConfig = node.StepConfig
         };
 
-        var (statusCode, response) = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId, cancellationToken);
-        return (statusCode, response, requestPayload);
+        var pagination = PaginationStepConfig.Parse(node.StepConfig);
+        var pageResponses = new List<string>();
+        var pageHeaders = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var nextUrl = url;
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        var statusCode = 0;
+
+        for (var page = 0; page < (pagination.Enabled ? pagination.MaxPages : 1); page++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            nodeToDispatch.EndpointUrl = nextUrl;
+            var transportResponse = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId, cancellationToken);
+            statusCode = transportResponse.StatusCode;
+            if (statusCode < 200 || statusCode >= 300)
+            {
+                return (statusCode, transportResponse.Response, requestPayload);
+            }
+
+            pageResponses.Add(transportResponse.Response);
+            foreach (var header in transportResponse.Headers)
+            {
+                pageHeaders[header.Key] = header.Value;
+            }
+
+            if (!pagination.Enabled)
+            {
+                return (statusCode, transportResponse.Response, requestPayload);
+            }
+
+            var pageJson = TryParseJson(transportResponse.Response);
+            var next = ResolveNextPageUrl(pagination, nextUrl, pageJson, transportResponse.Headers, page);
+            if (next == null)
+            {
+                return (statusCode, AggregatePages(pageResponses, pagination), requestPayload);
+            }
+
+            if (!seenCursors.Add(next))
+            {
+                throw new InvalidOperationException($"Pagination on node {node.NodeName} repeated the same continuation value.");
+            }
+
+            nextUrl = next;
+            if (pagination.DelayMs > 0)
+            {
+                await Task.Delay(pagination.DelayMs, cancellationToken);
+            }
+        }
+
+        throw new InvalidOperationException($"Pagination on node {node.NodeName} exceeded the maximum of {pagination.MaxPages} pages.");
+    }
+
+    private static JObject? TryParseJson(string response)
+    {
+        try
+        {
+            return JObject.Parse(response);
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ResolveNextPageUrl(
+        PaginationStepConfig config,
+        string currentUrl,
+        JObject? page,
+        IReadOnlyDictionary<string, string[]> headers,
+        int pageNumber)
+    {
+        if (string.Equals(config.Style, "LinkHeader", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!headers.TryGetValue(config.NextLinkHeader, out var values)) return null;
+            var link = values.SelectMany(value => value.Split(',')).FirstOrDefault(value => value.Contains("rel=\"next\"", StringComparison.OrdinalIgnoreCase));
+            if (link == null) return null;
+            var start = link.IndexOf('<');
+            var end = link.IndexOf('>');
+            return start >= 0 && end > start ? link[(start + 1)..end] : null;
+        }
+
+        if (string.Equals(config.Style, "PageOffset", StringComparison.OrdinalIgnoreCase))
+        {
+            if (pageNumber > 0 && config.HasMoreResponsePath.Length > 0 && page?.SelectToken(config.HasMoreResponsePath)?.Value<bool>() == false) return null;
+            return SetQueryParameter(currentUrl, config.OffsetRequestParameter, ((pageNumber + 1) * config.PageSize).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        var tokenPath = string.Equals(config.Style, "Cursor", StringComparison.OrdinalIgnoreCase)
+            ? config.CursorResponsePath
+            : config.NextTokenPath;
+        var token = page?.SelectToken(tokenPath)?.ToString();
+        if (string.IsNullOrWhiteSpace(token)) return null;
+        return SetQueryParameter(currentUrl, string.Equals(config.Style, "Cursor", StringComparison.OrdinalIgnoreCase) ? config.CursorRequestParameter : config.NextTokenParameter, token);
+    }
+
+    private static string SetQueryParameter(string url, string name, string value)
+    {
+        var parts = url.Split('?', 2);
+        var query = parts.Length == 2
+            ? parts[1].Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Where(part => !part.Split('=', 2)[0].Equals(name, StringComparison.OrdinalIgnoreCase))
+                .ToList()
+            : new List<string>();
+        query.Add($"{Uri.EscapeDataString(name)}={Uri.EscapeDataString(value)}");
+        return $"{parts[0]}?{string.Join("&", query)}";
+    }
+
+    private static string AggregatePages(IReadOnlyList<string> pages, PaginationStepConfig config)
+    {
+        if (pages.Count == 1 || string.IsNullOrWhiteSpace(config.AggregatePath)) return pages[^1];
+        var first = JObject.Parse(pages[0]);
+        var target = first.SelectToken(config.AggregatePath) as JArray;
+        if (target == null) return pages[^1];
+        foreach (var page in pages.Skip(1))
+        {
+            if (JObject.Parse(page).SelectToken(config.AggregatePath) is JArray items)
+            {
+                foreach (var item in items) target.Add(item.DeepClone());
+            }
+        }
+        return first.ToString(Newtonsoft.Json.Formatting.None);
     }
 
     private static async Task<TResult> RunScriptAsync<TResult>(IntegrationStep node, string stage, Func<Task<TResult>> scriptCall)

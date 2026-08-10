@@ -2,10 +2,7 @@
 @using SimpleIPaaS.Shared.Models
 @using System.Text.Json.Nodes
 
-<div class="card-header node-header node-header-primary">
-    <h3 class="card-title">HTTP Action</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="HTTP Action" NodeColorClass="node-header-primary">
     <div class="node-field">
         <label class="node-label">Node Name</label>
         <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. FetchUsers" />
@@ -68,6 +65,7 @@
                 <option value="OAuth2ClientCredentials">OAuth 2.0 Client Credentials</option>
                 <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
                 <option value="OAuth2AuthCode">OAuth 2.0 Authorization Code</option>
+                <option value="AmazonSpApi">Amazon SP-API (LWA + AWS SigV4)</option>
                 <option value="Custom">Custom Headers</option>
             </select>
         </div>
@@ -185,6 +183,61 @@
         </div>
     </div>
 
+    <div class="api-packet-section">
+        <div class="api-packet-title">Pagination</div>
+        <div class="node-field">
+            <label class="node-label">Style</label>
+            <select class="form-control" value="@PaginationStyle" @onchange="OnPaginationStyleChanged">
+                <option value="None">None</option>
+                <option value="AmazonNextToken">Amazon NextToken</option>
+                <option value="LinkHeader">Link Header</option>
+                <option value="Cursor">Cursor</option>
+                <option value="PageOffset">Page / Offset</option>
+            </select>
+        </div>
+        @if (PaginationStyle != "None")
+        {
+            <div class="node-field-row">
+                <div class="node-field">
+                    <label class="node-label">Max Pages</label>
+                    <input type="number" min="1" max="1000" class="form-control" value="@PaginationMaxPages" @onchange='args => SetPaginationValue("maxPages", args.Value?.ToString() ?? "100")' />
+                </div>
+                <div class="node-field">
+                    <label class="node-label">Aggregate Path</label>
+                    <input type="text" class="form-control" value="@PaginationAggregatePath" @onchange='args => SetPaginationValue("aggregatePath", args.Value?.ToString() ?? "")' placeholder="payload.Orders" />
+                </div>
+            </div>
+            @if (PaginationStyle == "AmazonNextToken")
+            {
+                <div class="node-field-row">
+                    <input class="form-control" value="@PaginationNextTokenPath" @onchange='args => SetPaginationValue("nextTokenPath", args.Value?.ToString() ?? "")' placeholder="payload.NextToken" />
+                    <input class="form-control" value="@PaginationNextTokenParameter" @onchange='args => SetPaginationValue("nextTokenParameter", args.Value?.ToString() ?? "NextToken")' placeholder="NextToken" />
+                </div>
+            }
+            else if (PaginationStyle == "LinkHeader")
+            {
+                <div class="node-field">
+                    <label class="node-label">Next Link Header</label>
+                    <input class="form-control" value="@PaginationNextLinkHeader" @onchange='args => SetPaginationValue("nextLinkHeader", args.Value?.ToString() ?? "Link")' />
+                </div>
+            }
+            else if (PaginationStyle == "Cursor")
+            {
+                <div class="node-field-row">
+                    <input class="form-control" value="@PaginationCursorResponsePath" @onchange='args => SetPaginationValue("cursorResponsePath", args.Value?.ToString() ?? "")' placeholder="meta.nextCursor" />
+                    <input class="form-control" value="@PaginationCursorRequestParameter" @onchange='args => SetPaginationValue("cursorRequestParameter", args.Value?.ToString() ?? "cursor")' placeholder="cursor" />
+                </div>
+            }
+            else if (PaginationStyle == "PageOffset")
+            {
+                <div class="node-field-row">
+                    <input class="form-control" value="@PaginationOffsetParameter" @onchange='args => SetPaginationValue("offsetRequestParameter", args.Value?.ToString() ?? "offset")' placeholder="offset" />
+                    <input class="form-control" value="@PaginationPageSizeParameter" @onchange='args => SetPaginationValue("pageSizeParameter", args.Value?.ToString() ?? "limit")' placeholder="limit" />
+                </div>
+            }
+        }
+    </div>
+
     <div class="node-script-buttons">
         <label class="node-label">Scripts (C#)</label>
         <button class="btn btn-outline btn-sm btn-block" @onclick='() => OpenEditor("UrlCode")'>
@@ -197,7 +250,7 @@
             @(string.IsNullOrWhiteSpace(Step.PostFlightCode) ? "Post-Response Script" : "Edit Post-Response Script")
         </button>
     </div>
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;
@@ -239,6 +292,16 @@
     private string _scope = string.Empty;
     private string _accessToken = string.Empty;
     private string _refreshToken = string.Empty;
+    private string PaginationStyle => GetPaginationValue("style", "None");
+    private string PaginationMaxPages => GetPaginationValue("maxPages", "100");
+    private string PaginationAggregatePath => GetPaginationValue("aggregatePath", string.Empty);
+    private string PaginationNextTokenPath => GetPaginationValue("nextTokenPath", "payload.NextToken");
+    private string PaginationNextTokenParameter => GetPaginationValue("nextTokenParameter", "NextToken");
+    private string PaginationNextLinkHeader => GetPaginationValue("nextLinkHeader", "Link");
+    private string PaginationCursorResponsePath => GetPaginationValue("cursorResponsePath", string.Empty);
+    private string PaginationCursorRequestParameter => GetPaginationValue("cursorRequestParameter", "cursor");
+    private string PaginationOffsetParameter => GetPaginationValue("offsetRequestParameter", "offset");
+    private string PaginationPageSizeParameter => GetPaginationValue("pageSizeParameter", "limit");
     private List<CustomHeaderEntry> _customHeaders = new() { new CustomHeaderEntry() };
     private Guid _hydratedStepId;
 
@@ -358,6 +421,26 @@
         Designer?.OpenMapperModal(Step, target);
     }
 
+    private void OnPaginationStyleChanged(ChangeEventArgs args)
+    {
+        SetPaginationValue("style", args.Value?.ToString() ?? "None");
+    }
+
+    private string GetPaginationValue(string key, string fallback)
+    {
+        var pagination = ParseStepConfig()["pagination"] as JsonObject;
+        return pagination?[key]?.ToString() ?? fallback;
+    }
+
+    private void SetPaginationValue(string key, string value)
+    {
+        var root = ParseStepConfig();
+        var pagination = root["pagination"] as JsonObject ?? new JsonObject();
+        pagination[key] = value;
+        root["pagination"] = pagination;
+        Step.StepConfig = root.ToJsonString(StepConfigJsonOptions);
+    }
+
     private void OnUrlModeChanged(ChangeEventArgs _)
     {
         Step.UrlMode = _.Value?.ToString() ?? "Manual";
@@ -416,3 +499,4 @@
         }
     }
 }
+

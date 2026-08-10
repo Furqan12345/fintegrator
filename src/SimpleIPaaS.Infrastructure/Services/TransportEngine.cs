@@ -48,7 +48,7 @@ public class TransportEngine : ITransportEngine
             .Build();
     }
 
-    public async Task<(int StatusCode, string Response)> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
+    public async Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -128,7 +128,8 @@ public class TransportEngine : ITransportEngine
         var authContext = new AuthenticationContext
         {
             ConfigJson = configJson,
-            ConnectionId = resolvedConnectionId
+            ConnectionId = resolvedConnectionId,
+            RequestMetadataJson = step.StepConfig
         };
 
         payload = string.IsNullOrWhiteSpace(payload) ? packetDetails.RequestBody : payload;
@@ -160,36 +161,36 @@ public class TransportEngine : ITransportEngine
             return message;
         }
 
-        async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
+        var authHandler = _authFactory.GetHandler(authType);
+
+        async Task<HttpResponseMessage> SendAsync()
         {
             return await _resiliencePipeline.ExecuteAsync(async attemptToken =>
             {
-                // We need to clone the request because HttpClient disposes the request after SendAsync
-                var clonedRequest = await CloneHttpRequestMessageAsync(request);
-                return await client.SendAsync(clonedRequest, attemptToken);
+                using var request = BuildRequest();
+                await authHandler.AuthenticateAsync(request, authContext);
+                return await client.SendAsync(request, attemptToken);
             }, cancellationToken);
         }
 
-        var authHandler = _authFactory.GetHandler(authType);
-
-        var initialRequest = BuildRequest();
-        await authHandler.AuthenticateAsync(initialRequest, authContext);
-
-        var response = await SendAsync(initialRequest);
+        var response = await SendAsync();
 
         if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
             (authType == AuthType.OAuth2ClientCredentials ||
              authType == AuthType.OAuth2RefreshToken ||
-             authType == AuthType.OAuth2AuthCode))
+             authType == AuthType.OAuth2AuthCode ||
+             authType == AuthType.AmazonSpApi))
         {
             authContext.ForceRefresh = true;
-            var retryRequest = BuildRequest();
-            await authHandler.AuthenticateAsync(retryRequest, authContext);
-            response = await SendAsync(retryRequest);
+            response = await SendAsync();
         }
 
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        return ((int)response.StatusCode, content);
+        var headers = response.Headers
+            .Concat(response.Content.Headers)
+            .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.SelectMany(header => header.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
+        return new TransportResponse((int)response.StatusCode, content, headers, url);
     }
 
     private static string SerializeAuthConfig(Dictionary<string, string> values)

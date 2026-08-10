@@ -748,6 +748,37 @@ select.form-control {
     padding: var(--space-3) var(--space-4);
 }
 
+/* ── Node Card Toggle ─────────────────────────────────────────── */
+.node-card-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.node-card-toggle:hover {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.node-card-toggle-icon {
+    width: 16px;
+    height: 16px;
+    transition: transform 0.2s ease;
+}
+
+.node-card-toggle.minimized .node-card-toggle-icon {
+    transform: rotate(180deg);
+}
+
 /* ── Node Card Fields ───────────────────────────────────────── */
 .node-field {
     display: flex;

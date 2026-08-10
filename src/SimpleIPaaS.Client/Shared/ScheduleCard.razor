@@ -5,10 +5,7 @@
 @using SimpleIPaaS.Shared.Models
 @inject HttpClient Http
 
-<div class="card-header node-header node-header-violet">
-    <h3 class="card-title">Schedule</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="Schedule" NodeColorClass="node-header-violet">
     <div class="node-field">
         <label class="node-label">Node Name</label>
         <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. NightlyRun" />
@@ -50,7 +47,7 @@
     }
 
     <div class="node-hint">This node is the flow trigger — saving writes it onto the flow. The flow must be Active to run.</div>
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

@@ -42,6 +42,7 @@
                 <option value="OAuth2ClientCredentials">OAuth 2.0 Client Credentials</option>
                 <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
                 <option value="OAuth2AuthCode">OAuth 2.0 Authorization Code</option>
+                <option value="AmazonSpApi">Amazon SP-API (LWA + AWS SigV4)</option>
                 <option value="Custom">Custom Headers</option>
             </select>
         </div>
@@ -157,6 +158,69 @@
                 <input type="password" class="form-control" @bind="_oauthRefreshToken" placeholder="@SecretPlaceholder" />
             </div>
         }
+        else if (_connection.AuthType == "AmazonSpApi")
+        {
+            <div class="form-group">
+                <label>LWA Token URL</label>
+                <input type="text" class="form-control" @bind="_amazonTokenUrl" />
+            </div>
+            <div class="form-group">
+                <label>LWA Client ID</label>
+                <input type="text" class="form-control" @bind="_amazonClientId" />
+            </div>
+            <div class="form-group">
+                <label>LWA Client Secret</label>
+                <input type="password" class="form-control" @bind="_amazonClientSecret" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>LWA Refresh Token</label>
+                <input type="password" class="form-control" @bind="_amazonRefreshToken" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>AWS Access Key ID</label>
+                <input type="text" class="form-control" @bind="_amazonAccessKeyId" />
+            </div>
+            <div class="form-group">
+                <label>AWS Secret Access Key</label>
+                <input type="password" class="form-control" @bind="_amazonSecretAccessKey" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>AWS Session Token (optional)</label>
+                <input type="password" class="form-control" @bind="_amazonSessionToken" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>AWS Region</label>
+                <input type="text" class="form-control" @bind="_amazonRegion" placeholder="us-east-1" />
+            </div>
+            <div class="form-group">
+                <label>AWS Service</label>
+                <input type="text" class="form-control" @bind="_amazonService" placeholder="execute-api" />
+            </div>
+            <div class="form-group">
+                <label>STS Role ARN (optional)</label>
+                <input type="text" class="form-control" @bind="_amazonRoleArn" placeholder="arn:aws:iam::123456789012:role/SpApiRole" />
+            </div>
+            <div class="form-group">
+                <label>STS Role Session Name</label>
+                <input type="text" class="form-control" @bind="_amazonRoleSessionName" placeholder="fintegrator-sp-api" />
+            </div>
+            <div class="form-group">
+                <label>STS External ID (optional)</label>
+                <input type="password" class="form-control" @bind="_amazonExternalId" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>STS Region</label>
+                <input type="text" class="form-control" @bind="_amazonStsRegion" placeholder="us-east-1" />
+            </div>
+            <div class="form-group">
+                <label>STS Endpoint (optional)</label>
+                <input type="text" class="form-control" @bind="_amazonStsEndpoint" placeholder="https://sts.amazonaws.com" />
+            </div>
+            <div class="form-group">
+                <label>STS Duration Seconds</label>
+                <input type="number" min="900" max="43200" class="form-control" @bind="_amazonDurationSeconds" />
+            </div>
+        }
         else if (_connection.AuthType == "Custom")
         {
             <div class="form-group">
@@ -191,6 +255,30 @@
     private string _oauthClientId = string.Empty;
     private string _oauthClientSecret = string.Empty;
     private string _oauthScope = string.Empty;
+    private string _amazonTokenUrl = "https://api.amazon.com/auth/o2/token";
+    private string _amazonClientId = string.Empty;
+    private string _amazonClientSecret = string.Empty;
+    private string _amazonRefreshToken = string.Empty;
+    private string _amazonAccessKeyId = string.Empty;
+    private string _amazonSecretAccessKey = string.Empty;
+    private string _amazonSessionToken = string.Empty;
+    private string _amazonRegion = "us-east-1";
+    private string _amazonService = "execute-api";
+    private string _amazonRoleArn = string.Empty;
+    private string _amazonRoleSessionName = "fintegrator-sp-api";
+    private string _amazonExternalId = string.Empty;
+    private string _amazonStsRegion = "us-east-1";
+    private string _amazonStsEndpoint = string.Empty;
+    private int _amazonDurationSeconds = 3600;
+    private string _hydratedAmazonTokenUrl = "https://api.amazon.com/auth/o2/token";
+    private string _hydratedAmazonClientId = string.Empty;
+    private string _hydratedAmazonRegion = "us-east-1";
+    private string _hydratedAmazonService = "execute-api";
+    private string _hydratedAmazonRoleArn = string.Empty;
+    private string _hydratedAmazonRoleSessionName = "fintegrator-sp-api";
+    private string _hydratedAmazonStsRegion = "us-east-1";
+    private string _hydratedAmazonStsEndpoint = string.Empty;
+    private int _hydratedAmazonDurationSeconds = 3600;
     private List<CustomHeaderEntry> _customHeaders = new() { new CustomHeaderEntry() };
     private bool _isEditMode;
     private string _originalAuthType = string.Empty;
@@ -295,6 +383,7 @@
             "ApiKey" => _apiKeyHeaderName != _hydratedApiKeyHeaderName || _apiKeyPlacement != _hydratedApiKeyPlacement,
             "OAuth2ClientCredentials" => _oauthTokenUrl != _hydratedTokenUrl || _oauthClientId != _hydratedClientId || _oauthScope != _hydratedScope,
             "OAuth2RefreshToken" or "OAuth2AuthCode" => _oauthTokenUrl != _hydratedTokenUrl || _oauthClientId != _hydratedClientId,
+            "AmazonSpApi" => _amazonTokenUrl != _hydratedAmazonTokenUrl || _amazonClientId != _hydratedAmazonClientId || _amazonRegion != _hydratedAmazonRegion || _amazonService != _hydratedAmazonService || _amazonRoleArn != _hydratedAmazonRoleArn || _amazonRoleSessionName != _hydratedAmazonRoleSessionName || _amazonStsRegion != _hydratedAmazonStsRegion || _amazonStsEndpoint != _hydratedAmazonStsEndpoint || _amazonDurationSeconds != _hydratedAmazonDurationSeconds,
             "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
             _ => false
         };
@@ -320,6 +409,7 @@
             "OAuth2ClientCredentials" => !string.IsNullOrEmpty(_oauthClientId) || !string.IsNullOrEmpty(_oauthClientSecret) || !string.IsNullOrEmpty(_oauthTokenUrl),
             "OAuth2RefreshToken" => !string.IsNullOrEmpty(_oauthRefreshToken) || !string.IsNullOrEmpty(_oauthAccessToken) || !string.IsNullOrEmpty(_oauthClientSecret),
             "OAuth2AuthCode" => !string.IsNullOrEmpty(_oauthAccessToken) || !string.IsNullOrEmpty(_oauthRefreshToken) || !string.IsNullOrEmpty(_oauthClientSecret),
+            "AmazonSpApi" => !string.IsNullOrEmpty(_amazonClientId) || !string.IsNullOrEmpty(_amazonClientSecret) || !string.IsNullOrEmpty(_amazonRefreshToken) || !string.IsNullOrEmpty(_amazonAccessKeyId) || !string.IsNullOrEmpty(_amazonSecretAccessKey) || !string.IsNullOrEmpty(_amazonSessionToken) || !string.IsNullOrEmpty(_amazonRoleArn) || !string.IsNullOrEmpty(_amazonExternalId),
             "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
             _ => false
         };
@@ -340,6 +430,7 @@
             "OAuth2ClientCredentials" => new { tokenUrl = _oauthTokenUrl, clientId = _oauthClientId, clientSecret = _oauthClientSecret, scope = _oauthScope },
             "OAuth2RefreshToken" => new { tokenUrl = _oauthTokenUrl, refreshToken = _oauthRefreshToken, accessToken = _oauthAccessToken, clientId = _oauthClientId, clientSecret = _oauthClientSecret },
             "OAuth2AuthCode" => new { tokenUrl = _oauthTokenUrl, clientId = _oauthClientId, clientSecret = _oauthClientSecret, accessToken = _oauthAccessToken, refreshToken = _oauthRefreshToken },
+            "AmazonSpApi" => new { tokenUrl = _amazonTokenUrl, clientId = _amazonClientId, clientSecret = _amazonClientSecret, refreshToken = _amazonRefreshToken, accessKeyId = _amazonAccessKeyId, secretAccessKey = _amazonSecretAccessKey, sessionToken = _amazonSessionToken, region = _amazonRegion, service = _amazonService, roleArn = _amazonRoleArn, roleSessionName = _amazonRoleSessionName, externalId = _amazonExternalId, stsRegion = _amazonStsRegion, stsEndpoint = _amazonStsEndpoint, durationSeconds = _amazonDurationSeconds },
             "Custom" => new { headers = _customHeaders.Where(header => !string.IsNullOrWhiteSpace(header.Name)).Select(header => new { name = header.Name, value = header.Value }).ToList() },
             _ => new { }
         };
@@ -354,6 +445,15 @@
         _hydratedTokenUrl = _oauthTokenUrl;
         _hydratedClientId = _oauthClientId;
         _hydratedScope = _oauthScope;
+        _hydratedAmazonTokenUrl = _amazonTokenUrl;
+        _hydratedAmazonClientId = _amazonClientId;
+        _hydratedAmazonRegion = _amazonRegion;
+        _hydratedAmazonService = _amazonService;
+        _hydratedAmazonRoleArn = _amazonRoleArn;
+        _hydratedAmazonRoleSessionName = _amazonRoleSessionName;
+        _hydratedAmazonStsRegion = _amazonStsRegion;
+        _hydratedAmazonStsEndpoint = _amazonStsEndpoint;
+        _hydratedAmazonDurationSeconds = _amazonDurationSeconds;
     }
 
     private void HydrateAuthFields(string authConfigJson)
@@ -377,6 +477,20 @@
         _oauthClientId = root.TryGetProperty("clientId", out var clientId) ? clientId.GetString() ?? string.Empty : string.Empty;
         _oauthClientSecret = root.TryGetProperty("clientSecret", out var clientSecret) ? clientSecret.GetString() ?? string.Empty : string.Empty;
         _oauthScope = root.TryGetProperty("scope", out var scope) ? scope.GetString() ?? string.Empty : string.Empty;
+        _amazonTokenUrl = root.TryGetProperty("tokenUrl", out var amazonTokenUrl) ? amazonTokenUrl.GetString() ?? "https://api.amazon.com/auth/o2/token" : "https://api.amazon.com/auth/o2/token";
+        _amazonClientId = root.TryGetProperty("clientId", out var amazonClientId) ? amazonClientId.GetString() ?? string.Empty : string.Empty;
+        _amazonRefreshToken = root.TryGetProperty("refreshToken", out var amazonRefreshToken) ? amazonRefreshToken.GetString() ?? string.Empty : string.Empty;
+        _amazonAccessKeyId = root.TryGetProperty("accessKeyId", out var accessKeyId) ? accessKeyId.GetString() ?? string.Empty : string.Empty;
+        _amazonSecretAccessKey = root.TryGetProperty("secretAccessKey", out var secretAccessKey) ? secretAccessKey.GetString() ?? string.Empty : string.Empty;
+        _amazonSessionToken = root.TryGetProperty("sessionToken", out var sessionToken) ? sessionToken.GetString() ?? string.Empty : string.Empty;
+        _amazonRegion = root.TryGetProperty("region", out var amazonRegion) ? amazonRegion.GetString() ?? "us-east-1" : "us-east-1";
+        _amazonService = root.TryGetProperty("service", out var amazonService) ? amazonService.GetString() ?? "execute-api" : "execute-api";
+        _amazonRoleArn = root.TryGetProperty("roleArn", out var roleArn) ? roleArn.GetString() ?? string.Empty : string.Empty;
+        _amazonRoleSessionName = root.TryGetProperty("roleSessionName", out var roleSessionName) ? roleSessionName.GetString() ?? "fintegrator-sp-api" : "fintegrator-sp-api";
+        _amazonExternalId = root.TryGetProperty("externalId", out var externalId) ? externalId.GetString() ?? string.Empty : string.Empty;
+        _amazonStsRegion = root.TryGetProperty("stsRegion", out var stsRegion) ? stsRegion.GetString() ?? "us-east-1" : "us-east-1";
+        _amazonStsEndpoint = root.TryGetProperty("stsEndpoint", out var stsEndpoint) ? stsEndpoint.GetString() ?? string.Empty : string.Empty;
+        _amazonDurationSeconds = root.TryGetProperty("durationSeconds", out var durationSeconds) ? durationSeconds.GetInt32() : 3600;
 
         if (root.TryGetProperty("headers", out var headers) && headers.ValueKind == JsonValueKind.Array)
         {

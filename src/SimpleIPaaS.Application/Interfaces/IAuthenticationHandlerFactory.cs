@@ -11,6 +11,7 @@ public class AuthenticationContext
     public string ConfigJson { get; set; } = string.Empty;
     public Guid? ConnectionId { get; set; }
     public bool ForceRefresh { get; set; }
+    public string RequestMetadataJson { get; set; } = string.Empty;
 }
 
 public interface IAuthenticationHandler

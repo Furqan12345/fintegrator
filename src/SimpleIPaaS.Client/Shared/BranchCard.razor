@@ -1,9 +1,6 @@
 @using SimpleIPaaS.Shared.Models
 
-<div class="card-header node-header node-header-success">
-    <h3 class="card-title">Branch</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="Branch" NodeColorClass="node-header-success">
     <p class="node-hint">
         Write a C# script that returns a boolean to route output paths.
     </p>
@@ -25,7 +22,7 @@
             Connect Right port (True) or Bottom port (False) to route the execution.
         </small>
     </div>
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

@@ -271,6 +271,7 @@ Because the executor runs each node exactly once (there is no loop construct), b
 | `OAuth2ClientCredentials` | **Real client-credentials grant**: POST to token endpoint with client id/secret/scope, cache token per connection until expiry (with 60s skew), refresh on 401 once |
 | `OAuth2RefreshToken` | Refresh-token grant against token endpoint; rotates stored refresh token when the server returns a new one |
 | `OAuth2AuthCode` | Operator completes the code exchange out-of-band; the platform stores access + refresh tokens and thereafter behaves as `OAuth2RefreshToken` (auto-refresh on expiry/401) |
+| `AmazonSpApi` | LWA refresh-token exchange plus AWS Signature Version 4 signing; optionally assumes an STS role for temporary credentials, adds `x-amz-access-token` or an explicitly requested RDT, caches short-lived tokens in memory, and re-signs every retry/page attempt. Supports Amazon NextToken, link-header, cursor, and page/offset pagination with max-page/repeated-token guards; STS role assumption and RDT resources are explicit connection/node configuration and are never persisted as short-lived tokens |
 | `Custom` | Arbitrary static header set (name/value pairs) defined in config JSON |
 
 Token cache: in-memory `ConcurrentDictionary` keyed by ConnectionId; invalidated on connection update.

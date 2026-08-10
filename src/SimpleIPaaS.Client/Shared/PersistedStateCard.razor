@@ -1,9 +1,6 @@
 @using SimpleIPaaS.Shared.Models
 
-<div class="card-header node-header node-header-teal">
-    <h3 class="card-title">Persisted State</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="Persisted State" NodeColorClass="node-header-teal">
     <p class="node-hint">
         Update the flow-level persisted object. Only this card type can save it back to the database.
     </p>
@@ -20,7 +17,7 @@
             @Step.MappingCode.Split('\n').FirstOrDefault(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("//"))
         </div>
     }
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

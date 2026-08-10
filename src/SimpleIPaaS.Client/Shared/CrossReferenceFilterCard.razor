@@ -4,10 +4,7 @@
 @inject IState<CrossReferenceState> CrossReferenceState
 @inject IDispatcher Dispatcher
 
-<div class="card-header node-header node-header-pink">
-    <h3 class="card-title">Cross-Reference Filter</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="Cross-Reference Filter" NodeColorClass="node-header-pink">
     <p class="node-hint">
         Emits only the records whose key is not already in the list. With a wildcard path (e.g. <code>orders[*].items[*]</code>), the original JSON structure is preserved with only filtered nested values. Without a wildcard, the output is a flat array.
     </p>
@@ -46,7 +43,7 @@
     <div class="node-field">
         <button class="btn btn-outline btn-sm btn-block" @onclick="AddKeyPath">Add Key Path</button>
     </div>
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

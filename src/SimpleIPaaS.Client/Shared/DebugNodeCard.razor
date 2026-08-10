@@ -7,10 +7,7 @@
 @inject IState<FlowState> FlowState
 @inject HttpClient Http
 
-<div class="card-header node-header node-header-slate">
-    <h3 class="card-title">Debug / Inspect</h3>
-</div>
-<div class="card-body" @onwheel:stopPropagation="true">
+<MinimizableNodeCard Title="Debug / Inspect" NodeColorClass="node-header-slate" StopWheelPropagation="true">
     <div class="node-field">
         <label class="node-label">Node Name</label>
         <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. InspectPayload" />
@@ -36,7 +33,7 @@
             <pre class="node-json-preview" @onwheel:stopPropagation="true"><code>@_stateJson</code></pre>
         }
     </div>
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

@@ -1,7 +1,24 @@
 # SimpleIPaaS — Agent Handover
 
 **For:** the next AI agent (or engineer) picking this up.
-**State as of this document:** builds **0 errors / 0 warnings**, **122/122 tests passing**, verified end-to-end against running servers.
+**State as of this document:** tests **142/142 passing**; latest client build passed with 0 errors and one pre-existing unused-variable warning in `Pages/Index.razor`.
+
+**Session context (compact):** branch `newTT`. Uncommitted card UI, parallel ForEach, test-stub, CSS, and handover changes; untracked `$null`, `.commandcode/settings.json`, and `Shared/MinimizableNodeCard.razor`.
+
+**Last changes (branch `newTT`, newest first):**
+- `2e45da8` fix(engine): `ResolveFilterSource` node-name peel for flowState wildcard paths (`FlowExecutor.cs`).
+- `aab5ee9` fix(cross-ref): resolve flowState-prefixed wildcard `arrayPath` against referenced node (sample + `CrossReferenceTests`).
+- `820bb84` fix(engine): resolve `ForEach` `arrayPath` from central flow state (`FlowExecutor`, `ForEachCard`, `ForEachTests`).
+- `8e0352b` fix(client): resilient integrations loading in `Index.razor`.
+- `c758d30` feat(ForEach): route post-loop merge via a dedicated "completed" port.
+- `d1e6620` feat: add `ForEach` node type for N+1 per-item API fan-out (Amazon SP-API).
+- `e994926` feat: nested array wildcard support for cross-reference nodes.
+
+Theme: `ForEach` node + cross-reference wildcard/flow-state resolution. Tests grew 122→141.
+
+**This session (parallel ForEach):** added `_executionLock` to `FlowExecutor.cs`; locked counter increments (`TotalRecords`/`SuccessRecords`/`FailedRecords`) and all 9 `activeNodes.Add` call-sites; made `StubExecutionRepository` and `StubCrossReferenceRepository` thread-safe with internal locks; implemented parallel ForEach branch using `Parallel.ForEachAsync` with `MaxDegreeOfParallelism` from config, collecting per-iteration results in an indexed array then merging sequentially; sequential path preserved as fallback. Build: 0 errors/0 warnings. Tests: 142/142 pass (added `ForEach_ParallelExecutionFansOutAndCombinesResults`).
+
+**Latest:** Amazon SP-API now includes encrypted STS role settings, memory-only AssumeRole credentials, explicit RDT acquisition/cache, retry-safe transport response metadata, executor-owned AmazonNextToken/LinkHeader/Cursor/PageOffset pagination with max/repeat guards, pagination UI, sample/README/architecture updates, and tests. Build: 0 errors; tests: 146/146. Runtime: API healthy; sample seeded with AmazonNextToken pagination; client and Blazor boot HTTP 200.
 
 Read this before touching code. Most of it is hard-won detail that is *not* obvious from reading the source, and several items will silently corrupt data or fail quietly if you get them wrong.
 

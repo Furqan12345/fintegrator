@@ -147,7 +147,8 @@ public class ConnectionController : ControllerBase
 
         try
         {
-            var (statusCode, _) = await _transportEngine.DispatchAsync(probe, null, id);
+            var response = await _transportEngine.DispatchAsync(probe, null, id);
+            var statusCode = response.StatusCode;
             return Ok(new
             {
                 success = statusCode >= 200 && statusCode < 300,

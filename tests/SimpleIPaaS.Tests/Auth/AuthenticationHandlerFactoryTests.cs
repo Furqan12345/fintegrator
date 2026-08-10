@@ -85,6 +85,106 @@ public class AuthenticationHandlerFactoryTests
     }
 
     [Fact]
+    public async Task AmazonSpApiHandler_ExchangesLwaTokenAndSignsRequest()
+    {
+        var messageHandler = StubHttpMessageHandler.Json("{\"access_token\":\"lwa-token\",\"expires_in\":3600}");
+        using var clientFactory = new StubHttpClientFactory(messageHandler);
+        var handler = CreateFactory(clientFactory).GetHandler(AuthType.AmazonSpApi);
+        using var request = Request("https://sellingpartnerapi-na.amazon.com/orders/v0/orders?MarketplaceIds=ATVPDKIKX0DER");
+        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+
+        await handler.AuthenticateAsync(request, new AuthenticationContext
+        {
+            ConfigJson = """
+            {"tokenUrl":"https://api.amazon.com/auth/o2/token","clientId":"client-id","clientSecret":"client-secret","refreshToken":"refresh-token","accessKeyId":"AKIDEXAMPLE","secretAccessKey":"secret","region":"us-east-1","service":"execute-api"}
+            """
+        });
+
+        Assert.True(request.Headers.TryGetValues("x-amz-access-token", out var tokenValues));
+        Assert.Equal("lwa-token", Assert.Single(tokenValues!));
+        Assert.True(request.Headers.TryGetValues("x-amz-date", out _));
+        Assert.True(request.Headers.TryGetValues("x-amz-content-sha256", out _));
+        Assert.True(request.Headers.TryGetValues("Authorization", out var authorizationValues));
+        var authorization = Assert.Single(authorizationValues!);
+        Assert.StartsWith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/", authorization);
+        Assert.Contains("SignedHeaders=host;x-amz-access-token;x-amz-content-sha256;x-amz-date", authorization);
+        Assert.NotEmpty(messageHandler.Requests);
+        Assert.Equal(HttpMethod.Post, messageHandler.Requests[0].Method);
+    }
+
+    [Fact]
+    public async Task AmazonSpApiHandler_AssumesRoleAndSignsWithTemporarySessionCredentials()
+    {
+        var stsRequestBody = string.Empty;
+        var messageHandler = new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.Host != "api.amazon.com")
+            {
+                stsRequestBody = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
+            }
+
+            if (request.RequestUri!.Host == "api.amazon.com")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"access_token\":\"lwa-token\",\"expires_in\":3600}")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("<AssumeRoleResponse><AssumeRoleResult><Credentials><AccessKeyId>TEMPKEY</AccessKeyId><SecretAccessKey>TEMPSECRET</SecretAccessKey><SessionToken>TEMPSESSION</SessionToken><Expiration>2099-01-01T00:00:00Z</Expiration></Credentials></AssumeRoleResult></AssumeRoleResponse>")
+            };
+        });
+        using var clientFactory = new StubHttpClientFactory(messageHandler);
+        var handler = CreateFactory(clientFactory).GetHandler(AuthType.AmazonSpApi);
+        using var request = Request();
+
+        await handler.AuthenticateAsync(request, new AuthenticationContext
+        {
+            ConnectionId = Guid.NewGuid(),
+            ConfigJson = """
+            {"tokenUrl":"https://api.amazon.com/auth/o2/token","clientId":"client-id","clientSecret":"client-secret","refreshToken":"refresh-token","accessKeyId":"BASEKEY","secretAccessKey":"BASESECRET","roleArn":"arn:aws:iam::123456789012:role/SpApiRole","roleSessionName":"test-session","externalId":"external","region":"us-east-1","service":"execute-api","stsRegion":"us-east-1"}
+            """
+        });
+
+        Assert.True(request.Headers.TryGetValues("x-amz-security-token", out var sessionValues));
+        Assert.Equal("TEMPSESSION", Assert.Single(sessionValues!));
+        Assert.True(request.Headers.TryGetValues("Authorization", out var authorizationValues));
+        Assert.Contains("Credential=TEMPKEY/", Assert.Single(authorizationValues!));
+        Assert.Equal(2, messageHandler.Requests.Count);
+        Assert.Contains("Action=AssumeRole", stsRequestBody);
+    }
+
+    [Fact]
+    public async Task AmazonSpApiHandler_RequestsAndUsesRestrictedDataTokenWhenConfigured()
+    {
+        var messageHandler = new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.Contains("/auth/o2/token", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"access_token\":\"lwa-token\",\"expires_in\":3600}") };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"restrictedDataToken\":\"rdt-token\",\"expiresIn\":900}") };
+        });
+        using var clientFactory = new StubHttpClientFactory(messageHandler);
+        var handler = CreateFactory(clientFactory).GetHandler(AuthType.AmazonSpApi);
+        using var request = Request();
+
+        await handler.AuthenticateAsync(request, new AuthenticationContext
+        {
+            ConnectionId = Guid.NewGuid(),
+            RequestMetadataJson = """{"amazonSpApi":{"restrictedData":true,"restrictedDataElements":["buyerInfo"],"restrictedResources":[{"method":"GET","path":"/orders/v0/orders/1","dataElements":["buyerInfo"]}]}}""",
+            ConfigJson = """{"tokenUrl":"https://api.amazon.com/auth/o2/token","clientId":"client-id","clientSecret":"client-secret","refreshToken":"refresh-token","accessKeyId":"AKID","secretAccessKey":"SECRET","region":"us-east-1","service":"execute-api"}"""
+        });
+
+        Assert.Equal(2, messageHandler.Requests.Count);
+        Assert.Contains("restrictedDataToken", messageHandler.Requests[1].RequestUri!.AbsolutePath);
+        Assert.Equal("rdt-token", Assert.Single(request.Headers.GetValues("x-amz-access-token")));
+    }
+
+    [Fact]
     public async Task CustomHandler_EmitsEveryConfiguredHeader()
     {
         var handler = CreateFactory().GetHandler(AuthType.Custom);
@@ -272,6 +372,7 @@ public class AuthenticationHandlerFactoryTests
         Assert.Equal(typeof(OAuth2ClientCredentialsHandler), handlerTypes[AuthType.OAuth2ClientCredentials]);
         Assert.Equal(typeof(OAuth2RefreshTokenHandler), handlerTypes[AuthType.OAuth2RefreshToken]);
         Assert.Equal(typeof(OAuth2AuthCodeHandler), handlerTypes[AuthType.OAuth2AuthCode]);
+        Assert.Equal(typeof(AmazonSpApiAuthHandler), handlerTypes[AuthType.AmazonSpApi]);
         Assert.Equal(typeof(CustomAuthHandler), handlerTypes[AuthType.Custom]);
         Assert.Equal(typeof(NoAuthHandler), handlerTypes[AuthType.None]);
     }

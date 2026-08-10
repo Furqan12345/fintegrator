@@ -1,9 +1,6 @@
 @using SimpleIPaaS.Shared.Models
 
-<div class="card-header node-header node-header-warning">
-    <h3 class="card-title">Mapper</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="Mapper" NodeColorClass="node-header-warning">
     <p class="node-hint">
         Write a C# function to map data in FlowState.
     </p>
@@ -20,7 +17,7 @@
             @Step.MappingCode.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith("//"))
         </div>
     }
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

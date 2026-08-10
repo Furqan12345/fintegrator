@@ -51,7 +51,7 @@ public class ForEachTests
         return new AdvancedCodeExecutionService(configuration);
     }
 
-    private static IntegrationStep ForEachNode(string name, string arrayPath, string itemVariable = "item") => new()
+    private static IntegrationStep ForEachNode(string name, string arrayPath, string itemVariable = "item", bool parallel = false, int maxDegreeOfParallelism = 1) => new()
     {
         Id = Guid.NewGuid(),
         NodeName = name,
@@ -61,7 +61,9 @@ public class ForEachTests
             ["forEach"] = new JsonObject
             {
                 ["arrayPath"] = arrayPath,
-                ["itemVariable"] = itemVariable
+                ["itemVariable"] = itemVariable,
+                ["parallel"] = parallel,
+                ["maxDegreeOfParallelism"] = maxDegreeOfParallelism
             }
         }.ToJsonString(JsonSerializerOptions)
     };
@@ -113,13 +115,13 @@ public class ForEachTests
 
         public void Enqueue(int statusCode, string response) => _responses.Enqueue((statusCode, response));
 
-        public Task<(int StatusCode, string Response)> DispatchAsync(
+        public Task<TransportResponse> DispatchAsync(
             IntegrationStep step, string? payload, Guid? connectionId = null,
             CancellationToken cancellationToken = default)
         {
             RequestedUrls.Add(step.EndpointUrl);
             var response = _responses.Count > 0 ? _responses.Dequeue() : (200, "{}");
-            return Task.FromResult(response);
+            return Task.FromResult(new TransportResponse(response.Item1, response.Item2, new Dictionary<string, string[]>(), step.EndpointUrl));
         }
     }
 
@@ -148,6 +150,35 @@ public class ForEachTests
         var stepExecutions = _executions.StepExecutions;
         Assert.Equal(new[] { "ForOrders", "ItemInspector", "ItemInspector" },
             stepExecutions.Select(s => s.NodeName));
+
+        var forEachOutput = JArray.Parse(stepExecutions.First(s => s.NodeName == "ForOrders").ResponsePayload);
+        Assert.Equal(2, forEachOutput.Count);
+    }
+
+    [Fact]
+    public async Task ForEach_ParallelExecutionFansOutAndCombinesResults()
+    {
+        var forEach = ForEachNode("ForOrders", "orders", parallel: true, maxDegreeOfParallelism: 4);
+        var inspector = DebugNode("ItemInspector");
+
+        var flow = new IntegrationFlow
+        {
+            Nodes = { forEach, inspector },
+            Edges = { Edge(forEach, inspector) }
+        };
+
+        var execution = SeedExecution(flow);
+
+        var result = await CreateExecutor(new UnreachableTransportEngine())
+            .ExecuteFlowAsync(flow.Id, execution.Id, OrderPayload[0], CancellationToken.None);
+
+        Assert.Equal(ExecutionStatus.Success, result.Status);
+        Assert.Equal(3, result.TotalRecords);     // 1 ForEach + 2 Debug
+        Assert.Equal(3, result.SuccessRecords);
+
+        var stepExecutions = _executions.StepExecutions;
+        Assert.Equal(1, stepExecutions.Count(s => s.NodeName == "ForOrders"));
+        Assert.Equal(2, stepExecutions.Count(s => s.NodeName == "ItemInspector"));
 
         var forEachOutput = JArray.Parse(stepExecutions.First(s => s.NodeName == "ForOrders").ResponsePayload);
         Assert.Equal(2, forEachOutput.Count);

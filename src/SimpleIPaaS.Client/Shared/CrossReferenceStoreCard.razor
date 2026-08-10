@@ -4,10 +4,7 @@
 @inject IState<CrossReferenceState> CrossReferenceState
 @inject IDispatcher Dispatcher
 
-<div class="card-header node-header node-header-cyan">
-    <h3 class="card-title">Cross-Reference Store</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="Cross-Reference Store" NodeColorClass="node-header-cyan">
     <p class="node-hint">
         Saves a key for every incoming record so a Filter node can skip it next time. The payload passes through unchanged.
     </p>
@@ -60,7 +57,7 @@
     <div class="node-field">
         <button class="btn btn-outline btn-sm btn-block" @onclick="AddValuePath">Add Value Path</button>
     </div>
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

@@ -72,14 +72,14 @@ public class SampleIntegrationTests
 
         public void Enqueue(int statusCode, string response) => _responses.Enqueue((statusCode, response));
 
-        public Task<(int StatusCode, string Response)> DispatchAsync(
+        public Task<TransportResponse> DispatchAsync(
             IntegrationStep step, string? payload, Guid? connectionId = null,
             CancellationToken cancellationToken = default)
         {
             RequestedUrls.Add(step.EndpointUrl);
             RequestPayloads.Add(payload ?? string.Empty);
             var response = _responses.Count > 0 ? _responses.Dequeue() : (200, "{}");
-            return Task.FromResult(response);
+            return Task.FromResult(new TransportResponse(response.Item1, response.Item2, new Dictionary<string, string[]>(), step.EndpointUrl));
         }
     }
 
@@ -90,6 +90,19 @@ public class SampleIntegrationTests
         var dto = LoadSample();
         var validationErrors = FlowValidator.Validate(dto);
         Assert.Empty(validationErrors);
+
+        var amazonNodes = dto.Nodes
+            .Where(node => node.NodeName is "FetchOrders" or "FetchLineItems")
+            .ToArray();
+        Assert.Equal(2, amazonNodes.Length);
+        Assert.All(amazonNodes, node =>
+        {
+            Assert.Equal("Connection", node.UrlMode);
+            Assert.Null(node.ConnectionId);
+            Assert.Equal("None", node.AuthType);
+            Assert.DoesNotContain("REPLACE-WITH-SP-API-ACCESS-TOKEN", node.AuthToken);
+            Assert.DoesNotContain("https://sellingpartnerapi", node.EndpointUrl);
+        });
 
         var flow = dto.ToEntity();
         flow.TenantId = Guid.NewGuid();

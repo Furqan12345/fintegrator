@@ -1,9 +1,6 @@
 @using SimpleIPaaS.Shared.Models
 
-<div class="card-header node-header node-header-violet">
-    <h3 class="card-title">For Each</h3>
-</div>
-<div class="card-body">
+<MinimizableNodeCard Title="For Each" NodeColorClass="node-header-violet">
     <p class="node-hint">
         Iterates an array and executes downstream nodes once per element. The current element is available in
         downstream scripts as <code>flowState.&lt;itemVariable&gt;</code> (default <code>item</code>).
@@ -39,7 +36,7 @@
             <input type="number" min="1" class="form-control" @bind="Config.MaxDegreeOfParallelism" @bind:after="Save" />
         </div>
     }
-</div>
+</MinimizableNodeCard>
 
 @code {
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;

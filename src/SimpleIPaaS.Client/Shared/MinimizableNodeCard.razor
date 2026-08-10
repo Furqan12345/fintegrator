@@ -1,0 +1,33 @@
+@using SimpleIPaaS.Client.Shared
+
+<div class="card-header node-header @NodeColorClass">
+    <h3 class="card-title">@Title</h3>
+    <button class="node-card-toggle @((Minimized ? "minimized" : ""))"
+            @onclick="ToggleMinimize"
+            @onclick:preventDefault
+            @onclick:stopPropagation
+            aria-label="@(Minimized ? "Expand" : "Minimize")"
+            title="@(Minimized ? "Expand" : "Minimize")">
+        <AppIcon Name="chevron-down" Class="node-card-toggle-icon" />
+    </button>
+</div>
+@if (!Minimized)
+{
+    <div class="card-body" @onwheel:stopPropagation="StopWheelPropagation">
+        @ChildContent
+    </div>
+}
+
+@code {
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string NodeColorClass { get; set; } = string.Empty;
+    [Parameter] public bool StopWheelPropagation { get; set; } = false;
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private bool Minimized { get; set; }
+
+    private void ToggleMinimize()
+    {
+        Minimized = !Minimized;
+    }
+}
