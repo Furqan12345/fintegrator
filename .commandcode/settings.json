@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(powershell -NoProfile -Command \"$f='%COMMANDCODE_SCRATCHPAD%\\flow.json'; $j=Get-Content $f -Raw | ConvertFrom-Json; $fl=(if($j -is [array]){$j[0]}else{$j}); $nm=@{}; $fl.nodes | ForEach-Object { $nm[$_.id]=$_.name+' ['.(($_.stepType.ToString())-replace 'Step','') +']' }; Write-Host '=== NODES ==='; $fl.nodes | ForEach-Object { Write-Host ($_.id.Substring(0,8)+' '+$_.name+' <'+($_.stepType.ToString())+'>') }; Write-Host '=== EDGES (source -> target) ==='; $fl.edges | ForEach-Object { $s=$nm[$_.sourceNodeId]; $t=$nm[$_.targetNodeId]; if(-not $s){$s=$_.sourceNodeId.Substring(0,8)} if(-not $t){$t=$_.targetNodeId.Substring(0,8)} Write-Host ($s+' ('.$_.sourcePortId.') -> '.$t+' ('.$_.targetPortId.')') }\")"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
