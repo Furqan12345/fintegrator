@@ -16,6 +16,7 @@ public class StepExecution
     public DateTime? CompletedAt { get; set; }
     public DateTime? RecoveredAt { get; set; }
     public Guid? RecoveredByDeadLetterId { get; set; }
+    public string ReceivedInput { get; set; } = string.Empty;
 
     public int HttpStatusCode { get; set; }
     public string? ErrorMessage { get; set; }

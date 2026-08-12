@@ -22,6 +22,7 @@ public class IPaaSContext : DbContext
     public DbSet<Connection> Connections { get; set; } = null!;
     public DbSet<FlowExecution> FlowExecutions { get; set; } = null!;
     public DbSet<StepExecution> StepExecutions { get; set; } = null!;
+    public DbSet<StepPacketLog> StepPacketLogs { get; set; } = null!;
     public DbSet<DeadLetterEntry> DeadLetterEntries { get; set; } = null!;
     public DbSet<ApiKey> ApiKeys { get; set; } = null!;
     public DbSet<CrossReferenceList> CrossReferenceLists { get; set; } = null!;
@@ -87,6 +88,15 @@ public class IPaaSContext : DbContext
             .WithMany()
             .HasForeignKey(e => e.StepId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<StepPacketLog>()
+            .HasOne<StepExecution>()
+            .WithMany()
+            .HasForeignKey(e => e.StepExecutionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<StepPacketLog>()
+            .HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
 
         modelBuilder.Entity<DeadLetterEntry>()
             .HasOne<FlowExecution>()

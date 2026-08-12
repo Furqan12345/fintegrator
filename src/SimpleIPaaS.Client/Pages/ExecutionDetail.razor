@@ -123,21 +123,7 @@
                             </details>
                         }
 
-                        @if (HasPayload(step.RequestPayload))
-                        {
-                            <details class="step-accordion">
-                                <summary>request</summary>
-                                <pre class="transaction-json-viewer"><code>@FormatJson(step.RequestPayload)</code></pre>
-                            </details>
-                        }
-
-                        @if (HasPayload(step.ResponsePayload))
-                        {
-                            <details class="step-accordion">
-                                <summary>response</summary>
-                                <pre class="transaction-json-viewer"><code>@FormatJson(step.ResponsePayload)</code></pre>
-                            </details>
-                        }
+                        <PacketLogViewer Step="step" />
 
                         @if (!HasPayload(step.RequestPayload) && !HasPayload(step.ResponsePayload) && string.IsNullOrWhiteSpace(step.ErrorMessage))
                         {

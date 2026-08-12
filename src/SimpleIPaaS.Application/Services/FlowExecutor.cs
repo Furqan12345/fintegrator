@@ -8,6 +8,7 @@ using SimpleIPaaS.Domain;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain.Entities;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Globalization;
 using System.Text.Json;
@@ -155,13 +156,15 @@ public class FlowExecutor
         HashSet<Guid> executedNodes,
         CancellationToken cancellationToken)
     {
+        var receivedInput = ResolveNodeInput(flow, node, flowStateContext);
         var stepExecution = new StepExecution
         {
             FlowExecutionId = flowExecution.Id,
             StepId = node.Id,
             NodeName = node.NodeName,
             Status = ExecutionStatus.InProgress,
-            StartedAt = DateTime.UtcNow
+            StartedAt = DateTime.UtcNow,
+            ReceivedInput = receivedInput.ToString(Newtonsoft.Json.Formatting.None)
         };
         await _executionRepository.AddStepExecutionAsync(stepExecution);
         lock (_executionLock) { flowExecution.TotalRecords++; }
@@ -177,24 +180,35 @@ public class FlowExecutor
         {
             if (node.StepType == StepType.HttpAction)
             {
-                var (statusCode, response, requestPayload) =
+                var httpResult =
                     await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken);
 
-                stepExecution.RequestPayload = requestPayload;
-                stepExecution.HttpStatusCode = statusCode;
-                stepExecution.ResponsePayload = response;
+                stepExecution.RequestPayload = httpResult.RequestPayload;
+                stepExecution.HttpStatusCode = httpResult.StatusCode;
+                stepExecution.ResponsePayload = httpResult.Response;
 
-                if (statusCode < 200 || statusCode >= 300)
+                if (httpResult.StatusCode < 200 || httpResult.StatusCode >= 300)
                 {
-                    throw new Exception($"HTTP request failed with status code {statusCode}: {response}");
+                    foreach (var packet in httpResult.Packets)
+                    {
+                        packet.StepExecutionId = stepExecution.Id;
+                        await _executionRepository.AddStepPacketLogAsync(packet);
+                    }
+                    throw new Exception($"HTTP request failed with status code {httpResult.StatusCode}: {httpResult.Response}");
                 }
 
-                currentPayload = response;
+                foreach (var packet in httpResult.Packets)
+                {
+                    packet.StepExecutionId = stepExecution.Id;
+                        await _executionRepository.AddStepPacketLogAsync(packet);
+                }
+
+                currentPayload = httpResult.Response;
 
                 if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
                 {
                     currentPayload = await RunScriptAsync(node, "PostFlight",
-                        () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, response));
+                        () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, httpResult.Response));
                 }
 
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
@@ -625,6 +639,23 @@ public class FlowExecutor
             throw;
         }
 
+        if (node.StepType != StepType.HttpAction)
+        {
+            await _executionRepository.AddStepPacketLogAsync(new StepPacketLog
+            {
+                StepExecutionId = stepExecution.Id,
+                Sequence = 1,
+                Kind = node.StepType.ToString(),
+                RequestBody = stepExecution.ReceivedInput,
+                ResponseBody = currentPayload,
+                StatusCode = stepExecution.HttpStatusCode == 0 ? null : stepExecution.HttpStatusCode,
+                StartedAt = stepExecution.StartedAt,
+                CompletedAt = stepExecution.CompletedAt,
+                DurationMs = stepExecution.CompletedAt.HasValue
+                    ? (long)(stepExecution.CompletedAt.Value - stepExecution.StartedAt).TotalMilliseconds
+                    : null
+            });
+        }
         await _executionRepository.UpdateStepExecutionAsync(stepExecution);
         return currentPayload;
     }
@@ -685,7 +716,13 @@ public class FlowExecutor
             .ToList();
     }
 
-    public async Task<(int StatusCode, string Response, string RequestPayload)> ExecuteHttpNodeAsync(
+    public sealed record HttpExecutionResult(
+        int StatusCode,
+        string Response,
+        string RequestPayload,
+        IReadOnlyList<StepPacketLog> Packets);
+
+    public async Task<HttpExecutionResult> ExecuteHttpNodeAsync(
         IntegrationStep node, string flowStateJson, string persistedStateJson, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -719,7 +756,7 @@ public class FlowExecutor
 
         var pagination = PaginationStepConfig.Parse(node.StepConfig);
         var pageResponses = new List<string>();
-        var pageHeaders = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var packets = new List<StepPacketLog>();
         var nextUrl = url;
         var seenCursors = new HashSet<string>(StringComparer.Ordinal);
         var statusCode = 0;
@@ -730,27 +767,43 @@ public class FlowExecutor
             nodeToDispatch.EndpointUrl = nextUrl;
             var transportResponse = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId, cancellationToken);
             statusCode = transportResponse.StatusCode;
+            foreach (var attempt in transportResponse.Attempts)
+            {
+                packets.Add(new StepPacketLog
+                {
+                    Sequence = packets.Count + 1,
+                    Kind = "HTTP",
+                    PageNumber = page + 1,
+                    Attempt = attempt == transportResponse.Attempts[^1] ? 1 : 0,
+                    HttpMethod = attempt.HttpMethod,
+                    RequestUrl = attempt.RequestUrl,
+                    StatusCode = attempt.StatusCode,
+                    RequestHeadersJson = JsonConvert.SerializeObject(attempt.RequestHeaders),
+                    RequestBody = attempt.RequestBody,
+                    ResponseHeadersJson = JsonConvert.SerializeObject(attempt.ResponseHeaders),
+                    ResponseBody = attempt.Response,
+                    StartedAt = attempt.StartedAt,
+                    CompletedAt = attempt.CompletedAt,
+                    DurationMs = (long)(attempt.CompletedAt - attempt.StartedAt).TotalMilliseconds
+                });
+            }
             if (statusCode < 200 || statusCode >= 300)
             {
-                return (statusCode, transportResponse.Response, requestPayload);
+                return new HttpExecutionResult(statusCode, transportResponse.Response, requestPayload, packets);
             }
 
             pageResponses.Add(transportResponse.Response);
-            foreach (var header in transportResponse.Headers)
-            {
-                pageHeaders[header.Key] = header.Value;
-            }
 
             if (!pagination.Enabled)
             {
-                return (statusCode, transportResponse.Response, requestPayload);
+                return new HttpExecutionResult(statusCode, transportResponse.Response, requestPayload, packets);
             }
 
             var pageJson = TryParseJson(transportResponse.Response);
             var next = ResolveNextPageUrl(pagination, nextUrl, pageJson, transportResponse.Headers, page);
             if (next == null)
             {
-                return (statusCode, AggregatePages(pageResponses, pagination), requestPayload);
+                return new HttpExecutionResult(statusCode, AggregatePages(pageResponses, pagination), requestPayload, packets);
             }
 
             if (!seenCursors.Add(next))
@@ -765,7 +818,7 @@ public class FlowExecutor
             }
         }
 
-        throw new InvalidOperationException($"Pagination on node {node.NodeName} exceeded the maximum of {pagination.MaxPages} pages.");
+        throw new InvalidOperationException($"Pagination on node {node.NodeName} is incomplete after {pagination.MaxPages} pages; the configured maximum was reached before the API returned a terminal response.");
     }
 
     private static JObject? TryParseJson(string response)
@@ -1055,7 +1108,7 @@ public class FlowExecutor
 
             return body.GetString() ?? string.Empty;
         }
-        catch (JsonException)
+        catch (System.Text.Json.JsonException)
         {
             return string.Empty;
         }

@@ -1,0 +1,88 @@
+@using SimpleIPaaS.Shared.Models
+
+<div class="packet-log-viewer">
+    <details class="packet-section" open>
+        <summary>Received input</summary>
+        <pre class="packet-json-viewer"><code>@FormatJson(Step.ReceivedInput)</code></pre>
+    </details>
+
+    <details class="packet-section" open>
+        <summary>Returned data</summary>
+        <pre class="packet-json-viewer"><code>@FormatJson(Step.ResponsePayload)</code></pre>
+    </details>
+
+    @if (Step.Packets.Count > 0)
+    {
+        <details class="packet-section">
+            <summary>Packet log (@Step.Packets.Count)</summary>
+            @foreach (var packet in Step.Packets.OrderBy(packet => packet.Sequence))
+            {
+                <div class="packet-entry">
+                    <div class="packet-entry-header">
+                        <strong>@packet.Kind @(packet.PageNumber.HasValue ? $"Page {packet.PageNumber}" : string.Empty)</strong>
+                        <span class="status-badge @StatusClass(packet.StatusCode)">@(packet.StatusCode?.ToString() ?? "No response")</span>
+                        @if (packet.Attempt.HasValue)
+                        {
+                            <span class="packet-entry-meta">Attempt @packet.Attempt</span>
+                        }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(packet.HttpMethod) || !string.IsNullOrWhiteSpace(packet.RequestUrl))
+                    {
+                        <div class="packet-entry-meta">@packet.HttpMethod @packet.RequestUrl</div>
+                    }
+                    <div class="packet-entry-meta">
+                        @packet.StartedAt.ToLocalTime().ToString("MMM d, h:mm:ss.fff tt")
+                        @(packet.DurationMs.HasValue ? $" · {packet.DurationMs} ms" : string.Empty)
+                    </div>
+                    <div class="packet-io-grid">
+                        <div>
+                            <div class="packet-section-title">Request headers</div>
+                            <pre class="packet-json-viewer"><code>@FormatJson(packet.RequestHeadersJson)</code></pre>
+                        </div>
+                        <div>
+                            <div class="packet-section-title">Request body</div>
+                            <pre class="packet-json-viewer"><code>@FormatJson(packet.RequestBody)</code></pre>
+                        </div>
+                        <div>
+                            <div class="packet-section-title">Response headers</div>
+                            <pre class="packet-json-viewer"><code>@FormatJson(packet.ResponseHeadersJson)</code></pre>
+                        </div>
+                        <div>
+                            <div class="packet-section-title">Response body</div>
+                            <pre class="packet-json-viewer"><code>@FormatJson(packet.ResponseBody)</code></pre>
+                        </div>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(packet.Error))
+                    {
+                        <div class="step-error">@packet.Error</div>
+                    }
+                </div>
+            }
+        </details>
+    }
+</div>
+
+@code {
+    [Parameter] public StepExecutionDto Step { get; set; } = default!;
+
+    private static string StatusClass(int? statusCode) => statusCode switch
+    {
+        >= 200 and < 300 => "success",
+        >= 400 => "failed",
+        _ => "pending"
+    };
+
+    private static string FormatJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return "No data captured.";
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return System.Text.Json.JsonSerializer.Serialize(document.RootElement, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return json;
+        }
+    }
+}

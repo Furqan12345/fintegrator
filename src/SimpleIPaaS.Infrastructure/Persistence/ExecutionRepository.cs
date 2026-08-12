@@ -100,6 +100,25 @@ public class ExecutionRepository : IExecutionRepository
             .FirstOrDefaultAsync();
     }
 
+    public async Task AddStepPacketLogAsync(StepPacketLog packet)
+    {
+        if (packet.TenantId == Guid.Empty)
+        {
+            packet.TenantId = _tenantContext.TenantId;
+        }
+
+        _context.StepPacketLogs.Add(packet);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task<IEnumerable<StepPacketLog>> GetStepPacketLogsAsync(Guid stepExecutionId)
+    {
+        return await _context.StepPacketLogs
+            .Where(packet => packet.StepExecutionId == stepExecutionId)
+            .OrderBy(packet => packet.Sequence)
+            .ToListAsync();
+    }
+
     public async Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
     {
         if (entry.TenantId == Guid.Empty)

@@ -33,10 +33,32 @@ public class StepExecutionDto
     public DateTime? CompletedAt { get; set; }
     public DateTime? RecoveredAt { get; set; }
     public Guid? RecoveredByDeadLetterId { get; set; }
+    public string ReceivedInput { get; set; } = string.Empty;
     public int HttpStatusCode { get; set; }
     public string? ErrorMessage { get; set; }
     public string RequestPayload { get; set; } = string.Empty;
     public string ResponsePayload { get; set; } = string.Empty;
+    public List<StepPacketLogDto> Packets { get; set; } = new();
+}
+
+public class StepPacketLogDto
+{
+    public Guid Id { get; set; }
+    public int Sequence { get; set; }
+    public string Kind { get; set; } = string.Empty;
+    public int? PageNumber { get; set; }
+    public int? Attempt { get; set; }
+    public string HttpMethod { get; set; } = string.Empty;
+    public string RequestUrl { get; set; } = string.Empty;
+    public int? StatusCode { get; set; }
+    public string RequestHeadersJson { get; set; } = "{}";
+    public string RequestBody { get; set; } = string.Empty;
+    public string ResponseHeadersJson { get; set; } = "{}";
+    public string ResponseBody { get; set; } = string.Empty;
+    public DateTime StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public long? DurationMs { get; set; }
+    public string? Error { get; set; }
 }
 
 public class DeadLetterEntryDto

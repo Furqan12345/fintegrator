@@ -18,6 +18,7 @@ public static class DatabaseSchemaInitializer
         EnsureIntegrationsTable(connection);
         EnsureApiKeysTable(connection);
         EnsureCrossReferenceTables(connection);
+        EnsureStepPacketLogsTable(connection);
         EnsureColumn(connection, "IntegrationFlows", "IntegrationId", "TEXT NULL");
         EnsureColumn(connection, "IntegrationFlows", "PersistedStateJson", "TEXT NOT NULL DEFAULT '{}'");
         EnsureColumn(connection, "IntegrationSteps", "UrlMode", "INTEGER NOT NULL DEFAULT 0");
@@ -100,6 +101,36 @@ public static class DatabaseSchemaInitializer
 
             CREATE UNIQUE INDEX IF NOT EXISTS IX_CrossReferenceEntries_TenantId_ListName_KeyValue
                 ON CrossReferenceEntries (TenantId, ListName, KeyValue);
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    private static void EnsureStepPacketLogsTable(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS StepPacketLogs (
+                Id TEXT NOT NULL CONSTRAINT PK_StepPacketLogs PRIMARY KEY,
+                StepExecutionId TEXT NOT NULL,
+                TenantId TEXT NOT NULL,
+                Sequence INTEGER NOT NULL,
+                Kind TEXT NOT NULL DEFAULT '',
+                PageNumber INTEGER NULL,
+                Attempt INTEGER NULL,
+                HttpMethod TEXT NOT NULL DEFAULT '',
+                RequestUrl TEXT NOT NULL DEFAULT '',
+                StatusCode INTEGER NULL,
+                RequestHeadersJson TEXT NOT NULL DEFAULT '{}',
+                RequestBody TEXT NOT NULL DEFAULT '',
+                ResponseHeadersJson TEXT NOT NULL DEFAULT '{}',
+                ResponseBody TEXT NOT NULL DEFAULT '',
+                StartedAt TEXT NOT NULL,
+                CompletedAt TEXT NULL,
+                DurationMs INTEGER NULL,
+                Error TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS IX_StepPacketLogs_StepExecutionId_Sequence
+                ON StepPacketLogs (StepExecutionId, Sequence);
             """;
         command.ExecuteNonQuery();
     }

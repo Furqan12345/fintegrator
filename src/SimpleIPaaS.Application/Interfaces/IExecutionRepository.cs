@@ -18,6 +18,8 @@ public interface IExecutionRepository
     Task UpdateStepExecutionAsync(StepExecution execution);
     Task<IEnumerable<StepExecution>> GetStepExecutionsAsync(Guid flowExecutionId);
     Task<StepExecution?> GetStepExecutionAsync(Guid flowExecutionId, Guid stepId);
+    Task AddStepPacketLogAsync(StepPacketLog packet);
+    Task<IEnumerable<StepPacketLog>> GetStepPacketLogsAsync(Guid stepExecutionId);
 
     Task AddDeadLetterEntryAsync(DeadLetterEntry entry);
     Task<DeadLetterEntry?> GetDeadLetterAsync(Guid id);

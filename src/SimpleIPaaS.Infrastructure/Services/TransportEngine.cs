@@ -163,13 +163,31 @@ public class TransportEngine : ITransportEngine
 
         var authHandler = _authFactory.GetHandler(authType);
 
+        TransportAttempt? lastAttempt = null;
+
         async Task<HttpResponseMessage> SendAsync()
         {
             return await _resiliencePipeline.ExecuteAsync(async attemptToken =>
             {
                 using var request = BuildRequest();
                 await authHandler.AuthenticateAsync(request, authContext);
-                return await client.SendAsync(request, attemptToken);
+                var startedAt = DateTime.UtcNow;
+                var requestBody = request.Content == null ? string.Empty : await request.Content.ReadAsStringAsync(attemptToken);
+                var requestHeaders = SnapshotHeaders(request);
+                var response = await client.SendAsync(request, attemptToken);
+                var completedAt = DateTime.UtcNow;
+                var responseHeaders = SnapshotHeaders(response);
+                lastAttempt = new TransportAttempt(
+                    (int)response.StatusCode,
+                    await response.Content.ReadAsStringAsync(attemptToken),
+                    responseHeaders,
+                    request.RequestUri?.ToString() ?? url,
+                    request.Method.Method,
+                    requestHeaders,
+                    requestBody,
+                    startedAt,
+                    completedAt);
+                return response;
             }, cancellationToken);
         }
 
@@ -190,7 +208,50 @@ public class TransportEngine : ITransportEngine
             .Concat(response.Content.Headers)
             .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.SelectMany(header => header.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
-        return new TransportResponse((int)response.StatusCode, content, headers, url);
+        var attempt = lastAttempt ?? new TransportAttempt(
+            (int)response.StatusCode,
+            content,
+            headers,
+            url,
+            step.HttpMethod,
+            new Dictionary<string, string[]>(),
+            payload ?? string.Empty,
+            DateTime.UtcNow,
+            DateTime.UtcNow);
+        return new TransportResponse((int)response.StatusCode, content, headers, url)
+        {
+            HttpMethod = attempt.HttpMethod,
+            RequestHeaders = attempt.RequestHeaders,
+            RequestBody = attempt.RequestBody,
+            StartedAt = attempt.StartedAt,
+            CompletedAt = attempt.CompletedAt,
+            Attempts = new[] { attempt }
+        };
+    }
+
+    private static Dictionary<string, string[]> SnapshotHeaders(HttpRequestMessage request)
+    {
+        var headers = request.Headers
+            .Concat(request.Content?.Headers ?? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>())
+            .ToDictionary(header => header.Key, header => RedactHeader(header.Key, header.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
+        return headers;
+    }
+
+    private static Dictionary<string, string[]> SnapshotHeaders(HttpResponseMessage response)
+    {
+        return response.Headers
+            .Concat(response.Content.Headers)
+            .ToDictionary(header => header.Key, header => header.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> RedactHeader(string name, IEnumerable<string> values)
+    {
+        var sensitive = name.Equals("Authorization", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Cookie", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("api-key", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("secret", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("token", StringComparison.OrdinalIgnoreCase);
+        return sensitive ? new[] { "[REDACTED]" } : values;
     }
 
     private static string SerializeAuthConfig(Dictionary<string, string> values)

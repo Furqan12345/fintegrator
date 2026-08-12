@@ -70,22 +70,47 @@ public class ExecutionController : ControllerBase
     {
         var steps = await _repository.GetStepExecutionsAsync(id);
 
-        var dto = steps.Select(s => new StepExecutionDto
+        var dto = new List<StepExecutionDto>();
+        foreach (var step in steps)
         {
-            Id = s.Id,
-            FlowExecutionId = s.FlowExecutionId,
-            StepId = s.StepId,
-            NodeName = s.NodeName,
-            Status = s.Status.ToString(),
-            StartedAt = s.StartedAt,
-            CompletedAt = s.CompletedAt,
-            RecoveredAt = s.RecoveredAt,
-            RecoveredByDeadLetterId = s.RecoveredByDeadLetterId,
-            HttpStatusCode = s.HttpStatusCode,
-            ErrorMessage = s.ErrorMessage,
-            RequestPayload = s.RequestPayload,
-            ResponsePayload = s.ResponsePayload
-        });
+            var packets = await _repository.GetStepPacketLogsAsync(step.Id);
+            dto.Add(new StepExecutionDto
+            {
+                Id = step.Id,
+                FlowExecutionId = step.FlowExecutionId,
+                StepId = step.StepId,
+                NodeName = step.NodeName,
+                Status = step.Status.ToString(),
+                StartedAt = step.StartedAt,
+                CompletedAt = step.CompletedAt,
+                RecoveredAt = step.RecoveredAt,
+                RecoveredByDeadLetterId = step.RecoveredByDeadLetterId,
+                ReceivedInput = step.ReceivedInput,
+                HttpStatusCode = step.HttpStatusCode,
+                ErrorMessage = step.ErrorMessage,
+                RequestPayload = step.RequestPayload,
+                ResponsePayload = step.ResponsePayload,
+                Packets = packets.Select(packet => new StepPacketLogDto
+                {
+                    Id = packet.Id,
+                    Sequence = packet.Sequence,
+                    Kind = packet.Kind,
+                    PageNumber = packet.PageNumber,
+                    Attempt = packet.Attempt,
+                    HttpMethod = packet.HttpMethod,
+                    RequestUrl = packet.RequestUrl,
+                    StatusCode = packet.StatusCode,
+                    RequestHeadersJson = packet.RequestHeadersJson,
+                    RequestBody = packet.RequestBody,
+                    ResponseHeadersJson = packet.ResponseHeadersJson,
+                    ResponseBody = packet.ResponseBody,
+                    StartedAt = packet.StartedAt,
+                    CompletedAt = packet.CompletedAt,
+                    DurationMs = packet.DurationMs,
+                    Error = packet.Error
+                }).ToList()
+            });
+        }
 
         return Ok(dto);
     }

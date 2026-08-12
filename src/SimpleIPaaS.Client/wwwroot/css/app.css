@@ -1779,13 +1779,95 @@ textarea.api-packet-body {
 
 @media (max-width: 760px) {
     .transaction-summary,
-    .transaction-io-grid {
+    .transaction-io-grid,
+    .packet-io-grid {
         grid-template-columns: 1fr;
     }
 
     .transaction-card-header {
         flex-direction: column;
     }
+}
+
+/* ── Packet logs ──────────────────────────────────────────────── */
+.packet-log-viewer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+}
+
+.packet-section {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-card-header);
+}
+
+.packet-section > summary {
+    cursor: pointer;
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.packet-section > summary::before { content: '▸ '; }
+.packet-section[open] > summary::before { content: '▾ '; }
+.packet-section > summary::-webkit-details-marker { display: none; }
+
+.packet-json-viewer {
+    margin: 0 var(--space-3) var(--space-3);
+    max-height: 260px;
+    overflow: auto;
+    padding: var(--space-3);
+    background: var(--surface-code);
+    color: var(--surface-code-text);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.packet-entry {
+    margin: 0 var(--space-3) var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+}
+
+.packet-entry-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    color: var(--text-primary);
+}
+
+.packet-entry-meta {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+}
+
+.packet-io-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+}
+
+.packet-section-title {
+    margin: 0 0 var(--space-1);
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
 }
 
 /* ── Execution timeline ─────────────────────────────────────── */

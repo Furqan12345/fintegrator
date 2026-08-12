@@ -85,16 +85,7 @@
                         </div>
                     }
 
-                    <div class="transaction-io-grid">
-                        <div class="transaction-json-panel">
-                            <div class="transaction-json-title">Received Data</div>
-                            <pre class="transaction-json-viewer"><code>@FormatJson(step.RequestPayload)</code></pre>
-                        </div>
-                        <div class="transaction-json-panel">
-                            <div class="transaction-json-title">Returned Data</div>
-                            <pre class="transaction-json-viewer"><code>@FormatJson(step.ResponsePayload)</code></pre>
-                        </div>
-                    </div>
+                    <PacketLogViewer Step="step" />
                 </section>
             }
         </div>

@@ -108,6 +108,7 @@ public sealed class StubExecutionRepository : IExecutionRepository
     public void Seed(FlowExecution execution) => _flowExecutions[execution.Id] = execution;
 
     public List<StepExecution> StepExecutions { get; } = new();
+    public List<StepPacketLog> StepPacketLogs { get; } = new();
 
     public List<DeadLetterEntry> DeadLetters { get; } = new();
 
@@ -142,6 +143,18 @@ public sealed class StubExecutionRepository : IExecutionRepository
 
     public Task<StepExecution?> GetStepExecutionAsync(Guid flowExecutionId, Guid stepId) =>
         Task.FromResult(StepExecutions.LastOrDefault(s => s.FlowExecutionId == flowExecutionId && s.StepId == stepId));
+
+    public Task AddStepPacketLogAsync(StepPacketLog packet)
+    {
+        lock (_lock) { StepPacketLogs.Add(packet); }
+        return Task.CompletedTask;
+    }
+
+    public Task<IEnumerable<StepPacketLog>> GetStepPacketLogsAsync(Guid stepExecutionId) =>
+        Task.FromResult<IEnumerable<StepPacketLog>>(StepPacketLogs
+            .Where(packet => packet.StepExecutionId == stepExecutionId)
+            .OrderBy(packet => packet.Sequence)
+            .ToList());
 
     public Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
     {

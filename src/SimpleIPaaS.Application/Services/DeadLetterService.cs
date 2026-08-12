@@ -128,8 +128,9 @@ public class DeadLetterService
             _logger.LogInformation("Replaying dead letter {DeadLetterId} for execution {ExecutionId} (step {StepId})",
                 entry.Id, entry.FlowExecutionId, entry.StepId);
 
-            var (statusCode, response, _) = await _flowExecutor.ExecuteHttpNodeAsync(
+            var replay = await _flowExecutor.ExecuteHttpNodeAsync(
                 step, replayFlowStateJson, flow.PersistedStateJson, cancellationToken);
+            var statusCode = replay.StatusCode;
 
             if (statusCode >= 200 && statusCode < 300)
             {
@@ -145,7 +146,7 @@ public class DeadLetterService
             {
                 entry.RetryCount++;
                 entry.LastRetriedAt = DateTime.UtcNow;
-                entry.ErrorMessage = $"Failed with status code {statusCode}: {response}";
+                entry.ErrorMessage = $"Failed with status code {statusCode}: {replay.Response}";
                 AppendAttempt(entry, statusCode, entry.ErrorMessage, entry.LastRetriedAt.Value);
 
                 if (entry.RetryCount >= 5)
