@@ -28,6 +28,7 @@ public static class DatabaseSchemaInitializer
         EnsureColumn(connection, "IntegrationFlows", "AllowPostReplay", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "DeadLetterEntries", "FlowStateJson", "TEXT NOT NULL DEFAULT '{}'");
         EnsureColumn(connection, "StepExecutions", "NodeName", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "StepExecutions", "ReceivedInput", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(connection, "StepExecutions", "RecoveredAt", "TEXT NULL");
         EnsureColumn(connection, "StepExecutions", "RecoveredByDeadLetterId", "TEXT NULL");
         EnsureColumn(connection, "FlowExecutions", "RecoveredAt", "TEXT NULL");

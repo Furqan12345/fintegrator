@@ -180,6 +180,32 @@ using (var scope = app.Services.CreateScope())
 
             if (existing != null)
             {
+                var executionIds = await db.FlowExecutions
+                    .IgnoreQueryFilters()
+                    .Where(execution => execution.FlowId == existing.Id && execution.TenantId == devTenantId)
+                    .Select(execution => execution.Id)
+                    .ToListAsync();
+
+                if (executionIds.Count > 0)
+                {
+                    await db.StepPacketLogs
+                        .IgnoreQueryFilters()
+                        .Where(packet => executionIds.Contains(packet.StepExecutionId))
+                        .ExecuteDeleteAsync();
+                    await db.DeadLetterEntries
+                        .IgnoreQueryFilters()
+                        .Where(entry => executionIds.Contains(entry.FlowExecutionId))
+                        .ExecuteDeleteAsync();
+                    await db.StepExecutions
+                        .IgnoreQueryFilters()
+                        .Where(step => executionIds.Contains(step.FlowExecutionId))
+                        .ExecuteDeleteAsync();
+                    await db.FlowExecutions
+                        .IgnoreQueryFilters()
+                        .Where(execution => executionIds.Contains(execution.Id))
+                        .ExecuteDeleteAsync();
+                }
+
                 db.IntegrationFlows.Remove(existing);
                 await db.SaveChangesAsync();
                 app.Logger.LogInformation(
