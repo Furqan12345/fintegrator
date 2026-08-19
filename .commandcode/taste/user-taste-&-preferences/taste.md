@@ -1,7 +1,10 @@
 # User Taste & Preferences
 - Always push to GitHub after making changes. Confidence: 0.95
-- Commit taste files to git so preferences are shared across machines. Confidence: 0.9
+- Commit Command Code metadata files (`.commandcode/taste/`, `.commandcode/settings.json`) to git so preferences are shared across machines. Confidence: 0.9
 - Keep commits focused by excluding unrelated file changes from staged area before committing. Confidence: 0.75
+- Separate commits by concern type (e.g., feature work vs. project metadata) rather than mixing all changes into a single commit. Confidence: 0.85
+- Exclude `$null` files from commits as they are unrelated artifacts. Confidence: 0.85
+- Commit incrementally as changes are made (commit each logical unit of work as it completes), not batching all work into a single commit at the end. Confidence: 0.9
 - Investigate project setup files (docker-compose.yml, Dockerfile, launchSettings.json) before starting a project to understand configuration. Confidence: 0.85
 - Start dependent services in dependency order (e.g. API before the client that consumes it) so the client can connect immediately on first request. Confidence: 0.85
 - Verify a service is healthy (check /health endpoint or HTTP status code) before starting dependent services. Confidence: 0.85

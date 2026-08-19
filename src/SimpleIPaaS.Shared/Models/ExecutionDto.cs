@@ -33,11 +33,11 @@ public class StepExecutionDto
     public DateTime? CompletedAt { get; set; }
     public DateTime? RecoveredAt { get; set; }
     public Guid? RecoveredByDeadLetterId { get; set; }
-    public string ReceivedInput { get; set; } = string.Empty;
     public int HttpStatusCode { get; set; }
     public string? ErrorMessage { get; set; }
-    public string RequestPayload { get; set; } = string.Empty;
-    public string ResponsePayload { get; set; } = string.Empty;
+    public int ReceivedInputSize { get; set; }
+    public int RequestPayloadSize { get; set; }
+    public int ResponsePayloadSize { get; set; }
     public List<StepPacketLogDto> Packets { get; set; } = new();
 }
 
@@ -51,14 +51,31 @@ public class StepPacketLogDto
     public string HttpMethod { get; set; } = string.Empty;
     public string RequestUrl { get; set; } = string.Empty;
     public int? StatusCode { get; set; }
-    public string RequestHeadersJson { get; set; } = "{}";
-    public string RequestBody { get; set; } = string.Empty;
-    public string ResponseHeadersJson { get; set; } = "{}";
-    public string ResponseBody { get; set; } = string.Empty;
     public DateTime StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public long? DurationMs { get; set; }
     public string? Error { get; set; }
+    public int RequestHeadersSize { get; set; }
+    public int RequestBodySize { get; set; }
+    public int ResponseHeadersSize { get; set; }
+    public int ResponseBodySize { get; set; }
+}
+
+public class StepPayloadDto
+{
+    public Guid Id { get; set; }
+    public string ReceivedInput { get; set; } = string.Empty;
+    public string RequestPayload { get; set; } = string.Empty;
+    public string ResponsePayload { get; set; } = string.Empty;
+}
+
+public class StepPacketBodyDto
+{
+    public Guid Id { get; set; }
+    public string RequestHeadersJson { get; set; } = "{}";
+    public string RequestBody { get; set; } = string.Empty;
+    public string ResponseHeadersJson { get; set; } = "{}";
+    public string ResponseBody { get; set; } = string.Empty;
 }
 
 public class DeadLetterEntryDto

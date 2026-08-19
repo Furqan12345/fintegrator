@@ -68,29 +68,31 @@ public class ExecutionController : ControllerBase
     [HttpGet("{id}/steps")]
     public async Task<IActionResult> GetExecutionSteps(Guid id)
     {
-        var steps = await _repository.GetStepExecutionsAsync(id);
+        var steps = await _repository.GetStepExecutionSummariesAsync(id);
+        var packets = await _repository.GetStepPacketLogSummariesAsync(id);
 
-        var dto = new List<StepExecutionDto>();
-        foreach (var step in steps)
+        var packetsByStep = packets
+            .GroupBy(packet => packet.StepExecutionId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(packet => packet.Sequence).ToList());
+
+        var dto = steps.Select(step => new StepExecutionDto
         {
-            var packets = await _repository.GetStepPacketLogsAsync(step.Id);
-            dto.Add(new StepExecutionDto
-            {
-                Id = step.Id,
-                FlowExecutionId = step.FlowExecutionId,
-                StepId = step.StepId,
-                NodeName = step.NodeName,
-                Status = step.Status.ToString(),
-                StartedAt = step.StartedAt,
-                CompletedAt = step.CompletedAt,
-                RecoveredAt = step.RecoveredAt,
-                RecoveredByDeadLetterId = step.RecoveredByDeadLetterId,
-                ReceivedInput = step.ReceivedInput,
-                HttpStatusCode = step.HttpStatusCode,
-                ErrorMessage = step.ErrorMessage,
-                RequestPayload = step.RequestPayload,
-                ResponsePayload = step.ResponsePayload,
-                Packets = packets.Select(packet => new StepPacketLogDto
+            Id = step.Id,
+            FlowExecutionId = step.FlowExecutionId,
+            StepId = step.StepId,
+            NodeName = step.NodeName,
+            Status = step.Status.ToString(),
+            StartedAt = step.StartedAt,
+            CompletedAt = step.CompletedAt,
+            RecoveredAt = step.RecoveredAt,
+            RecoveredByDeadLetterId = step.RecoveredByDeadLetterId,
+            HttpStatusCode = step.HttpStatusCode,
+            ErrorMessage = step.ErrorMessage,
+            ReceivedInputSize = step.ReceivedInputSize,
+            RequestPayloadSize = step.RequestPayloadSize,
+            ResponsePayloadSize = step.ResponsePayloadSize,
+            Packets = packetsByStep.TryGetValue(step.Id, out var stepPackets)
+                ? stepPackets.Select(packet => new StepPacketLogDto
                 {
                     Id = packet.Id,
                     Sequence = packet.Sequence,
@@ -100,19 +102,50 @@ public class ExecutionController : ControllerBase
                     HttpMethod = packet.HttpMethod,
                     RequestUrl = packet.RequestUrl,
                     StatusCode = packet.StatusCode,
-                    RequestHeadersJson = packet.RequestHeadersJson,
-                    RequestBody = packet.RequestBody,
-                    ResponseHeadersJson = packet.ResponseHeadersJson,
-                    ResponseBody = packet.ResponseBody,
                     StartedAt = packet.StartedAt,
                     CompletedAt = packet.CompletedAt,
                     DurationMs = packet.DurationMs,
-                    Error = packet.Error
+                    Error = packet.Error,
+                    RequestHeadersSize = packet.RequestHeadersSize,
+                    RequestBodySize = packet.RequestBodySize,
+                    ResponseHeadersSize = packet.ResponseHeadersSize,
+                    ResponseBodySize = packet.ResponseBodySize
                 }).ToList()
-            });
-        }
+                : new List<StepPacketLogDto>()
+        }).ToList();
 
         return Ok(dto);
+    }
+
+    [HttpGet("{id:guid}/steps/{stepId:guid}/payload")]
+    public async Task<IActionResult> GetStepPayload(Guid id, Guid stepId)
+    {
+        var payload = await _repository.GetStepPayloadAsync(id, stepId);
+        if (payload == null) return NotFound();
+
+        return Ok(new StepPayloadDto
+        {
+            Id = payload.Id,
+            ReceivedInput = payload.ReceivedInput,
+            RequestPayload = payload.RequestPayload,
+            ResponsePayload = payload.ResponsePayload
+        });
+    }
+
+    [HttpGet("{id:guid}/packets/{packetId:guid}")]
+    public async Task<IActionResult> GetPacketBody(Guid id, Guid packetId)
+    {
+        var packet = await _repository.GetStepPacketBodyAsync(id, packetId);
+        if (packet == null) return NotFound();
+
+        return Ok(new StepPacketBodyDto
+        {
+            Id = packet.Id,
+            RequestHeadersJson = packet.RequestHeadersJson,
+            RequestBody = packet.RequestBody,
+            ResponseHeadersJson = packet.ResponseHeadersJson,
+            ResponseBody = packet.ResponseBody
+        });
     }
 
     [HttpPost("{id}/cancel")]

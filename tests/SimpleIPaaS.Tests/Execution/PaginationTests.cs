@@ -53,7 +53,7 @@ public class PaginationTests
     }
 
     [Fact]
-    public async Task HttpAction_FailsClearlyWhenPaginationLimitIsReached()
+    public async Task HttpAction_StopsCleanlyAtConfiguredPageLimit()
     {
         var transport = new RecordingPaginationTransport(
             new TransportResponse(200, "{\"payload\":{\"Orders\":[{\"id\":1}],\"NextToken\":\"next-1\"}}", new Dictionary<string, string[]>(), "https://api.example.test/orders"));
@@ -81,8 +81,10 @@ public class PaginationTests
 
         var result = await executor.ExecuteFlowAsync(flow.Id, execution.Id, "{}", CancellationToken.None);
 
-        Assert.Equal(ExecutionStatus.Failed, result.Status);
-        Assert.Contains("incomplete after 1 pages", result.ErrorMessage);
+        Assert.Equal(ExecutionStatus.Success, result.Status);
+        var payload = executionRepository.StepExecutions.Single().ResponsePayload;
+        Assert.Contains("\"id\":1", payload);
+        Assert.DoesNotContain("\"id\":2", payload);
     }
 
     private sealed class RecordingPaginationTransport : ITransportEngine

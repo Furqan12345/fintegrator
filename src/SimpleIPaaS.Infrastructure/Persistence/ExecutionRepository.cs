@@ -100,6 +100,39 @@ public class ExecutionRepository : IExecutionRepository
             .FirstOrDefaultAsync();
     }
 
+    public async Task<IReadOnlyList<StepExecutionSummary>> GetStepExecutionSummariesAsync(Guid flowExecutionId)
+    {
+        return await _context.StepExecutions
+            .AsNoTracking()
+            .Where(s => s.FlowExecutionId == flowExecutionId)
+            .OrderBy(s => s.StartedAt)
+            .Select(s => new StepExecutionSummary(
+                s.Id,
+                s.FlowExecutionId,
+                s.StepId,
+                s.NodeName,
+                s.Status,
+                s.StartedAt,
+                s.CompletedAt,
+                s.RecoveredAt,
+                s.RecoveredByDeadLetterId,
+                s.HttpStatusCode,
+                s.ErrorMessage,
+                s.ReceivedInput.Length,
+                s.RequestPayload.Length,
+                s.ResponsePayload.Length))
+            .ToListAsync();
+    }
+
+    public async Task<StepPayload?> GetStepPayloadAsync(Guid flowExecutionId, Guid stepExecutionId)
+    {
+        return await _context.StepExecutions
+            .AsNoTracking()
+            .Where(s => s.FlowExecutionId == flowExecutionId && s.Id == stepExecutionId)
+            .Select(s => new StepPayload(s.Id, s.ReceivedInput, s.RequestPayload, s.ResponsePayload))
+            .FirstOrDefaultAsync();
+    }
+
     public async Task AddStepPacketLogAsync(StepPacketLog packet)
     {
         if (packet.TenantId == Guid.Empty)
@@ -117,6 +150,47 @@ public class ExecutionRepository : IExecutionRepository
             .Where(packet => packet.StepExecutionId == stepExecutionId)
             .OrderBy(packet => packet.Sequence)
             .ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<StepPacketLogSummary>> GetStepPacketLogSummariesAsync(Guid flowExecutionId)
+    {
+        return await (from packet in _context.StepPacketLogs.AsNoTracking()
+                      join step in _context.StepExecutions.AsNoTracking() on packet.StepExecutionId equals step.Id
+                      where step.FlowExecutionId == flowExecutionId
+                      orderby packet.StepExecutionId, packet.Sequence
+                      select new StepPacketLogSummary(
+                          packet.Id,
+                          packet.StepExecutionId,
+                          packet.Sequence,
+                          packet.Kind,
+                          packet.PageNumber,
+                          packet.Attempt,
+                          packet.HttpMethod,
+                          packet.RequestUrl,
+                          packet.StatusCode,
+                          packet.StartedAt,
+                          packet.CompletedAt,
+                          packet.DurationMs,
+                          packet.Error,
+                          packet.RequestHeadersJson.Length,
+                          packet.RequestBody.Length,
+                          packet.ResponseHeadersJson.Length,
+                          packet.ResponseBody.Length))
+            .ToListAsync();
+    }
+
+    public async Task<StepPacketBody?> GetStepPacketBodyAsync(Guid flowExecutionId, Guid packetId)
+    {
+        return await (from packet in _context.StepPacketLogs.AsNoTracking()
+                      join step in _context.StepExecutions.AsNoTracking() on packet.StepExecutionId equals step.Id
+                      where packet.Id == packetId && step.FlowExecutionId == flowExecutionId
+                      select new StepPacketBody(
+                          packet.Id,
+                          packet.RequestHeadersJson,
+                          packet.RequestBody,
+                          packet.ResponseHeadersJson,
+                          packet.ResponseBody))
+            .FirstOrDefaultAsync();
     }
 
     public async Task AddDeadLetterEntryAsync(DeadLetterEntry entry)

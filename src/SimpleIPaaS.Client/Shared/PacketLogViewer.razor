@@ -1,15 +1,36 @@
-@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject IDispatcher Dispatcher
 
 <div class="packet-log-viewer">
-    <details class="packet-section" open>
-        <summary>Received input</summary>
-        <pre class="packet-json-viewer"><code>@FormatJson(Step.ReceivedInput)</code></pre>
-    </details>
+    @if (Step.ReceivedInputSize > 0)
+    {
+        <details class="packet-section" @ontoggle="LoadPayloadAsync">
+            <summary>Received input (@FormatSize(Step.ReceivedInputSize))</summary>
+            @if (_payloadLoading)
+            {
+                <div class="text-muted">Loading…</div>
+            }
+            else
+            {
+                <pre class="packet-json-viewer"><code>@FormatJson(_payload?.ReceivedInput)</code></pre>
+            }
+        </details>
+    }
 
-    <details class="packet-section" open>
-        <summary>Returned data</summary>
-        <pre class="packet-json-viewer"><code>@FormatJson(Step.ResponsePayload)</code></pre>
-    </details>
+    @if (Step.ResponsePayloadSize > 0)
+    {
+        <details class="packet-section" @ontoggle="LoadPayloadAsync">
+            <summary>Returned data (@FormatSize(Step.ResponsePayloadSize))</summary>
+            @if (_payloadLoading)
+            {
+                <div class="text-muted">Loading…</div>
+            }
+            else
+            {
+                <pre class="packet-json-viewer"><code>@FormatJson(_payload?.ResponsePayload)</code></pre>
+            }
+        </details>
+    }
 
     @if (Step.Packets.Count > 0)
     {
@@ -34,24 +55,50 @@
                         @packet.StartedAt.ToLocalTime().ToString("MMM d, h:mm:ss.fff tt")
                         @(packet.DurationMs.HasValue ? $" · {packet.DurationMs} ms" : string.Empty)
                     </div>
-                    <div class="packet-io-grid">
-                        <div>
-                            <div class="packet-section-title">Request headers</div>
-                            <pre class="packet-json-viewer"><code>@FormatJson(packet.RequestHeadersJson)</code></pre>
-                        </div>
-                        <div>
-                            <div class="packet-section-title">Request body</div>
-                            <pre class="packet-json-viewer"><code>@FormatJson(packet.RequestBody)</code></pre>
-                        </div>
-                        <div>
-                            <div class="packet-section-title">Response headers</div>
-                            <pre class="packet-json-viewer"><code>@FormatJson(packet.ResponseHeadersJson)</code></pre>
-                        </div>
-                        <div>
-                            <div class="packet-section-title">Response body</div>
-                            <pre class="packet-json-viewer"><code>@FormatJson(packet.ResponseBody)</code></pre>
-                        </div>
-                    </div>
+                    @if (HasPacketBody(packet))
+                    {
+                        <details class="packet-section" @ontoggle="@(() => LoadPacketAsync(packet.Id))">
+                            <summary>Headers and bodies (@FormatSize(PacketTotalSize(packet)))</summary>
+                            @if (_loadingPackets.Contains(packet.Id))
+                            {
+                                <div class="text-muted">Loading…</div>
+                            }
+                            else
+                            {
+                                var body = PacketBody(packet.Id);
+                                <div class="packet-io-grid">
+                                    @if (packet.RequestHeadersSize > 0)
+                                    {
+                                        <div>
+                                            <div class="packet-section-title">Request headers (@FormatSize(packet.RequestHeadersSize))</div>
+                                            <pre class="packet-json-viewer"><code>@FormatJson(body?.RequestHeadersJson)</code></pre>
+                                        </div>
+                                    }
+                                    @if (packet.RequestBodySize > 0)
+                                    {
+                                        <div>
+                                            <div class="packet-section-title">Request body (@FormatSize(packet.RequestBodySize))</div>
+                                            <pre class="packet-json-viewer"><code>@FormatJson(body?.RequestBody)</code></pre>
+                                        </div>
+                                    }
+                                    @if (packet.ResponseHeadersSize > 0)
+                                    {
+                                        <div>
+                                            <div class="packet-section-title">Response headers (@FormatSize(packet.ResponseHeadersSize))</div>
+                                            <pre class="packet-json-viewer"><code>@FormatJson(body?.ResponseHeadersJson)</code></pre>
+                                        </div>
+                                    }
+                                    @if (packet.ResponseBodySize > 0)
+                                    {
+                                        <div>
+                                            <div class="packet-section-title">Response body (@FormatSize(packet.ResponseBodySize))</div>
+                                            <pre class="packet-json-viewer"><code>@FormatJson(body?.ResponseBody)</code></pre>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </details>
+                    }
                     @if (!string.IsNullOrWhiteSpace(packet.Error))
                     {
                         <div class="step-error">@packet.Error</div>
@@ -64,6 +111,75 @@
 
 @code {
     [Parameter] public StepExecutionDto Step { get; set; } = default!;
+
+    private StepPayloadDto? _payload;
+    private bool _payloadLoading;
+    private Guid _loadedPayloadStepId;
+    private readonly Dictionary<Guid, StepPacketBodyDto> _packetBodies = new();
+    private readonly HashSet<Guid> _loadingPackets = new();
+
+    protected override void OnParametersSet()
+    {
+        if (_loadedPayloadStepId != Step.Id)
+        {
+            _payload = null;
+            _payloadLoading = false;
+            _loadedPayloadStepId = Guid.Empty;
+            _packetBodies.Clear();
+            _loadingPackets.Clear();
+        }
+    }
+
+    private async Task LoadPayloadAsync()
+    {
+        if (_payload != null || _payloadLoading) return;
+
+        _payloadLoading = true;
+        var payload = await SafeFetch.GetAsync<StepPayloadDto>(
+            Http,
+            $"api/executions/{Step.FlowExecutionId}/steps/{Step.Id}/payload",
+            Dispatcher,
+            "step payload");
+        _payloadLoading = false;
+
+        if (payload == null) return;
+
+        _payload = payload;
+        _loadedPayloadStepId = Step.Id;
+    }
+
+    private async Task LoadPacketAsync(Guid packetId)
+    {
+        if (_packetBodies.ContainsKey(packetId) || !_loadingPackets.Add(packetId)) return;
+
+        var body = await SafeFetch.GetAsync<StepPacketBodyDto>(
+            Http,
+            $"api/executions/{Step.FlowExecutionId}/packets/{packetId}",
+            Dispatcher,
+            "packet body");
+        _loadingPackets.Remove(packetId);
+
+        if (body == null) return;
+
+        _packetBodies[packetId] = body;
+    }
+
+    private StepPacketBodyDto? PacketBody(Guid packetId) =>
+        _packetBodies.TryGetValue(packetId, out var body) ? body : null;
+
+    private static bool HasPacketBody(StepPacketLogDto packet) =>
+        packet.RequestHeadersSize > 0 || packet.RequestBodySize > 0 ||
+        packet.ResponseHeadersSize > 0 || packet.ResponseBodySize > 0;
+
+    private static int PacketTotalSize(StepPacketLogDto packet) =>
+        packet.RequestHeadersSize + packet.RequestBodySize + packet.ResponseHeadersSize + packet.ResponseBodySize;
+
+    private static string FormatSize(int bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:0.#} KB";
+        return $"{bytes / (1024.0 * 1024.0):0.#} MB";
+    }
 
     private static string StatusClass(int? statusCode) => statusCode switch
     {

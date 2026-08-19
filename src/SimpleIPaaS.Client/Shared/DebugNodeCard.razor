@@ -79,7 +79,10 @@
                 return;
             }
 
-            _stateJson = FormatJson(debugStep.ResponsePayload);
+            var payload = await Http.GetFromJsonAsync<StepPayloadDto>(
+                $"api/executions/{executionId}/steps/{debugStep.Id}/payload");
+
+            _stateJson = FormatJson(payload?.ResponsePayload ?? string.Empty);
             if (openFullscreen)
             {
                 OpenFullscreenFromHost();

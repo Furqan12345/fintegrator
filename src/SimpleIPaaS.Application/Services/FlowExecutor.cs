@@ -818,7 +818,11 @@ public class FlowExecutor
             }
         }
 
-        throw new InvalidOperationException($"Pagination on node {node.NodeName} is incomplete after {pagination.MaxPages} pages; the configured maximum was reached before the API returned a terminal response.");
+        _logger.LogWarning(
+            "Pagination on node {NodeName} stopped at the configured limit of {MaxPages} page(s); the API still had more pages available.",
+            node.NodeName, pagination.MaxPages);
+
+        return new HttpExecutionResult(statusCode, AggregatePages(pageResponses, pagination), requestPayload, packets);
     }
 
     private static JObject? TryParseJson(string response)

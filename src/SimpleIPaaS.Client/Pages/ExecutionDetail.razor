@@ -125,7 +125,7 @@
 
                         <PacketLogViewer Step="step" />
 
-                        @if (!HasPayload(step.RequestPayload) && !HasPayload(step.ResponsePayload) && string.IsNullOrWhiteSpace(step.ErrorMessage))
+                        @if (step.RequestPayloadSize == 0 && step.ResponsePayloadSize == 0 && string.IsNullOrWhiteSpace(step.ErrorMessage))
                         {
                             <span class="text-muted">No payload captured for this step.</span>
                         }
@@ -332,9 +332,6 @@
 
     private string DeadLetterLink(StepExecutionDto step) =>
         $"/deadletters?executionId={ExecutionId}&stepId={step.StepId}";
-
-    private static bool HasPayload(string? payload) =>
-        !string.IsNullOrWhiteSpace(payload) && payload.Trim() != "{}";
 
     private static bool IsSkipped(string status) =>
         status.Equals("Skipped", StringComparison.OrdinalIgnoreCase) ||

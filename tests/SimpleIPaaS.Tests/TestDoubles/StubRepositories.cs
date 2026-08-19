@@ -144,6 +144,33 @@ public sealed class StubExecutionRepository : IExecutionRepository
     public Task<StepExecution?> GetStepExecutionAsync(Guid flowExecutionId, Guid stepId) =>
         Task.FromResult(StepExecutions.LastOrDefault(s => s.FlowExecutionId == flowExecutionId && s.StepId == stepId));
 
+    public Task<IReadOnlyList<StepExecutionSummary>> GetStepExecutionSummariesAsync(Guid flowExecutionId) =>
+        Task.FromResult<IReadOnlyList<StepExecutionSummary>>(StepExecutions
+            .Where(s => s.FlowExecutionId == flowExecutionId)
+            .OrderBy(s => s.StartedAt)
+            .Select(s => new StepExecutionSummary(
+                s.Id,
+                s.FlowExecutionId,
+                s.StepId,
+                s.NodeName,
+                s.Status,
+                s.StartedAt,
+                s.CompletedAt,
+                s.RecoveredAt,
+                s.RecoveredByDeadLetterId,
+                s.HttpStatusCode,
+                s.ErrorMessage,
+                s.ReceivedInput.Length,
+                s.RequestPayload.Length,
+                s.ResponsePayload.Length))
+            .ToList());
+
+    public Task<StepPayload?> GetStepPayloadAsync(Guid flowExecutionId, Guid stepExecutionId) =>
+        Task.FromResult(StepExecutions
+            .Where(s => s.FlowExecutionId == flowExecutionId && s.Id == stepExecutionId)
+            .Select(s => new StepPayload(s.Id, s.ReceivedInput, s.RequestPayload, s.ResponsePayload))
+            .FirstOrDefault());
+
     public Task AddStepPacketLogAsync(StepPacketLog packet)
     {
         lock (_lock) { StepPacketLogs.Add(packet); }
@@ -155,6 +182,56 @@ public sealed class StubExecutionRepository : IExecutionRepository
             .Where(packet => packet.StepExecutionId == stepExecutionId)
             .OrderBy(packet => packet.Sequence)
             .ToList());
+
+    public Task<IReadOnlyList<StepPacketLogSummary>> GetStepPacketLogSummariesAsync(Guid flowExecutionId)
+    {
+        var stepIds = StepExecutions
+            .Where(s => s.FlowExecutionId == flowExecutionId)
+            .Select(s => s.Id)
+            .ToHashSet();
+
+        return Task.FromResult<IReadOnlyList<StepPacketLogSummary>>(StepPacketLogs
+            .Where(packet => stepIds.Contains(packet.StepExecutionId))
+            .OrderBy(packet => packet.StepExecutionId)
+            .ThenBy(packet => packet.Sequence)
+            .Select(packet => new StepPacketLogSummary(
+                packet.Id,
+                packet.StepExecutionId,
+                packet.Sequence,
+                packet.Kind,
+                packet.PageNumber,
+                packet.Attempt,
+                packet.HttpMethod,
+                packet.RequestUrl,
+                packet.StatusCode,
+                packet.StartedAt,
+                packet.CompletedAt,
+                packet.DurationMs,
+                packet.Error,
+                packet.RequestHeadersJson.Length,
+                packet.RequestBody.Length,
+                packet.ResponseHeadersJson.Length,
+                packet.ResponseBody.Length))
+            .ToList());
+    }
+
+    public Task<StepPacketBody?> GetStepPacketBodyAsync(Guid flowExecutionId, Guid packetId)
+    {
+        var stepIds = StepExecutions
+            .Where(s => s.FlowExecutionId == flowExecutionId)
+            .Select(s => s.Id)
+            .ToHashSet();
+
+        return Task.FromResult(StepPacketLogs
+            .Where(packet => packet.Id == packetId && stepIds.Contains(packet.StepExecutionId))
+            .Select(packet => new StepPacketBody(
+                packet.Id,
+                packet.RequestHeadersJson,
+                packet.RequestBody,
+                packet.ResponseHeadersJson,
+                packet.ResponseBody))
+            .FirstOrDefault());
+    }
 
     public Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
     {

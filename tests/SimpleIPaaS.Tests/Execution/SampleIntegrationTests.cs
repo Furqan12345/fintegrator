@@ -84,7 +84,7 @@ public class SampleIntegrationTests
     }
 
     [Fact]
-    public async Task SampleFlow_FanOutPerOrderAndDeduplicatesKnownSKUs()
+    public async Task SampleFlow_FanOutPerOrderAndDeduplicatesKnownOrders()
     {
         // Arrange — load the shipped sample and assert it is structurally valid.
         var dto = LoadSample();
@@ -111,8 +111,8 @@ public class SampleIntegrationTests
         var execution = new FlowExecution { FlowId = flow.Id, TenantId = flow.TenantId, TriggerSource = "Test" };
         _executions.Seed(execution);
 
-        // Simulate a previous night's run: SKU-A1 was already processed and is therefore known.
-        _crossReferences.SeedKeys("processed-skus", "SKU-A1");
+        // Simulate a previous night's run: order A111-123 was already processed and is therefore known.
+        _crossReferences.SeedKeys("processed-orders", "A111-123");
 
         var transport = new RecordingTransportEngine();
 
@@ -127,20 +127,18 @@ public class SampleIntegrationTests
         // Per-order orderItems — order A111 carries a repeat (SKU-A1) + a new SKU-B1.
         transport.Enqueue(200, """
         { "payload": { "OrderItems": [
-            { "sku": "SKU-A1", "asin": "ASIN-1", "qty": 1 },
-            { "sku": "SKU-B1", "asin": "ASIN-2", "qty": 2 }
+            { "SellerSKU": "SKU-A1", "asin": "ASIN-1", "qty": 1 },
+            { "SellerSKU": "SKU-B1", "asin": "ASIN-2", "qty": 2 }
         ] } }
         """);
 
         // Order A222 carries the repeat SKU-A1 plus another new SKU-C1.
         transport.Enqueue(200, """
         { "payload": { "OrderItems": [
-            { "sku": "SKU-A1", "asin": "ASIN-1", "qty": 1 },
-            { "sku": "SKU-C1", "asin": "ASIN-3", "qty": 3 }
+            { "SellerSKU": "SKU-A1", "asin": "ASIN-1", "qty": 1 },
+            { "SellerSKU": "SKU-C1", "asin": "ASIN-3", "qty": 3 }
         ] } }
         """);
-
-        transport.Enqueue(200, "{}"); // ProcessNewItems POST succeeds
 
         var executor = new FlowExecutor(
             _flows,
@@ -164,31 +162,15 @@ public class SampleIntegrationTests
         Assert.Contains(lineItemUrls, u => u.EndsWith("/A111-123/orderItems"));
         Assert.Contains(lineItemUrls, u => u.EndsWith("/A222-456/orderItems"));
 
-        // Nested cross-reference filter: structure preserved, SKU-A1 (already known) removed at the item level.
-        var filterStep = _executions.StepExecutions.First(s => s.NodeName == "FilterNewSKUs");
-        var filtered = JObject.Parse(filterStep.ResponsePayload);
+        // Cross-reference filter: the already-known order A111-123 is dropped, A222-456 passes through.
+        var filterStep = _executions.StepExecutions.First(s => s.NodeName == "FilterNewOrders");
+        var remaining = JArray.Parse(filterStep.ResponsePayload);
 
-        var orders = (JArray)filtered["orders"]!;
-        Assert.Equal(2, orders.Count);
+        Assert.Single(remaining);
+        Assert.Equal("A222-456", remaining[0]!["AmazonOrderId"]!.ToString());
 
-        var order1Items = (JArray)orders[0]!["items"]!;
-        var order2Items = (JArray)orders[1]!["items"]!;
-        Assert.Single(order1Items);
-        Assert.Equal("SKU-B1", order1Items[0]!["sku"]!.ToString());
-        Assert.Single(order2Items);
-        Assert.Equal("SKU-C1", order2Items[0]!["sku"]!.ToString());
-
-        // The store recorded only the genuinely new SKUs this run (SKU-A1 was already seeded).
-        Assert.Equal(3, _crossReferences.Entries.Count); // SKU-A1 (seeded) + SKU-B1 + SKU-C1
-        Assert.Contains("SKU-B1", _crossReferences.Entries.Select(e => e.KeyValue));
-        Assert.Contains("SKU-C1", _crossReferences.Entries.Select(e => e.KeyValue));
-
-        // The downstream POST received only the new items — SKU-A1 is absent from the body.
-        var postPayload = transport.RequestPayloads
-            .FirstOrDefault(p => p.Contains("SKU-B1") || p.Contains("SKU-C1"));
-        Assert.NotNull(postPayload);
-        Assert.Contains("SKU-B1", postPayload!);
-        Assert.Contains("SKU-C1", postPayload!);
-        Assert.DoesNotContain("SKU-A1", postPayload!);
+        // The store recorded only the genuinely new order this run (A111-123 was already seeded).
+        Assert.Equal(2, _crossReferences.Entries.Count);
+        Assert.Contains("A222-456", _crossReferences.Entries.Select(e => e.KeyValue));
     }
 }

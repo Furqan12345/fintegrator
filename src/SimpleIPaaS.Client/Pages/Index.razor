@@ -187,7 +187,7 @@
             _loadError = $"Could not reach the API: {ex.Message}";
             _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => InvokeAsync(LoadDataAsync));
         }
-        catch (TaskCanceledException ex)
+        catch (TaskCanceledException)
         {
             _loadError = "The API is not responding yet. Retrying…";
             _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => InvokeAsync(LoadDataAsync));

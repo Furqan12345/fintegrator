@@ -169,6 +169,11 @@ using (var scope = app.Services.CreateScope())
         // Seed the shipped demo flow (SP-API N+1 fan-out + nested cross-reference filter)
         // for the dev tenant so it is runnable from the Flow Designer immediately.
         var devTenantId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        // Destructive demo reseed is opt-in: it drops the sample flow and every execution,
+        // step, packet log and dead-letter row belonging to it. Enable with
+        // "Demo:ReseedOnStartup": true in appsettings.Development.json, or DEMO_RESEED=true.
+        var reseedDemoFlow = app.Configuration.GetValue<bool>("Demo:ReseedOnStartup")
+            || string.Equals(Environment.GetEnvironmentVariable("DEMO_RESEED"), "true", StringComparison.OrdinalIgnoreCase);
         var samplePath = ResolveSamplePath();
         if (samplePath != null)
         {
@@ -178,7 +183,13 @@ using (var scope = app.Services.CreateScope())
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(f => f.Name == sampleFlowName && f.TenantId == devTenantId);
 
-            if (existing != null)
+            if (existing != null && !reseedDemoFlow)
+            {
+                app.Logger.LogInformation(
+                    "Demo flow '{FlowName}' already exists and was left untouched. Set Demo:ReseedOnStartup=true to replace it from the sample (this deletes the flow and its execution history).",
+                    sampleFlowName);
+            }
+            else if (existing != null)
             {
                 var executionIds = await db.FlowExecutions
                     .IgnoreQueryFilters()
@@ -188,10 +199,22 @@ using (var scope = app.Services.CreateScope())
 
                 if (executionIds.Count > 0)
                 {
-                    await db.StepPacketLogs
+                    // Packet logs hang off step executions, not flow executions, so they have to be
+                    // resolved through the step ids or they survive the reseed as orphans.
+                    var stepExecutionIds = await db.StepExecutions
                         .IgnoreQueryFilters()
-                        .Where(packet => executionIds.Contains(packet.StepExecutionId))
-                        .ExecuteDeleteAsync();
+                        .Where(step => executionIds.Contains(step.FlowExecutionId))
+                        .Select(step => step.Id)
+                        .ToListAsync();
+
+                    if (stepExecutionIds.Count > 0)
+                    {
+                        await db.StepPacketLogs
+                            .IgnoreQueryFilters()
+                            .Where(packet => stepExecutionIds.Contains(packet.StepExecutionId))
+                            .ExecuteDeleteAsync();
+                    }
+
                     await db.DeadLetterEntries
                         .IgnoreQueryFilters()
                         .Where(entry => executionIds.Contains(entry.FlowExecutionId))
@@ -213,30 +236,33 @@ using (var scope = app.Services.CreateScope())
                     existing.Name, existing.Id);
             }
 
-            var sampleJson = await File.ReadAllTextAsync(samplePath);
-            var sampleDto = JsonSerializer.Deserialize<IntegrationFlowDto>(sampleJson,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                ?? throw new InvalidOperationException("Sample flow failed to deserialize.");
-
-            var flow = sampleDto.ToEntity();
-            flow.TenantId = devTenantId;
-            foreach (var node in flow.Nodes)
+            if (existing == null || reseedDemoFlow)
             {
-                node.TenantId = devTenantId;
-                node.FlowId = flow.Id;
-            }
+                var sampleJson = await File.ReadAllTextAsync(samplePath);
+                var sampleDto = JsonSerializer.Deserialize<IntegrationFlowDto>(sampleJson,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ?? throw new InvalidOperationException("Sample flow failed to deserialize.");
 
-            foreach (var edge in flow.Edges)
-            {
-                edge.TenantId = devTenantId;
-                edge.FlowId = flow.Id;
-            }
+                var flow = sampleDto.ToEntity();
+                flow.TenantId = devTenantId;
+                foreach (var node in flow.Nodes)
+                {
+                    node.TenantId = devTenantId;
+                    node.FlowId = flow.Id;
+                }
 
-            db.IntegrationFlows.Add(flow);
-            await db.SaveChangesAsync();
-            app.Logger.LogInformation(
-                "Seeded demo flow '{FlowName}' (id={FlowId}) for dev tenant {TenantId}",
-                flow.Name, flow.Id, devTenantId);
+                foreach (var edge in flow.Edges)
+                {
+                    edge.TenantId = devTenantId;
+                    edge.FlowId = flow.Id;
+                }
+
+                db.IntegrationFlows.Add(flow);
+                await db.SaveChangesAsync();
+                app.Logger.LogInformation(
+                    "Seeded demo flow '{FlowName}' (id={FlowId}) for dev tenant {TenantId}",
+                    flow.Name, flow.Id, devTenantId);
+            }
         }
         else
         {

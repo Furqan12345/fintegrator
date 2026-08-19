@@ -6,11 +6,11 @@
   "cronExpression": "0 6 * * *",
   "nodes": [
     {
-      "id": "a8bf0085-e13c-42a1-9fc1-a7a59335c6a9",
-      "stepType": "Schedule",
-      "nodeName": "NightlySync",
-      "positionX": 80,
-      "positionY": 260,
+      "id": "32b3c7ca-bdc6-4ea4-9f48-abb509942379",
+      "nodeName": "FilterNewOrders",
+      "stepType": "CrossReferenceFilter",
+      "positionX": 1760,
+      "positionY": 500,
       "endpointUrl": "",
       "httpMethod": "GET",
       "urlMode": "Manual",
@@ -19,30 +19,28 @@
       "urlCode": "",
       "preFlightCode": "",
       "postFlightCode": "",
-      "stepConfig": "{\"schedule\":{\"mode\":\"Recurring\",\"cronExpression\":\"0 6 * * *\"}}"
+      "stepConfig": "{\"listName\":\"processed-orders\",\"arrayPath\":\"flowState.RegroupItems.orders\",\"keyPaths\":[\"AmazonOrderId\"]}"
     },
     {
-      "id": "aa78e30b-eaa6-4441-8c28-af47b02156f9",
-      "stepType": "HttpAction",
-      "nodeName": "FetchOrders",
-      "positionX": 500,
-      "positionY": 260,
-      "endpointUrl": "orders/v0/orders",
+      "id": "558e9d95-db86-43df-b08f-e932fd008602",
+      "nodeName": "RememberSeenOrders",
+      "stepType": "CrossReferenceStore",
+      "positionX": 2133.168538914861,
+      "positionY": 500,
+      "endpointUrl": "",
       "httpMethod": "GET",
-      "urlMode": "Connection",
+      "urlMode": "Manual",
       "authType": "None",
-      "authToken": "",
-      "connectionId": null,
       "mappingCode": "",
       "urlCode": "",
       "preFlightCode": "",
-      "postFlightCode": "var r = JObject.Parse(HttpResponseJson); var orders = r?[\"payload\"]?[\"Orders\"] as JArray ?? new JArray(); return new JObject { [\"orders\"] = orders }.ToString();",
-      "stepConfig": "{\"apiPacket\":{\"headersJson\":\"{\\\"Accept\\\":\\\"application/json\\\"}\",\"queryParamsJson\":\"{\\\"MarketplaceIds\\\":\\\"ATVPDKIKX0DER\\\",\\\"OrderStatus\\\":\\\"Shipped\\\",\\\"CreatedAfter\\\":\\\"2024-01-01T00:00:00Z\\\",\\\"PageSize\\\":\\\"100\\\"}\",\"contentType\":\"application/json\",\"requestBody\":\"\"},\"pagination\":{\"style\":\"AmazonNextToken\",\"maxPages\":100,\"aggregatePath\":\"payload.Orders\",\"nextTokenPath\":\"payload.NextToken\",\"nextTokenParameter\":\"NextToken\"}}"
+      "postFlightCode": "",
+      "stepConfig": "{\"listName\":\"processed-orders\",\"arrayPath\":\"flowState.RegroupItems.orders\",\"keyPaths\":[\"AmazonOrderId\"],\"valuePaths\":[]}"
     },
     {
       "id": "57f54323-f350-4dc6-876d-44bea3378c52",
-      "stepType": "ForEach",
       "nodeName": "PerOrderItems",
+      "stepType": "ForEach",
       "positionX": 920,
       "positionY": 260,
       "endpointUrl": "",
@@ -57,16 +55,14 @@
     },
     {
       "id": "6941c21a-b463-4cd5-847c-cc9c7f2ec6c1",
-      "stepType": "HttpAction",
       "nodeName": "FetchLineItems",
+      "stepType": "HttpAction",
       "positionX": 1340,
       "positionY": 80,
       "endpointUrl": "orders/v0/orders/{AmazonOrderId}/orderItems",
       "httpMethod": "GET",
       "urlMode": "Connection",
       "authType": "None",
-      "authToken": "",
-      "connectionId": null,
       "mappingCode": "",
       "urlCode": "var fs = JObject.Parse(FlowStateJson); var orderId = fs[\"order\"]?[\"AmazonOrderId\"]?.ToString() ?? \"\"; return \"orders/v0/orders/\" + Uri.EscapeDataString(orderId) + \"/orderItems\";",
       "preFlightCode": "",
@@ -74,9 +70,25 @@
       "stepConfig": "{\"apiPacket\":{\"headersJson\":\"{\\\"Accept\\\":\\\"application/json\\\"}\",\"queryParamsJson\":\"{\\\"MarketplaceId\\\":\\\"ATVPDKIKX0DER\\\"}\",\"contentType\":\"application/json\",\"requestBody\":\"\"}}"
     },
     {
+      "id": "aa78e30b-eaa6-4441-8c28-af47b02156f9",
+      "nodeName": "FetchOrders",
+      "stepType": "HttpAction",
+      "positionX": 499.33331298828125,
+      "positionY": 260.6666259765625,
+      "endpointUrl": "orders/v0/orders",
+      "httpMethod": "GET",
+      "urlMode": "Connection",
+      "authType": "None",
+      "mappingCode": "",
+      "urlCode": "",
+      "preFlightCode": "",
+      "postFlightCode": "var r = JObject.Parse(HttpResponseJson); var orders = r?[\"payload\"]?[\"Orders\"] as JArray ?? new JArray(); return new JObject { [\"orders\"] = orders }.ToString();",
+      "stepConfig": "{\"apiPacket\":{\"headersJson\":\"{\\u0022Accept\\u0022:\\u0022application/json\\u0022}\",\"queryParamsJson\":\"{\\u0022MarketplaceIds\\u0022:\\u0022ATVPDKIKX0DER\\u0022,\\u0022OrderStatus\\u0022:\\u0022Shipped\\u0022,\\u0022CreatedAfter\\u0022:\\u00222024-01-01T00:00:00Z\\u0022,\\u0022MaxResultsPerPage\\u0022:\\u00225\\u0022}\",\"contentType\":\"application/json\",\"requestBody\":\"\"},\"pagination\":{\"style\":\"AmazonNextToken\",\"maxPages\":\"1\",\"aggregatePath\":\"payload.Orders\",\"nextTokenPath\":\"payload.NextToken\",\"nextTokenParameter\":\"NextToken\"}}"
+    },
+    {
       "id": "ac0c9952-b34f-4176-b98e-55afacee1793",
-      "stepType": "Mapping",
       "nodeName": "TagLineItems",
+      "stepType": "Mapping",
       "positionX": 1760,
       "positionY": 80,
       "endpointUrl": "",
@@ -91,10 +103,10 @@
     },
     {
       "id": "bd5dece5-b050-4909-aeac-ab347fad256a",
-      "stepType": "Mapping",
       "nodeName": "RegroupItems",
-      "positionX": 1340,
-      "positionY": 500,
+      "stepType": "Mapping",
+      "positionX": 1326.1760000000002,
+      "positionY": 1146.272052734375,
       "endpointUrl": "",
       "httpMethod": "GET",
       "urlMode": "Manual",
@@ -106,11 +118,11 @@
       "stepConfig": ""
     },
     {
-      "id": "32b3c7ca-bdc6-4ea4-9f48-abb509942379",
-      "stepType": "CrossReferenceFilter",
-      "nodeName": "FilterNewSKUs",
-      "positionX": 1760,
-      "positionY": 500,
+      "id": "be675b11-4652-4767-9138-ce64d29cb683",
+      "nodeName": "ip",
+      "stepType": "Debug",
+      "positionX": 2731.3920878906247,
+      "positionY": 580.6081054687498,
       "endpointUrl": "",
       "httpMethod": "GET",
       "urlMode": "Manual",
@@ -119,50 +131,58 @@
       "urlCode": "",
       "preFlightCode": "",
       "postFlightCode": "",
-      "stepConfig": "{\"listName\":\"processed-skus\",\"arrayPath\":\"flowState.RegroupItems.orders[*].items[*]\",\"keyPaths\":[\"sku\"]}"
-    },
-    {
-      "id": "558e9d95-db86-43df-b08f-e932fd008602",
-      "stepType": "CrossReferenceStore",
-      "nodeName": "RememberSeenSKUs",
-      "positionX": 2180,
-      "positionY": 500,
-      "endpointUrl": "",
-      "httpMethod": "GET",
-      "urlMode": "Manual",
-      "authType": "None",
-      "mappingCode": "",
-      "urlCode": "",
-      "preFlightCode": "",
-      "postFlightCode": "",
-      "stepConfig": "{\"listName\":\"processed-skus\",\"arrayPath\":\"flowState.RegroupItems.orders[*].items[*]\",\"keyPaths\":[\"sku\"],\"valuePaths\":[\"qty\",\"asin\"]}"
-    },
-    {
-      "id": "84bbb9ce-0007-488f-bb0b-56ec18425a3b",
-      "stepType": "HttpAction",
-      "nodeName": "ProcessNewItems",
-      "positionX": 2600,
-      "positionY": 500,
-      "endpointUrl": "https://your-backend.example.com/api/new-order-items",
-      "httpMethod": "POST",
-      "urlMode": "Manual",
-      "authType": "Bearer",
-      "authToken": "REPLACE-WITH-YOUR-BACKEND-TOKEN",
-      "mappingCode": "",
-      "urlCode": "",
-      "preFlightCode": "var fs = JObject.Parse(FlowStateJson); return fs[\"RememberSeenSKUs\"]?.ToString(Newtonsoft.Json.Formatting.None) ?? \"{}\";",
-      "postFlightCode": "",
-      "stepConfig": "{\"apiPacket\":{\"headersJson\":\"{\\\"Content-Type\\\":\\\"application/json\\\"}\",\"queryParamsJson\":\"{}\",\"contentType\":\"application/json\",\"requestBody\":\"\"}}"
+      "stepConfig": ""
     }
   ],
   "edges": [
-    { "id": "00745879-4609-47f3-a54b-8e02f0ff027f", "sourceNodeId": "a8bf0085-e13c-42a1-9fc1-a7a59335c6a9", "targetNodeId": "aa78e30b-eaa6-4441-8c28-af47b02156f9", "sourcePortId": "right", "targetPortId": "left" },
-    { "id": "7047a884-4e15-4302-a08b-56d7302c76e0", "sourceNodeId": "aa78e30b-eaa6-4441-8c28-af47b02156f9", "targetNodeId": "57f54323-f350-4dc6-876d-44bea3378c52", "sourcePortId": "right", "targetPortId": "left" },
-    { "id": "6fb692e6-7a91-4f8e-9771-8ac0394b5874", "sourceNodeId": "57f54323-f350-4dc6-876d-44bea3378c52", "targetNodeId": "6941c21a-b463-4cd5-847c-cc9c7f2ec6c1", "sourcePortId": "right", "targetPortId": "left" },
-    { "id": "f8fe58e7-0ce4-4f22-bf78-c75192f5a937", "sourceNodeId": "6941c21a-b463-4cd5-847c-cc9c7f2ec6c1", "targetNodeId": "ac0c9952-b34f-4176-b98e-55afacee1793", "sourcePortId": "right", "targetPortId": "left" },
-    { "id": "f1dec614-1ff7-43f5-b0ef-bdccff5d310d", "sourceNodeId": "57f54323-f350-4dc6-876d-44bea3378c52", "targetNodeId": "bd5dece5-b050-4909-aeac-ab347fad256a", "sourcePortId": "completed", "targetPortId": "left" },
-    { "id": "f245ee7b-c260-47c8-ace8-2f74703b06a8", "sourceNodeId": "bd5dece5-b050-4909-aeac-ab347fad256a", "targetNodeId": "32b3c7ca-bdc6-4ea4-9f48-abb509942379", "sourcePortId": "right", "targetPortId": "left" },
-    { "id": "f6dd8bfd-d26f-4fff-8ae4-5b8f081bece1", "sourceNodeId": "32b3c7ca-bdc6-4ea4-9f48-abb509942379", "targetNodeId": "558e9d95-db86-43df-b08f-e932fd008602", "sourcePortId": "right", "targetPortId": "left" },
-    { "id": "919116e7-2f98-4163-9912-b77016ceef77", "sourceNodeId": "558e9d95-db86-43df-b08f-e932fd008602", "targetNodeId": "84bbb9ce-0007-488f-bb0b-56ec18425a3b", "sourcePortId": "right", "targetPortId": "left" }
+    {
+      "id": "0a3113a9-d4d0-4912-8f42-17cbe1b983a0",
+      "sourceNodeId": "32b3c7ca-bdc6-4ea4-9f48-abb509942379",
+      "sourcePortId": "right",
+      "targetNodeId": "558e9d95-db86-43df-b08f-e932fd008602",
+      "targetPortId": "left"
+    },
+    {
+      "id": "0ac035ef-0a2f-4189-a22b-97d68a013bdb",
+      "sourceNodeId": "57f54323-f350-4dc6-876d-44bea3378c52",
+      "sourcePortId": "completed",
+      "targetNodeId": "bd5dece5-b050-4909-aeac-ab347fad256a",
+      "targetPortId": "left"
+    },
+    {
+      "id": "17734b35-4157-4604-b866-2aae9ee25b4f",
+      "sourceNodeId": "bd5dece5-b050-4909-aeac-ab347fad256a",
+      "sourcePortId": "right",
+      "targetNodeId": "32b3c7ca-bdc6-4ea4-9f48-abb509942379",
+      "targetPortId": "left"
+    },
+    {
+      "id": "240bd575-eb7b-46ec-8a30-9bb7ba6cd9cf",
+      "sourceNodeId": "558e9d95-db86-43df-b08f-e932fd008602",
+      "sourcePortId": "right",
+      "targetNodeId": "be675b11-4652-4767-9138-ce64d29cb683",
+      "targetPortId": "left"
+    },
+    {
+      "id": "6291a504-fdb8-48e9-80f6-67d984ba6586",
+      "sourceNodeId": "57f54323-f350-4dc6-876d-44bea3378c52",
+      "sourcePortId": "right",
+      "targetNodeId": "6941c21a-b463-4cd5-847c-cc9c7f2ec6c1",
+      "targetPortId": "left"
+    },
+    {
+      "id": "8b80c8ed-6827-4167-889c-4d54f14b8c22",
+      "sourceNodeId": "6941c21a-b463-4cd5-847c-cc9c7f2ec6c1",
+      "sourcePortId": "right",
+      "targetNodeId": "ac0c9952-b34f-4176-b98e-55afacee1793",
+      "targetPortId": "left"
+    },
+    {
+      "id": "9107e98e-29c3-4c82-836d-731d4cfbc8f1",
+      "sourceNodeId": "aa78e30b-eaa6-4441-8c28-af47b02156f9",
+      "sourcePortId": "right",
+      "targetNodeId": "57f54323-f350-4dc6-876d-44bea3378c52",
+      "targetPortId": "left"
+    }
   ]
 }

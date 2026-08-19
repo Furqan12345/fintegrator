@@ -108,8 +108,15 @@
 
         try
         {
-            var executions = await Http.GetFromJsonAsync<List<FlowExecutionDto>>("api/executions") ?? new();
-            _execution = executions.FirstOrDefault(execution => execution.Id == TransactionId);
+            try
+            {
+                _execution = await Http.GetFromJsonAsync<FlowExecutionDto>($"api/executions/{TransactionId}");
+            }
+            catch (HttpRequestException)
+            {
+                _execution = null;
+            }
+
             _steps = await Http.GetFromJsonAsync<List<StepExecutionDto>>($"api/executions/{TransactionId}/steps") ?? new();
 
             if (_execution != null)
