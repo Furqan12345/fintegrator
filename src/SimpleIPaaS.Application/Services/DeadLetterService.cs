@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain;
@@ -47,17 +48,20 @@ public class DeadLetterService
     private readonly IIntegrationRepository _integrationRepository;
     private readonly FlowExecutor _flowExecutor;
     private readonly ILogger<DeadLetterService> _logger;
+    private readonly int _maxAutoRetryAttempts;
 
     public DeadLetterService(
         IExecutionRepository executionRepository,
         IIntegrationRepository integrationRepository,
         FlowExecutor flowExecutor,
-        ILogger<DeadLetterService> logger)
+        ILogger<DeadLetterService> logger,
+        IConfiguration? configuration = null)
     {
         _executionRepository = executionRepository;
         _integrationRepository = integrationRepository;
         _flowExecutor = flowExecutor;
         _logger = logger;
+        _maxAutoRetryAttempts = configuration?.GetValue("DeadLetter:MaxAutoRetryAttempts", 0) ?? 0;
     }
 
     public async Task<DeadLetterReplayResult> ReplayEntryAsync(Guid entryId, bool force, CancellationToken cancellationToken = default)
@@ -70,6 +74,14 @@ public class DeadLetterService
 
         if (entry.Status != "Pending" && entry.Status != "Retrying")
         {
+            return Skipped(entry);
+        }
+
+        if (!force && entry.RetryCount >= _maxAutoRetryAttempts)
+        {
+            _logger.LogInformation(
+                "Dead letter {DeadLetterId} left for manual review; automatic retries are disabled (limit {MaxAutoRetryAttempts}).",
+                entry.Id, _maxAutoRetryAttempts);
             return Skipped(entry);
         }
 

@@ -3,8 +3,10 @@
 @using SimpleIPaaS.Shared.Models
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
 @inject IState<ExecutionState> ExecutionState
+@inject IState<FlowState> FlowState
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
+@inject HttpClient Http
 
 <PageTitle>Transaction History - SimpleIPaaS</PageTitle>
 
@@ -12,6 +14,22 @@
     <div class="header-left">
         <h2>Transaction History</h2>
         <p class="subtitle">Review flow runs and inspect the data each card received and returned.</p>
+    </div>
+    <div class="header-right">
+        <select class="form-control filter-select" value="@_integrationFilter" @onchange="OnIntegrationFilterChanged">
+            <option value="">All integrations</option>
+            @foreach (var integration in _integrations)
+            {
+                <option value="@integration.Id">@integration.Name</option>
+            }
+        </select>
+        <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
+            <option value="">All flows</option>
+            @foreach (var flow in FilteredFlows)
+            {
+                <option value="@flow.Id">@flow.Name</option>
+            }
+        </select>
     </div>
 </div>
 
@@ -71,10 +89,52 @@
 </div>
 
 @code {
+    private string _flowFilter = string.Empty;
+    private string _integrationFilter = string.Empty;
+    private List<IntegrationDto> _integrations = new();
+
     protected override void OnInitialized()
     {
         base.OnInitialized();
-        Dispatcher.Dispatch(new LoadExecutionsAction());
+        Dispatcher.Dispatch(new LoadFlowsAction());
+        LoadExecutions();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        _integrations = await SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations", Dispatcher, "integrations") ?? new();
+    }
+
+    private IEnumerable<IntegrationFlowDto> FilteredFlows =>
+        ParsedIntegrationId is Guid integrationId
+            ? FlowState.Value.Flows.Where(flow => flow.IntegrationId == integrationId)
+            : FlowState.Value.Flows;
+
+    private Guid? ParsedFlowId => Guid.TryParse(_flowFilter, out var flowId) ? flowId : null;
+
+    private Guid? ParsedIntegrationId => Guid.TryParse(_integrationFilter, out var id) ? id : null;
+
+    private void LoadExecutions()
+    {
+        Dispatcher.Dispatch(new LoadExecutionsAction
+        {
+            FlowId = ParsedFlowId,
+            IntegrationId = ParsedIntegrationId
+        });
+    }
+
+    private void OnIntegrationFilterChanged(ChangeEventArgs args)
+    {
+        _integrationFilter = args.Value?.ToString() ?? string.Empty;
+        _flowFilter = string.Empty;
+        LoadExecutions();
+    }
+
+    private void OnFlowFilterChanged(ChangeEventArgs args)
+    {
+        _flowFilter = args.Value?.ToString() ?? string.Empty;
+        LoadExecutions();
     }
 
     private void CheckTransaction(Guid transactionId)

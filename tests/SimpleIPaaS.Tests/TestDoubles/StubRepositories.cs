@@ -115,7 +115,7 @@ public sealed class StubExecutionRepository : IExecutionRepository
     public Task<FlowExecution?> GetFlowExecutionAsync(Guid id) =>
         Task.FromResult(_flowExecutions.TryGetValue(id, out var execution) ? execution : null);
 
-    public Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50) =>
+    public Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50, Guid? integrationId = null) =>
         Task.FromResult<IEnumerable<FlowExecution>>(_flowExecutions.Values.ToList());
 
     public Task AddFlowExecutionAsync(FlowExecution execution)
@@ -357,10 +357,13 @@ public sealed class StubTransportEngine : ITransportEngine
 {
     private readonly Queue<(int StatusCode, string Response)> _responses = new();
 
+    public List<string> RequestedUrls { get; } = new();
+
     public void Enqueue(int statusCode, string response) => _responses.Enqueue((statusCode, response));
 
     public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
     {
+        RequestedUrls.Add(step.EndpointUrl);
         var response = _responses.Count > 0 ? _responses.Dequeue() : (200, "{}");
         return Task.FromResult(new TransportResponse(response.Item1, response.Item2, new Dictionary<string, string[]>(), step.EndpointUrl));
     }

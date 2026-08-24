@@ -21,7 +21,7 @@ public class ExecutionEffects
     {
         var executions = await SafeFetch.GetAsync<FlowExecutionDto[]>(
             _http,
-            BuildExecutionsUrl(action.FlowId, action.Status, action.Page, action.PageSize),
+            BuildExecutionsUrl(action.FlowId, action.IntegrationId, action.Status, action.Page, action.PageSize),
             dispatcher,
             "executions");
         if (executions != null)
@@ -54,12 +54,17 @@ public class ExecutionEffects
         });
     }
 
-    private static string BuildExecutionsUrl(System.Guid? flowId, string status, int page, int pageSize)
+    private static string BuildExecutionsUrl(System.Guid? flowId, System.Guid? integrationId, string status, int page, int pageSize)
     {
         var query = new List<string> { $"page={page}", $"pageSize={pageSize}" };
         if (flowId.HasValue)
         {
             query.Add($"flowId={flowId.Value}");
+        }
+
+        if (integrationId.HasValue)
+        {
+            query.Add($"integrationId={integrationId.Value}");
         }
 
         if (!string.IsNullOrWhiteSpace(status))

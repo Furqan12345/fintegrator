@@ -48,7 +48,7 @@ public record StepPacketBody(Guid Id, string RequestHeadersJson, string RequestB
 public interface IExecutionRepository
 {
     Task<FlowExecution?> GetFlowExecutionAsync(Guid id);
-    Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50);
+    Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50, Guid? integrationId = null);
 
     Task AddFlowExecutionAsync(FlowExecution execution);
     Task UpdateFlowExecutionAsync(FlowExecution execution);

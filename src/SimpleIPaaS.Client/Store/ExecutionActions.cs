@@ -7,6 +7,7 @@ namespace SimpleIPaaS.Client.Store;
 public class LoadExecutionsAction
 {
     public Guid? FlowId { get; set; }
+    public Guid? IntegrationId { get; set; }
     public string Status { get; set; } = string.Empty;
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 50;

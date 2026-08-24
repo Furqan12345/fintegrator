@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
@@ -15,7 +16,7 @@ public class DeadLetterRecoveryTests
     private readonly StubExecutionRepository _executions = new();
     private readonly StubTransportEngine _transport = new();
 
-    private DeadLetterService CreateService()
+    private DeadLetterService CreateService(int? maxAutoRetryAttempts = null)
     {
         var executor = new FlowExecutor(
             _flows,
@@ -25,7 +26,16 @@ public class DeadLetterRecoveryTests
             new StubCrossReferenceRepository(),
             NullLogger<FlowExecutor>.Instance);
 
-        return new DeadLetterService(_executions, _flows, executor, NullLogger<DeadLetterService>.Instance);
+        IConfiguration? configuration = maxAutoRetryAttempts.HasValue
+            ? new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["DeadLetter:MaxAutoRetryAttempts"] = maxAutoRetryAttempts.Value.ToString()
+                })
+                .Build()
+            : null;
+
+        return new DeadLetterService(_executions, _flows, executor, NullLogger<DeadLetterService>.Instance, configuration);
     }
 
     private static IntegrationStep HttpNode(string name) => new()
@@ -181,6 +191,40 @@ public class DeadLetterRecoveryTests
         Assert.Equal(0, execution.FailedRecords);
         Assert.Equal(2, execution.SuccessRecords);
         Assert.All(_executions.StepExecutions, step => Assert.Equal(ExecutionStatus.Recovered, step.Status));
+    }
+
+    [Fact]
+    public async Task ReplayEntryAsync_SkipsAutomaticRetryWhenAutoRetryLimitIsZero()
+    {
+        var node = HttpNode("Push");
+        var (_, execution) = SeedFailedRun(node);
+        var entry = SeedDeadLetter(execution, node, "Connection refused");
+
+        var service = CreateService(maxAutoRetryAttempts: 0);
+
+        var result = await service.ReplayEntryAsync(entry.Id, force: false);
+
+        Assert.Equal(DeadLetterReplayOutcome.Skipped, result.Outcome);
+        Assert.Equal("Pending", entry.Status);
+        Assert.Equal(0, entry.RetryCount);
+        Assert.Empty(_transport.RequestedUrls);
+    }
+
+    [Fact]
+    public async Task ReplayEntryAsync_ManualRetryIgnoresTheAutoRetryLimit()
+    {
+        var node = HttpNode("Push");
+        var (_, execution) = SeedFailedRun(node);
+        var entry = SeedDeadLetter(execution, node, "Connection refused");
+
+        _transport.Enqueue(200, "{}");
+
+        var service = CreateService(maxAutoRetryAttempts: 0);
+        var result = await service.ReplayEntryAsync(entry.Id, force: true);
+
+        Assert.Equal(DeadLetterReplayOutcome.Replayed, result.Outcome);
+        Assert.Equal("Resolved", entry.Status);
+        Assert.Single(_transport.RequestedUrls);
     }
 
     private sealed class AttemptRecord

@@ -26,7 +26,7 @@ public class ExecutionRepository : IExecutionRepository
         return await _context.FlowExecutions.FirstOrDefaultAsync(e => e.Id == id);
     }
 
-    public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50)
+    public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50, Guid? integrationId = null)
     {
         page = page < 1 ? 1 : page;
         pageSize = pageSize < 1 ? 50 : Math.Min(pageSize, 200);
@@ -36,6 +36,11 @@ public class ExecutionRepository : IExecutionRepository
         if (flowId.HasValue && flowId.Value != Guid.Empty)
         {
             query = query.Where(e => e.FlowId == flowId.Value);
+        }
+
+        if (integrationId.HasValue && integrationId.Value != Guid.Empty)
+        {
+            query = query.Where(e => e.IntegrationId == integrationId.Value);
         }
 
         if (status.HasValue)

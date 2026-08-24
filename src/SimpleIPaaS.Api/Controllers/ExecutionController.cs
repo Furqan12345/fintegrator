@@ -38,7 +38,8 @@ public class ExecutionController : ControllerBase
         [FromQuery] Guid? flowId = null,
         [FromQuery] string? status = null,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 50)
+        [FromQuery] int pageSize = 50,
+        [FromQuery] Guid? integrationId = null)
     {
         ExecutionStatus? statusFilter = null;
         if (!string.IsNullOrWhiteSpace(status))
@@ -52,7 +53,7 @@ public class ExecutionController : ControllerBase
             statusFilter = parsed;
         }
 
-        var executions = await _repository.GetFlowExecutionsAsync(flowId, statusFilter, page, pageSize);
+        var executions = await _repository.GetFlowExecutionsAsync(flowId, statusFilter, page, pageSize, integrationId);
         return Ok(executions.Select(ToDto));
     }
 
