@@ -20,6 +20,7 @@ public class CrossReferenceCardConfig
     public List<PathEntry> KeyPaths { get; set; } = new() { new PathEntry() };
     public List<PathEntry> ValuePaths { get; set; } = new();
     public bool IncludeValuePaths { get; set; }
+    public string FilterMode { get; set; } = "SkipExisting";
 
     public static CrossReferenceCardConfig Read(string? stepConfig, bool valuePaths)
     {
@@ -31,7 +32,8 @@ public class CrossReferenceCardConfig
             ArrayPath = root["arrayPath"]?.GetValue<string>() ?? string.Empty,
             KeyPaths = ReadPaths(root["keyPaths"]),
             ValuePaths = ReadPaths(root["valuePaths"], padEmpty: false),
-            IncludeValuePaths = valuePaths
+            IncludeValuePaths = valuePaths,
+            FilterMode = NormalizeFilterMode(root["filterMode"]?.GetValue<string>())
         };
 
         return config;
@@ -43,6 +45,7 @@ public class CrossReferenceCardConfig
         root["listName"] = ListName?.Trim() ?? string.Empty;
         root["arrayPath"] = ArrayPath?.Trim() ?? string.Empty;
         root["keyPaths"] = WritePaths(KeyPaths);
+        root["filterMode"] = NormalizeFilterMode(FilterMode);
 
         if (IncludeValuePaths)
         {
@@ -50,6 +53,17 @@ public class CrossReferenceCardConfig
         }
 
         return root.ToJsonString(JsonOptions);
+    }
+
+    private static string NormalizeFilterMode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "SkipExisting";
+        return value.Trim() switch
+        {
+            "SkipExisting" or "skipExisting" => "SkipExisting",
+            "KeepExisting" or "keepExisting" => "KeepExisting",
+            _ => "SkipExisting"
+        };
     }
 
     private static JsonArray WritePaths(IEnumerable<PathEntry> paths)

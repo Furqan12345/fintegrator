@@ -351,6 +351,7 @@ public class FlowExecutor
                 var input = ResolveNodeInput(flow, node, flowStateContext);
                 var records = CrossReferenceKeyBuilder.ToRecords(
                     ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
+                var filterKnown = config.FilterMode == CrossReferenceFilterMode.KeepExisting;
 
                 var keyed = records
                     .Select(record => (Record: record, Key: CrossReferenceKeyBuilder.BuildKey(record, config.KeyPaths)))
@@ -372,8 +373,16 @@ public class FlowExecutor
 
                 foreach (var candidate in keyed)
                 {
-                    if (!string.IsNullOrEmpty(candidate.Key) &&
-                        (knownKeySet.Contains(candidate.Key) || !seenKeys.Add(candidate.Key)))
+                    if (string.IsNullOrEmpty(candidate.Key))
+                    {
+                        continue;
+                    }
+
+                    var isKnown = knownKeySet.Contains(candidate.Key);
+                    var isDuplicate = !seenKeys.Add(candidate.Key);
+
+                    var passes = filterKnown ? isKnown : !isKnown;
+                    if (!passes || isDuplicate)
                     {
                         continue;
                     }
@@ -386,7 +395,7 @@ public class FlowExecutor
                 {
                     var (sourceRoot, actualPath) = ResolveFilterSource(input, flowStateContext, config.ArrayPath);
                     var filtered = CrossReferenceKeyBuilder.FilterArrayPreservingStructure(
-                        sourceRoot, actualPath, knownKeySet, config.KeyPaths);
+                        sourceRoot, actualPath, knownKeySet, config.KeyPaths, filterKnown);
                     currentPayload = filtered?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
                 }
                 else
@@ -397,8 +406,8 @@ public class FlowExecutor
                 stepExecution.ResponsePayload = currentPayload;
 
                 _logger.LogInformation(
-                    "Execution {ExecutionId}: node {NodeName} passed {Passed} of {Total} records from list {ListName}",
-                    executionId, node.NodeName, passedCount, records.Count, config.ListName);
+                    "Execution {ExecutionId}: node {NodeName} ({FilterMode}) passed {Passed} of {Total} records from list {ListName}",
+                    executionId, node.NodeName, config.FilterMode, passedCount, records.Count, config.ListName);
 
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
                 foreach (var edge in outgoing)

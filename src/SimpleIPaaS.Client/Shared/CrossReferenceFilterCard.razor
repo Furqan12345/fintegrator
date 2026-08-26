@@ -6,7 +6,14 @@
 
 <MinimizableNodeCard Title="Cross-Reference Filter" NodeColorClass="node-header-pink">
     <p class="node-hint">
-        Emits only the records whose key is not already in the list. With a wildcard path (e.g. <code>orders[*].items[*]</code>), the original JSON structure is preserved with only filtered nested values. Without a wildcard, the output is a flat array.
+        @if (Config.FilterMode == "KeepExisting")
+        {
+            <text>Emits only the records whose key is already in the list. With a wildcard path (e.g. <code>orders[*].items[*]</code>), the original JSON structure is preserved with only filtered nested values. Without a wildcard, the output is a flat array.</text>
+        }
+        else
+        {
+            <text>Emits only the records whose key is not already in the list. With a wildcard path (e.g. <code>orders[*].items[*]</code>), the original JSON structure is preserved with only filtered nested values. Without a wildcard, the output is a flat array.</text>
+        }
     </p>
 
     <div class="node-field">
@@ -28,6 +35,14 @@
     <div class="node-field">
         <label class="node-label">Array Path</label>
         <input type="text" class="form-control" @bind="Config.ArrayPath" @bind:after="Save" placeholder="orders or flowState.&lt;Node&gt;.&lt;path&gt; (blank = whole payload, e.g. flowState.RegroupItems.orders[*].items[*])" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Filter Mode</label>
+        <select class="form-control" @bind="Config.FilterMode" @bind:after="Save">
+            <option value="SkipExisting">Skip already stored (emit only new keys)</option>
+            <option value="KeepExisting">Keep only already stored (emit only known keys)</option>
+        </select>
     </div>
 
     <div class="node-field">

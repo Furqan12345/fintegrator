@@ -1,11 +1,24 @@
 @inject HttpClient Http
 @inject IDispatcher Dispatcher
+@inject IJSRuntime JSRuntime
+@implements IDisposable
 
 <div class="packet-log-viewer">
     @if (Step.ReceivedInputSize > 0)
     {
         <details class="packet-section" @ontoggle="LoadPayloadAsync">
-            <summary>Received input (@FormatSize(Step.ReceivedInputSize))</summary>
+            <summary>
+                <span class="packet-summary-text">Received input (@FormatSize(Step.ReceivedInputSize))</span>
+                <button type="button" class="btn btn-sm btn-outline packet-copy-btn"
+                        title="Copy JSON to clipboard"
+                        aria-label="Copy received input to clipboard"
+                        @onclick:stopPropagation="true"
+                        @onclick:preventDefault="true"
+                        disabled="@(string.IsNullOrEmpty(_payload?.ReceivedInput))"
+                        @onclick="() => CopyAsync(nameof(ReceivedInputKey), _payload?.ReceivedInput ?? string.Empty)">
+                    @(IsCopied(nameof(ReceivedInputKey)) ? "Copied!" : "Copy")
+                </button>
+            </summary>
             @if (_payloadLoading)
             {
                 <div class="text-muted">Loading…</div>
@@ -20,7 +33,18 @@
     @if (Step.ResponsePayloadSize > 0)
     {
         <details class="packet-section" @ontoggle="LoadPayloadAsync">
-            <summary>Returned data (@FormatSize(Step.ResponsePayloadSize))</summary>
+            <summary>
+                <span class="packet-summary-text">Returned data (@FormatSize(Step.ResponsePayloadSize))</span>
+                <button type="button" class="btn btn-sm btn-outline packet-copy-btn"
+                        title="Copy JSON to clipboard"
+                        aria-label="Copy returned data to clipboard"
+                        @onclick:stopPropagation="true"
+                        @onclick:preventDefault="true"
+                        disabled="@(string.IsNullOrEmpty(_payload?.ResponsePayload))"
+                        @onclick="() => CopyAsync(nameof(ResponsePayloadKey), _payload?.ResponsePayload ?? string.Empty)">
+                    @(IsCopied(nameof(ResponsePayloadKey)) ? "Copied!" : "Copy")
+                </button>
+            </summary>
             @if (_payloadLoading)
             {
                 <div class="text-muted">Loading…</div>
@@ -70,28 +94,64 @@
                                     @if (packet.RequestHeadersSize > 0)
                                     {
                                         <div>
-                                            <div class="packet-section-title">Request headers (@FormatSize(packet.RequestHeadersSize))</div>
+                                            <div class="packet-section-title">
+                                                <span>Request headers (@FormatSize(packet.RequestHeadersSize))</span>
+                                                <button type="button" class="btn btn-sm btn-outline packet-copy-btn"
+                                                        title="Copy JSON to clipboard"
+                                                        aria-label="Copy request headers to clipboard"
+                                                        disabled="@(string.IsNullOrEmpty(body?.RequestHeadersJson))"
+                                                        @onclick="() => CopyAsync(PacketKey(packet.Id, nameof(StepPacketBodyDto.RequestHeadersJson)), body?.RequestHeadersJson ?? string.Empty)">
+                                                    @(IsCopied(PacketKey(packet.Id, nameof(StepPacketBodyDto.RequestHeadersJson))) ? "Copied!" : "Copy")
+                                                </button>
+                                            </div>
                                             <pre class="packet-json-viewer"><code>@FormatJson(body?.RequestHeadersJson)</code></pre>
                                         </div>
                                     }
                                     @if (packet.RequestBodySize > 0)
                                     {
                                         <div>
-                                            <div class="packet-section-title">Request body (@FormatSize(packet.RequestBodySize))</div>
+                                            <div class="packet-section-title">
+                                                <span>Request body (@FormatSize(packet.RequestBodySize))</span>
+                                                <button type="button" class="btn btn-sm btn-outline packet-copy-btn"
+                                                        title="Copy JSON to clipboard"
+                                                        aria-label="Copy request body to clipboard"
+                                                        disabled="@(string.IsNullOrEmpty(body?.RequestBody))"
+                                                        @onclick="() => CopyAsync(PacketKey(packet.Id, nameof(StepPacketBodyDto.RequestBody)), body?.RequestBody ?? string.Empty)">
+                                                    @(IsCopied(PacketKey(packet.Id, nameof(StepPacketBodyDto.RequestBody))) ? "Copied!" : "Copy")
+                                                </button>
+                                            </div>
                                             <pre class="packet-json-viewer"><code>@FormatJson(body?.RequestBody)</code></pre>
                                         </div>
                                     }
                                     @if (packet.ResponseHeadersSize > 0)
                                     {
                                         <div>
-                                            <div class="packet-section-title">Response headers (@FormatSize(packet.ResponseHeadersSize))</div>
+                                            <div class="packet-section-title">
+                                                <span>Response headers (@FormatSize(packet.ResponseHeadersSize))</span>
+                                                <button type="button" class="btn btn-sm btn-outline packet-copy-btn"
+                                                        title="Copy JSON to clipboard"
+                                                        aria-label="Copy response headers to clipboard"
+                                                        disabled="@(string.IsNullOrEmpty(body?.ResponseHeadersJson))"
+                                                        @onclick="() => CopyAsync(PacketKey(packet.Id, nameof(StepPacketBodyDto.ResponseHeadersJson)), body?.ResponseHeadersJson ?? string.Empty)">
+                                                    @(IsCopied(PacketKey(packet.Id, nameof(StepPacketBodyDto.ResponseHeadersJson))) ? "Copied!" : "Copy")
+                                                </button>
+                                            </div>
                                             <pre class="packet-json-viewer"><code>@FormatJson(body?.ResponseHeadersJson)</code></pre>
                                         </div>
                                     }
                                     @if (packet.ResponseBodySize > 0)
                                     {
                                         <div>
-                                            <div class="packet-section-title">Response body (@FormatSize(packet.ResponseBodySize))</div>
+                                            <div class="packet-section-title">
+                                                <span>Response body (@FormatSize(packet.ResponseBodySize))</span>
+                                                <button type="button" class="btn btn-sm btn-outline packet-copy-btn"
+                                                        title="Copy JSON to clipboard"
+                                                        aria-label="Copy response body to clipboard"
+                                                        disabled="@(string.IsNullOrEmpty(body?.ResponseBody))"
+                                                        @onclick="() => CopyAsync(PacketKey(packet.Id, nameof(StepPacketBodyDto.ResponseBody)), body?.ResponseBody ?? string.Empty)">
+                                                    @(IsCopied(PacketKey(packet.Id, nameof(StepPacketBodyDto.ResponseBody))) ? "Copied!" : "Copy")
+                                                </button>
+                                            </div>
                                             <pre class="packet-json-viewer"><code>@FormatJson(body?.ResponseBody)</code></pre>
                                         </div>
                                     }
@@ -200,5 +260,55 @@
         {
             return json;
         }
+    }
+
+    // Stable keys for the per-step payload sections (Received input / Returned data)
+    private const string ReceivedInputKey = "received-input";
+    private const string ResponsePayloadKey = "response-payload";
+
+    private readonly HashSet<string> _copiedKeys = new(StringComparer.Ordinal);
+    private CancellationTokenSource? _copyResetCts;
+
+    private bool IsCopied(string key) => _copiedKeys.Contains(key);
+
+    private static string PacketKey(Guid packetId, string field) => $"packet:{packetId:N}:{field}";
+
+    private async Task CopyAsync(string key, string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            _copiedKeys.Add(key);
+            _copyResetCts?.Cancel();
+            _copyResetCts = new CancellationTokenSource();
+            var token = _copyResetCts.Token;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(1500), token);
+                    if (!token.IsCancellationRequested)
+                    {
+                        _copiedKeys.Remove(key);
+                        await InvokeAsync(StateHasChanged);
+                    }
+                }
+                catch (TaskCanceledException) { }
+            });
+            StateHasChanged();
+        }
+        catch (JSException)
+        {
+            // Clipboard API unavailable (e.g. insecure context). Silent no-op;
+            // user can still select-and-copy the text in the pre block.
+        }
+    }
+
+    public void Dispose()
+    {
+        _copyResetCts?.Cancel();
+        _copyResetCts?.Dispose();
     }
 }

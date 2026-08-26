@@ -110,33 +110,45 @@ public static class CrossReferenceKeyBuilder
 
     public static JToken? FilterArrayPreservingStructure(JToken? input, string? path, ISet<string> knownKeys, IReadOnlyList<string> keyPaths)
     {
+        return FilterArrayPreservingStructure(input, path, knownKeys, keyPaths, filterKnown: false);
+    }
+
+    public static JToken? FilterArrayPreservingStructure(
+        JToken? input,
+        string? path,
+        ISet<string> knownKeys,
+        IReadOnlyList<string> keyPaths,
+        bool filterKnown)
+    {
         if (input == null) return null;
         if (string.IsNullOrWhiteSpace(path))
         {
             var key = BuildKey(input, keyPaths);
-            return ShouldPass(key, knownKeys, new HashSet<string>(StringComparer.Ordinal)) ? input.DeepClone() : null;
+            return ShouldPass(key, knownKeys, new HashSet<string>(StringComparer.Ordinal), filterKnown) ? input.DeepClone() : null;
         }
 
         var segments = SplitPath(path).ToList();
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
-        return FilterRecursive(input, segments, 0, knownKeys, seenKeys, keyPaths);
+        return FilterRecursive(input, segments, 0, knownKeys, seenKeys, keyPaths, filterKnown);
     }
 
-    private static bool ShouldPass(string key, ISet<string> knownKeys, ISet<string> seenKeys)
+    private static bool ShouldPass(string key, ISet<string> knownKeys, ISet<string> seenKeys, bool filterKnown)
     {
         if (string.IsNullOrEmpty(key)) return true;
-        if (knownKeys.Contains(key)) return false;
+        var isKnown = knownKeys.Contains(key);
+        if (filterKnown) return isKnown && seenKeys.Add(key);
+        if (isKnown) return false;
         return seenKeys.Add(key);
     }
 
-    private static JToken? FilterRecursive(JToken current, List<string> segments, int index, ISet<string> knownKeys, ISet<string> seenKeys, IReadOnlyList<string> keyPaths)
+    private static JToken? FilterRecursive(JToken current, List<string> segments, int index, ISet<string> knownKeys, ISet<string> seenKeys, IReadOnlyList<string> keyPaths, bool filterKnown)
     {
         if (current == null || current.Type == JTokenType.Null) return null;
 
         if (index >= segments.Count)
         {
             var key = BuildKey(current, keyPaths);
-            return ShouldPass(key, knownKeys, seenKeys) ? current.DeepClone() : null;
+            return ShouldPass(key, knownKeys, seenKeys, filterKnown) ? current.DeepClone() : null;
         }
 
         var segment = segments[index];
@@ -146,7 +158,7 @@ public static class CrossReferenceKeyBuilder
             if (obj.TryGetValue(segment, out var child))
             {
                 var newObj = (JObject)obj.DeepClone();
-                var filteredChild = FilterRecursive(child, segments, index + 1, knownKeys, seenKeys, keyPaths);
+                var filteredChild = FilterRecursive(child, segments, index + 1, knownKeys, seenKeys, keyPaths, filterKnown);
 
                 if (filteredChild == null)
                 {
@@ -172,7 +184,7 @@ public static class CrossReferenceKeyBuilder
                 var newItems = new JArray();
                 foreach (var item in array)
                 {
-                    var filtered = FilterRecursive(item, segments, index + 1, knownKeys, seenKeys, keyPaths);
+                    var filtered = FilterRecursive(item, segments, index + 1, knownKeys, seenKeys, keyPaths, filterKnown);
                     if (filtered != null)
                         newItems.Add(filtered);
                 }
@@ -184,7 +196,7 @@ public static class CrossReferenceKeyBuilder
                 if (arrIndex >= 0 && arrIndex < array.Count)
                 {
                     var result = (JArray)array.DeepClone();
-                    var filtered = FilterRecursive(array[arrIndex], segments, index + 1, knownKeys, seenKeys, keyPaths);
+                    var filtered = FilterRecursive(array[arrIndex], segments, index + 1, knownKeys, seenKeys, keyPaths, filterKnown);
                     if (filtered != null)
                         result[arrIndex] = filtered;
                     return result;

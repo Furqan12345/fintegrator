@@ -549,4 +549,170 @@ public class CrossReferenceNodeTests
         Assert.Equal(3, emitted.Count);
         Assert.Equal(new[] { "3", "4", "5" }, emitted.Select(record => record["id"]!.ToString()));
     }
+
+
+    [Fact]
+    public async Task CrossReferenceFilter_KeepExistingModeEmitsOnlyTheRecordsThatAreAlreadyStored()
+    {
+        _crossReferences.SeedKeys(ListName, "1", "3", "5");
+
+        var filter = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "OnlyProcessed",
+            StepType = StepType.CrossReferenceFilter,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "orders",
+                  "keyPaths": ["id"], "filterMode": "KeepExisting" }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, Payload, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        var emitted = JArray.Parse(step.ResponsePayload);
+
+        Assert.Equal(3, emitted.Count);
+        Assert.Equal(new[] { "1", "3", "5" }, emitted.Select(record => record["id"]!.ToString()));
+    }
+
+    [Fact]
+    public async Task CrossReferenceFilter_KeepExistingModeEmitsNothingWhenTheListIsEmpty()
+    {
+        var filter = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "OnlyProcessed",
+            StepType = StepType.CrossReferenceFilter,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "orders",
+                  "keyPaths": ["id"], "filterMode": "KeepExisting" }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, Payload, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        Assert.Empty(JArray.Parse(step.ResponsePayload));
+    }
+
+    [Fact]
+    public async Task CrossReferenceFilter_KeepExistingModeDefaultsToSkipExistingWhenModeIsUnrecognised()
+    {
+        _crossReferences.SeedKeys(ListName, "1", "2");
+
+        var filter = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "SkipProcessed",
+            StepType = StepType.CrossReferenceFilter,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "orders",
+                  "keyPaths": ["id"], "filterMode": "Bogus" }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, Payload, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        var emitted = JArray.Parse(step.ResponsePayload);
+
+        Assert.Equal(3, emitted.Count);
+        Assert.Equal(new[] { "3", "4", "5" }, emitted.Select(record => record["id"]!.ToString()));
+    }
+
+    [Fact]
+    public async Task CrossReferenceFilter_KeepExistingModePreservesStructureWithNestedWildcardPath()
+    {
+        var payload = """
+        { "orders": [
+            { "id": "1", "items": [
+                { "sku": "A", "qty": 1 },
+                { "sku": "B", "qty": 2 }
+            ] },
+            { "id": "2", "items": [
+                { "sku": "C", "qty": 3 }
+            ] }
+        ] }
+        """;
+
+        _crossReferences.SeedKeys(ListName, "A", "C");
+
+        var filter = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "OnlyProcessed",
+            StepType = StepType.CrossReferenceFilter,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "orders[*].items[*]",
+                  "keyPaths": ["sku"], "filterMode": "KeepExisting" }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, payload, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        var result = JObject.Parse(step.ResponsePayload);
+
+        var orders = (JArray)result["orders"]!;
+        Assert.NotNull(orders);
+        Assert.Equal(2, orders.Count);
+
+        // order 1: sku A is known (kept), sku B is filtered out
+        Assert.Single((JArray)orders[0]!["items"]!);
+        Assert.Equal("A", orders[0]!["items"]![0]!["sku"]!.ToString());
+
+        // order 2: sku C is known (kept)
+        Assert.Single((JArray)orders[1]!["items"]!);
+        Assert.Equal("C", orders[1]!["items"]![0]!["sku"]!.ToString());
+    }
+
+    [Fact]
+    public async Task CrossReferenceFilter_KeepExistingModeDeduplicatesDuplicateKeysInInput()
+    {
+        var payloadWithDuplicates = """
+        { "orders": [
+            { "id": "1", "status": "first" },
+            { "id": "1", "status": "second" },
+            { "id": "2", "status": "duplicate" }
+        ] }
+        """;
+
+        _crossReferences.SeedKeys(ListName, "1");
+
+        var filter = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "OnlyProcessed",
+            StepType = StepType.CrossReferenceFilter,
+            StepConfig = """
+                { "listName": "processed-orders", "arrayPath": "orders",
+                  "keyPaths": ["id"], "filterMode": "KeepExisting" }
+                """
+        };
+
+        var flow = new IntegrationFlow { Nodes = { filter } };
+        var execution = SeedExecution(flow);
+
+        await CreateExecutor().ExecuteFlowAsync(flow.Id, execution.Id, payloadWithDuplicates, CancellationToken.None);
+
+        var step = Assert.Single(_executions.StepExecutions);
+        var emitted = JArray.Parse(step.ResponsePayload);
+
+        // "1" is known and deduped (first occurrence wins); "2" is unknown and filtered out.
+        Assert.Single(emitted);
+        Assert.Equal("first", emitted[0]!["status"]!.ToString());
+    }
 }
