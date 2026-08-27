@@ -10,12 +10,16 @@
 
 SimpleIPaaS is an enterprise integration platform that lets teams design, execute, and monitor API-to-API integration flows without writing deployable code. Users compose flows visually as a directed acyclic graph (DAG) of nodes (HTTP actions, mappers, branches, persisted state, debug probes), connect them to reusable authenticated Connections, and run them on demand, on a schedule, or in response to inbound webhooks. Every execution is recorded step-by-step with full request/response capture, failures are captured in a dead-letter queue with managed replay, and all data is isolated per tenant.
 
-The platform is delivered as two deployable units:
+The platform is delivered as three deployable units:
 
 | Unit | Technology | Responsibility |
 |---|---|---|
-| **SimpleIPaaS.Api** | ASP.NET Core (.NET 10) | REST API, execution engine, trigger scheduler, background workers, persistence |
+| **SimpleIPaaS.Api** | ASP.NET Core (.NET 10) | REST API, validation, trigger/webhook ingestion that *persists runs*, connection CRUD/testing, persistence |
+| **SimpleIPaaS.Engine** | .NET Worker host (.NET 10) | The only place flows execute: claims queued runs from the database, cron/one-time scheduling, dead-letter replay, cancellation watching |
 | **SimpleIPaaS.Client** | Blazor WebAssembly | Flow designer, connection management, monitoring UI |
+
+The Api and Engine communicate exclusively through the shared SQLite database — no HTTP between them, no in-memory queue. A flow run is handed off by writing a `Queued` `FlowExecutions` row; the Engine claims it atomically. Because `dotnet run` makes each project directory its working directory, hosts without an explicit connection string resolve the shared file via `DefaultDatabasePath` (anchored at the `SimpleIPaaS.slnx` root) rather than relative to their own CWD.
+
 
 ---
 
@@ -29,42 +33,46 @@ flowchart TB
         UI --> FX
     end
 
-    subgraph ApiTier["API Tier — ASP.NET Core"]
+    subgraph ApiTier["API Tier — SimpleIPaaS.Api (ASP.NET Core)"]
         AUTH[API-Key Authentication Middleware<br/>tenant resolution from key]
         CTRL[Controllers<br/>IntegrationFlow · Connection · Execution · DeadLetter · Webhook · Integration]
         VAL[Model Validation + ProblemDetails error handling]
         AUTH --> CTRL --> VAL
     end
 
-    subgraph EngineTier["Execution Tier — hosted services"]
-        QUEUE[ExecutionQueue<br/>bounded Channel]
-        WORKER[FlowExecutionWorker<br/>dequeues + runs flows]
+    subgraph DataTier["Shared Data Tier — the transport between Api and Engine"]
+        DB[(EF Core + SQLite<br/>tenant-filtered DbContext)]
+        ENC[EncryptionService<br/>AES-GCM, key from configuration]
+    end
+
+    subgraph EngineTier["Execution Tier — SimpleIPaaS.Engine (worker host)"]
+        CLAIM[DB queue poller<br/>claims Status=Queued rows]
+        WORKER[FlowExecutionWorker<br/>MaxConcurrency + per-flow lock]
         SCHED[CronTriggerScheduler<br/>Cronos-based]
-        DLQW[DeadLetterWorker<br/>managed replay]
+        DLQW[DeadLetterWorker<br/>managed replay via ReplayRequestedAt]
         EXEC[FlowExecutor<br/>topological DAG runner]
         SCRIPT[ScriptExecutionService<br/>Roslyn, timeout-guarded]
         TRANSPORT[TransportEngine<br/>Polly resilience]
-        AUTHF[AuthenticationHandlerFactory<br/>7 outbound auth types + token cache]
-        QUEUE --> WORKER --> EXEC
-        SCHED --> QUEUE
+        AUTHF[AuthenticationHandlerFactory<br/>9 outbound auth types + token cache]
+        WATCH[DbCancellationWatcher]
+        SCHED --> CLAIM
+        CLAIM --> WORKER --> EXEC
+        WATCH --> WORKER
         DLQW --> TRANSPORT
         EXEC --> SCRIPT
         EXEC --> TRANSPORT --> AUTHF
     end
 
-    subgraph DataTier["Data Tier"]
-        DB[(EF Core + SQLite<br/>tenant-filtered DbContext)]
-        ENC[EncryptionService<br/>AES-GCM, key from configuration]
-    end
-
     FX -- "HTTPS + X-Api-Key" --> AUTH
     EXT[External SaaS APIs] <--> TRANSPORT
     HOOK[Inbound Webhooks] --> CTRL
-    CTRL --> QUEUE
-    CTRL --> DB
+    CTRL -- "writes Queued FlowExecutions" --> DB
+    CTRL -- "flags ReplayRequestedAt" --> DB
+    CTRL -- "writes Status=Cancelled" --> DB
     EXEC --> DB
     ENC --- DB
 ```
+
 
 ---
 
@@ -75,7 +83,9 @@ flowchart TB
 | Runtime | .NET 10 | LTS-track |
 | API | ASP.NET Core Web API | Controllers + middleware pipeline |
 | Frontend | Blazor WebAssembly | SPA, no server rendering dependency |
+| Execution tier | .NET Worker host (`SimpleIPaaS.Engine`) | Standalone process; couples to the API exclusively through the shared database |
 | State management | Fluxor | Redux-style stores/effects |
+
 | Flow canvas | Z.Blazor.Diagrams | Node/port/link model |
 | ORM | Entity Framework Core (SQLite provider) | Global tenant query filters |
 | Resilience | Polly v8 `ResiliencePipeline` | Retry + timeout on outbound HTTP |
@@ -190,13 +200,14 @@ Base path `/api`. All endpoints except `POST /api/webhooks/{flowId}/{secret}` an
 
 ### 7.1 Asynchronous, queued execution
 
-`POST /run`, webhook hits, and cron firings all funnel into one path:
+`POST /run`, webhook hits, and cron firings all funnel into one path. There is deliberately **no in-memory channel**: the shared database IS the queue, which is what allows the UI-serving API and the executing Engine to be separate processes.
 
-1. An `ExecutionRequest { FlowId, TenantId, TriggerSource, TriggerPayload }` is written to a bounded `System.Threading.Channels.Channel` (`IExecutionQueue`).
-2. A `FlowExecution` row is created immediately in `Queued` status and its id is returned to the caller (`202 Accepted`).
-3. `FlowExecutionWorker` (hosted service) dequeues with configurable parallelism (`Execution:MaxConcurrency`, default 4) and runs `FlowExecutor.ExecuteFlowAsync(request, cancellationToken)`.
-4. **Per-flow serialization:** a keyed `SemaphoreSlim` ensures at most one concurrent execution per flow, protecting `PersistedStateJson` from lost updates.
-5. **Cancellation:** each running execution registers a `CancellationTokenSource` in an in-memory registry; `POST /executions/{id}/cancel` signals it; the executor observes the token between nodes and inside transport calls, marking the run `Cancelled`.
+1. The API (or the Engine's own scheduler) writes a `FlowExecution` row with `Status=Queued` and persists any trigger payload in `TriggerPayloadJson`; the id is returned to the caller (`202 Accepted`). This row **is** the queue entry.
+2. `SimpleIPaaS.Engine`'s `FlowExecutionWorker` polls every `Execution:PollIntervalSeconds` (default 2), picks the oldest `Queued` row across tenants ordered by enqueue time, and claims it with a guarded atomic `UPDATE … WHERE Status = Queued` (flipping it to `InProgress`). Concurrent Engines can never claim the same row, though per-flow locking is per-process — run exactly one Engine per database.
+3. Inside the Engine, configurable parallelism (`Execution:MaxConcurrency`, default 4) and a keyed `SemaphoreSlim` guard execution; `FlowExecutor.ExecuteFlowAsync` runs the DAG exactly as before, rewriting `StartedAt` on claim and finalising terminal states.
+4. **Per-flow serialization:** the keyed `SemaphoreSlim` ensures at most one concurrent execution per flow, protecting `PersistedStateJson` from lost updates.
+5. **Cancellation:** `POST /executions/{id}/cancel` writes `Status=Cancelled` into the row. Rows cancelled before their claim are skipped at claim time; running executions are picked up within ~2s by the Engine's `DbCancellationWatcher`, which cancels the local token so `FlowExecutor` observes it between nodes and inside transport calls and marks the run `Cancelled` — identical end state to the previous in-process registry behaviour.
+
 6. **Flow-level timeout:** `Execution:MaxFlowDurationSeconds` (default 600) linked into the token.
 
 ### 7.2 DAG semantics (unchanged, proven)
@@ -241,7 +252,8 @@ The UI therefore reads a recovered run as a success while still disclosing that 
 |---|---|
 | **Manual** | `POST /api/integrationflow/{id}/run` → queue |
 | **Webhook** | `POST /api/webhooks/{flowId}/{secret}` — anonymous route, authenticated by per-flow secret (generated server-side, constant-time compared); payload passed to the flow |
-| **Cron (recurring)** | `CronTriggerScheduler` hosted service: every 30s scans Active flows with `TriggerType=Cron`, evaluates `CronExpression` via Cronos (UTC, 5- or 6-field), enqueues when due; per-flow `NextRunAt` bookkeeping prevents double-fires |
+| **Cron (recurring)** | `CronTriggerScheduler` (hosted inside SimpleIPaaS.Engine): every 30s scans Active flows with `TriggerType=Cron`, evaluates `CronExpression` via Cronos (UTC, 5- or 6-field), enqueues when due; per-flow `NextRunAt` bookkeeping prevents double-fires |
+
 | **One-time** | A flow with `RunAt` set fires exactly once at that instant. The scheduler clears `NextRunAt` **before** enqueuing, giving at-most-once delivery; a `RunAt` in the past is never resurrected on re-save, and `RunAt` is retained as the historical record of what was scheduled |
 | **Polling** | Modeled as Cron + an initial HttpAction node (documented pattern); no separate infrastructure |
 
@@ -298,7 +310,8 @@ Token cache: in-memory `ConcurrentDictionary` keyed by ConnectionId; invalidated
 ## 11. Data Flow (end-to-end)
 
 1. **Design time** — user builds the DAG in the designer; client validates (unique node names, connected graph, no cycles) before `POST/PUT`; server re-validates.
-2. **Trigger** — manual/webhook/cron produces an `ExecutionRequest` on the queue; caller immediately receives `executionId`.
+2. **Trigger** — manual/webhook/cron produces a `Queued` `FlowExecution` row in the shared database; caller immediately receives `executionId`.
+
 3. **Execution** — worker acquires the per-flow lock, loads the flow, topologically orders nodes, and walks the DAG. Per node: UrlCode → PreFlight script → auth decoration → transport (Polly) → PostFlight script → state append → `StepExecution` persisted.
 4. **Failure** — step failure writes a `DeadLetterEntry`, marks the execution `Failed`, halts downstream.
 5. **Observation** — Activity Log lists executions (paged); Execution Detail shows the step timeline with payloads; DLQ Console lists failures with retry/discard actions.

@@ -1,11 +1,25 @@
 # SimpleIPaaS — Agent Handover
 
 **For:** the next AI agent (or engineer) picking this up.
-**State as of this document:** tests **142/142 passing**; latest client build passed with 0 errors and one pre-existing unused-variable warning in `Pages/Index.razor`.
+**State as of this document:** build **0 errors / 0 warnings**; tests **160/160 passing**.
 
-**Session context (compact):** branch `newTT`. Uncommitted card UI, parallel ForEach, test-stub, CSS, and handover changes; untracked `$null`, `.commandcode/settings.json`, and `Shared/MinimizableNodeCard.razor`.
+**Session context (compact):** branch `newTT`. Architecture now separates the UI-serving API from flow execution.
+
+**This session (UI/engine separation):**
+- New deployable `src/SimpleIPaaS.Engine` (.NET Worker host) runs ALL flows. The API no longer hosts an executor, scheduler or dead-letter worker.
+- DB-as-bus contract (SQLite is the only channel between Api and Engine):
+  - Runs: API writes `FlowExecutions` rows with `Status=Queued` (+ trigger payload persisted in new nullable column `TriggerPayloadJson`); Engine's `FlowExecutionWorker` polls every `Execution:PollIntervalSeconds` (default 2s) and claims atomically (`UPDATE … WHERE Status=Queued`), so it is safe against another Engine but run ONE Engine per database.
+  - Cancel: `POST /executions/{id}/cancel` writes `Status=Cancelled`; pre-claim runs are skipped at claim time, running ones are flipped to local token cancellation by the new `DbCancellationWatcher` (~2s).
+  - Schedule/cron/one-time: unchanged data model (`TriggerType/CronExpression/RunAt/NextRunAt` on `IntegrationFlows`); `CronTriggerScheduler` moved into the Engine.
+  - Dead-letter replay: manual UI retry now flags `ReplayRequestedAt` (new nullable column on `DeadLetterEntries`) instead of executing HTTP inside the API process; Engine's `DeadLetterWorker` clears the marker first (at-most-once), replays with force semantics bypassing auto-retry limits; auto-retry of `Pending` entries follows `DeadLetter:MaxAutoRetryAttempts` via new `DeadLetterService.CanAutoRetry`. `POST retry` returns 202 Accepted (client toast copy already said "queued for retry").
+- Deleted entirely: `IExecutionQueue`, `ChannelExecutionQueue`, `ExecutionRequest` (bounded-channel queue gone).
+- Trap fixed for the split era: `dotnet run` sets CWD to each project folder, so relative `Data Source=ipaas.db` created per-project databases (split-brain observed live). Both hosts now resolve missing connection strings through `Infrastructure/Persistence/DefaultDatabasePath` anchored at the repo root (`SimpleIPaaS.slnx`). Explicit config/env always wins; Docker passes `/data/ipaas.db`.
+- WAL + `busy_timeout=8000` pragmas applied by the schema initializer so cross-process write contention waits rather than failing.
+- Dockerfile publishes Engine alongside Api; docker-compose adds an `engine` service sharing the `ipaas-data` volume.
+- Verified E2E with Api(:5000)+Engine+Client(:5001) up simultaneously: health 200, client boot resources 200, engine claimed a manually enqueued run from SQLite and completed it (Success total=1 success=1), immediate-cancel run ended Cancelled. Final gate: build 0/0, tests 160/160.
 
 **Last changes (branch `newTT`, newest first):**
+
 - `2e45da8` fix(engine): `ResolveFilterSource` node-name peel for flowState wildcard paths (`FlowExecutor.cs`).
 - `aab5ee9` fix(cross-ref): resolve flowState-prefixed wildcard `arrayPath` against referenced node (sample + `CrossReferenceTests`).
 - `820bb84` fix(engine): resolve `ForEach` `arrayPath` from central flow state (`FlowExecutor`, `ForEachCard`, `ForEachTests`).
