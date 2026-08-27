@@ -4,9 +4,11 @@
     <Project Path="src/SimpleIPaaS.Application/SimpleIPaaS.Application.csproj" />
     <Project Path="src/SimpleIPaaS.Client/SimpleIPaaS.Client.csproj" />
     <Project Path="src/SimpleIPaaS.Domain/SimpleIPaaS.Domain.csproj" />
+    <Project Path="src/SimpleIPaaS.Engine/SimpleIPaaS.Engine.csproj" />
     <Project Path="src/SimpleIPaaS.Infrastructure/SimpleIPaaS.Infrastructure.csproj" />
     <Project Path="src/SimpleIPaaS.Shared/SimpleIPaaS.Shared.csproj" />
   </Folder>
+
   <Folder Name="/tests/">
     <Project Path="tests/SimpleIPaaS.Tests/SimpleIPaaS.Tests.csproj" />
   </Folder>

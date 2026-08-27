@@ -2,32 +2,29 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using SimpleIPaaS.Application.Interfaces;
-using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 
 namespace SimpleIPaaS.Application.Services;
 
+// Persists flow runs as Queued rows in the database. This is the entire
+// "hand-off" from the API/UI tier to the standalone execution Engine:
+// the engine claims Queued FlowExecutions directly from the shared
+// database; there is deliberately no HTTP call or in-memory channel.
 public class FlowRunService
 {
-    private readonly IExecutionQueue _queue;
     private readonly IExecutionRepository _executionRepository;
     private readonly IIntegrationRepository _integrationRepository;
     private readonly IIntegrationCatalogRepository _integrationCatalogRepository;
-    private readonly ExecutionCancellationRegistry _cancellationRegistry;
 
     public FlowRunService(
-        IExecutionQueue queue,
         IExecutionRepository executionRepository,
         IIntegrationRepository integrationRepository,
-        IIntegrationCatalogRepository integrationCatalogRepository,
-        ExecutionCancellationRegistry cancellationRegistry)
+        IIntegrationCatalogRepository integrationCatalogRepository)
     {
-        _queue = queue;
         _executionRepository = executionRepository;
         _integrationRepository = integrationRepository;
         _integrationCatalogRepository = integrationCatalogRepository;
-        _cancellationRegistry = cancellationRegistry;
     }
 
     public async Task<Guid> EnqueueAsync(Guid flowId, Guid tenantId, string triggerSource, string? triggerPayload, CancellationToken cancellationToken = default)
@@ -41,6 +38,8 @@ public class FlowRunService
             integrationName = integration?.Name ?? string.Empty;
         }
 
+        var enqueuedAt = DateTime.UtcNow;
+
         var execution = new FlowExecution
         {
             Id = Guid.NewGuid(),
@@ -50,22 +49,16 @@ public class FlowRunService
             IntegrationId = flow?.IntegrationId,
             IntegrationName = integrationName,
             Status = ExecutionStatus.Queued,
-            StartedAt = DateTime.UtcNow,
-            TriggerSource = triggerSource
+            // StartedAt doubles as the FIFO key until the Engine rewrites it on claim.
+            StartedAt = enqueuedAt,
+            TriggerSource = triggerSource,
+            // Persisted so the payload survives the process boundary to the Engine.
+            TriggerPayloadJson = triggerPayload
         };
 
         await _executionRepository.AddFlowExecutionAsync(execution);
-        _cancellationRegistry.GetOrCreate(execution.Id);
-
-        await _queue.EnqueueAsync(new ExecutionRequest
-        {
-            ExecutionId = execution.Id,
-            FlowId = flowId,
-            TenantId = tenantId,
-            TriggerSource = triggerSource,
-            TriggerPayload = triggerPayload
-        }, cancellationToken);
 
         return execution.Id;
     }
 }
+

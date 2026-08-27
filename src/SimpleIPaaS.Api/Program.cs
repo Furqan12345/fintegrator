@@ -43,9 +43,11 @@ builder.Services.AddCors(options =>
         });
 });
 
-// Configure EF Core SQLite
+// Configure EF Core SQLite — both this API and SimpleIPaaS.Engine must land on the
+// SAME database file; DefaultDatabasePath prevents per-project split databases.
 builder.Services.AddDbContext<IPaaSContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=ipaas.db"));
+    options.UseSqlite(DefaultDatabasePath.Resolve(builder.Configuration.GetConnectionString("DefaultConnection"))));
+
 
 // Multi-tenancy
 builder.Services.AddScoped<ITenantContext, TenantContext>();
@@ -65,19 +67,11 @@ builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
 builder.Services.AddScoped<ICodeExecutionService, CodeExecutionService>();
 builder.Services.AddScoped<IAdvancedCodeExecutionService, AdvancedCodeExecutionService>();
 
-builder.Services.AddScoped<FlowExecutor>();
-builder.Services.AddScoped<DeadLetterService>();
+// FlowRunService only *persists runs*: it writes a Queued FlowExecution row that the
+// standalone SimpleIPaaS.Engine claims from the shared database. The API process hosts
+// no executor, no scheduler and no dead-letter worker anymore.
 builder.Services.AddScoped<FlowRunService>();
 
-// Execution engine
-builder.Services.Configure<ExecutionOptions>(builder.Configuration.GetSection("Execution"));
-builder.Services.AddSingleton<IExecutionQueue, ChannelExecutionQueue>();
-builder.Services.AddSingleton<ExecutionCancellationRegistry>();
-
-// Background Workers
-builder.Services.AddHostedService<FlowExecutionWorker>();
-builder.Services.AddHostedService<CronTriggerScheduler>();
-builder.Services.AddHostedService<FlowExecutionBackgroundWorker>();
 
 // Health checks
 builder.Services.AddHealthChecks()

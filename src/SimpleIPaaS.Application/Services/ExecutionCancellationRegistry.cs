@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 
 namespace SimpleIPaaS.Application.Services;
@@ -26,6 +28,10 @@ public class ExecutionCancellationRegistry
         }
         return false;
     }
+
+    // Snapshot of executions that currently hold a token in this process; consumed by
+    // the Engine's database cancellation watcher to know which rows to poll.
+    public IReadOnlyCollection<Guid> ActiveIds => _sources.Keys.ToList();
 
     public void Remove(Guid executionId)
     {

@@ -64,6 +64,11 @@ public class DeadLetterService
         _maxAutoRetryAttempts = configuration?.GetValue("DeadLetter:MaxAutoRetryAttempts", 0) ?? 0;
     }
 
+    // Used by the Engine's dead-letter worker to decide whether a Pending entry is
+    // eligible for automatic replay before committing a scope to ReplayEntryAsync.
+    public bool CanAutoRetry(DeadLetterEntry entry) => entry.RetryCount < _maxAutoRetryAttempts;
+
+
     public async Task<DeadLetterReplayResult> ReplayEntryAsync(Guid entryId, bool force, CancellationToken cancellationToken = default)
     {
         var entry = await _executionRepository.GetDeadLetterAsync(entryId);

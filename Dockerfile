@@ -6,12 +6,16 @@ COPY src/SimpleIPaaS.Domain/*.csproj src/SimpleIPaaS.Domain/
 COPY src/SimpleIPaaS.Application/*.csproj src/SimpleIPaaS.Application/
 COPY src/SimpleIPaaS.Infrastructure/*.csproj src/SimpleIPaaS.Infrastructure/
 COPY src/SimpleIPaaS.Shared/*.csproj src/SimpleIPaaS.Shared/
+COPY src/SimpleIPaaS.Engine/*.csproj src/SimpleIPaaS.Engine/
 COPY src/SimpleIPaaS.Api/*.csproj src/SimpleIPaaS.Api/
 COPY src/SimpleIPaaS.Client/*.csproj src/SimpleIPaaS.Client/
-RUN dotnet restore src/SimpleIPaaS.Api/SimpleIPaaS.Api.csproj
+RUN dotnet restore src/SimpleIPaaS.Api/SimpleIPaaS.Api.csproj && `
+    dotnet restore src/SimpleIPaaS.Engine/SimpleIPaaS.Engine.csproj
 
 COPY src/ src/
-RUN dotnet publish src/SimpleIPaaS.Api/SimpleIPaaS.Api.csproj -c Release -o /app --no-restore
+RUN dotnet publish src/SimpleIPaaS.Api/SimpleIPaaS.Api.csproj -c Release -o /app --no-restore && `
+    dotnet publish src/SimpleIPaaS.Engine/SimpleIPaaS.Engine.csproj -c Release -o /app --no-restore
+
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app

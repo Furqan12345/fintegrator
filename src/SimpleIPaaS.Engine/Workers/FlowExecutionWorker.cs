@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -13,12 +14,13 @@ using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 
-namespace SimpleIPaaS.Infrastructure.Services;
+namespace SimpleIPaaS.Engine.Workers;
 
+// Claims Queued FlowExecution rows straight from the shared database — the exact
+// counterpart of FlowRunService.EnqueueAsync writes performed by the API process.
 public class FlowExecutionWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IExecutionQueue _queue;
     private readonly ExecutionCancellationRegistry _cancellationRegistry;
     private readonly ExecutionOptions _options;
     private readonly ILogger<FlowExecutionWorker> _logger;
@@ -26,13 +28,11 @@ public class FlowExecutionWorker : BackgroundService
 
     public FlowExecutionWorker(
         IServiceProvider serviceProvider,
-        IExecutionQueue queue,
         ExecutionCancellationRegistry cancellationRegistry,
         IOptions<ExecutionOptions> options,
         ILogger<FlowExecutionWorker> logger)
     {
         _serviceProvider = serviceProvider;
-        _queue = queue;
         _cancellationRegistry = cancellationRegistry;
         _options = options.Value;
         _logger = logger;
@@ -41,45 +41,77 @@ public class FlowExecutionWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var concurrency = _options.MaxConcurrency < 1 ? 4 : _options.MaxConcurrency;
-        _logger.LogInformation("FlowExecutionWorker starting with {MaxConcurrency} workers", concurrency);
+        var pollInterval = TimeSpan.FromSeconds(_options.PollIntervalSeconds < 1 ? 2 : _options.PollIntervalSeconds);
+        _logger.LogInformation(
+            "FlowExecutionWorker starting with {MaxConcurrency} workers, polling the database every {PollSeconds}s",
+            concurrency, pollInterval.TotalSeconds);
 
         var workers = Enumerable.Range(0, concurrency)
-            .Select(_ => ProcessQueueAsync(stoppingToken))
+            .Select(_ => RunLoopAsync(pollInterval, stoppingToken))
             .ToArray();
 
         await Task.WhenAll(workers);
     }
 
-    private async Task ProcessQueueAsync(CancellationToken stoppingToken)
+    private async Task RunLoopAsync(TimeSpan pollInterval, CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            ExecutionRequest request;
+            QueuedExecutionClaim? claim = null;
             try
             {
-                request = await _queue.DequeueAsync(stoppingToken);
+                using var scope = _serviceProvider.CreateScope();
+                claim = await scope.ServiceProvider.GetRequiredService<IExecutionRepository>()
+                    .TryClaimNextQueuedExecutionAsync();
             }
             catch (OperationCanceledException)
             {
                 return;
             }
-
-            try
+            catch (SqliteException ex)
             {
-                await ExecuteRequestAsync(request, stoppingToken);
+                // Write contention with the API process under WAL is transient by design.
+                _logger.LogDebug(ex, "SQLite busy while claiming the next queued execution");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unhandled error running execution {ExecutionId}", request.ExecutionId);
+                _logger.LogError(ex, "Error claiming the next queued execution");
+            }
+
+            if (claim == null)
+            {
+                try
+                {
+                    await Task.Delay(pollInterval, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                continue;
+            }
+
+            try
+            {
+                await ExecuteRequestAsync(claim, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error running execution {ExecutionId}", claim.ExecutionId);
             }
             finally
             {
-                _cancellationRegistry.Remove(request.ExecutionId);
+                _cancellationRegistry.Remove(claim.ExecutionId);
             }
         }
     }
 
-    private async Task ExecuteRequestAsync(ExecutionRequest request, CancellationToken stoppingToken)
+    private async Task ExecuteRequestAsync(QueuedExecutionClaim request, CancellationToken stoppingToken)
     {
         var flowLock = _flowLocks.GetOrAdd(request.FlowId, _ => new SemaphoreSlim(1, 1));
         await flowLock.WaitAsync(stoppingToken);

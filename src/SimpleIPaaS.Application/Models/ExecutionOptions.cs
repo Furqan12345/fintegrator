@@ -4,5 +4,6 @@ public class ExecutionOptions
 {
     public int MaxConcurrency { get; set; } = 4;
     public int MaxFlowDurationSeconds { get; set; } = 600;
-    public int QueueCapacity { get; set; } = 100;
+    public int PollIntervalSeconds { get; set; } = 2;
 }
+

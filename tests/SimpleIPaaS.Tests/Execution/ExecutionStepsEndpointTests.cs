@@ -58,7 +58,7 @@ public class ExecutionStepsEndpointTests
     }
 
     private ExecutionController CreateController() =>
-        new(_executions, new ExecutionCancellationRegistry());
+        new(_executions);
 
     private static T Body<T>(IActionResult result) => Assert.IsType<T>(Assert.IsType<OkObjectResult>(result).Value);
 

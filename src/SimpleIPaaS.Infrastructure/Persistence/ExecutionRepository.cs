@@ -4,7 +4,9 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
+
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 
@@ -198,7 +200,78 @@ public class ExecutionRepository : IExecutionRepository
             .FirstOrDefaultAsync();
     }
 
+    public async Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync()
+    {
+        // Cross-tenant by design: the queue spans all tenants. The claim is an atomic
+        // guarded UPDATE (WHERE Status = Queued) so two engines can never take the same row.
+        var nextId = await _context.FlowExecutions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(e => e.Status == ExecutionStatus.Queued)
+            .OrderBy(e => e.StartedAt)
+            .Select(e => (Guid?)e.Id)
+            .FirstOrDefaultAsync();
+
+        if (nextId == null)
+        {
+            return null;
+        }
+
+        var claimed = await _context.FlowExecutions
+            .IgnoreQueryFilters()
+            .Where(e => e.Id == nextId.Value && e.Status == ExecutionStatus.Queued)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(e => e.Status, ExecutionStatus.InProgress)
+                .SetProperty(e => e.StartedAt, DateTime.UtcNow));
+
+        if (claimed == 0)
+        {
+            return null; // lost the race to another engine instance; poll again
+        }
+
+        var execution = await _context.FlowExecutions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstAsync(e => e.Id == nextId.Value);
+
+        return new QueuedExecutionClaim(
+            execution.Id,
+            execution.FlowId,
+            execution.TenantId,
+            execution.TriggerSource,
+            execution.TriggerPayloadJson);
+    }
+
+    public async Task<IReadOnlyList<Guid>> GetCancelledExecutionIdsAsync(IReadOnlyCollection<Guid> executionIds)
+    {
+        if (executionIds.Count == 0)
+        {
+            return Array.Empty<Guid>();
+        }
+
+        // The API marks running executions Cancelled in this same table; the Engine's
+        // watcher turns those rows into local CancellationToken cancellations.
+        return await _context.FlowExecutions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(e => executionIds.Contains(e.Id) && e.Status == ExecutionStatus.Cancelled)
+            .Select(e => e.Id)
+            .ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAcrossTenantsAsync(int batchSize)
+    {
+        return await _context.DeadLetterEntries
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(d => d.Status == "Pending" || d.ReplayRequestedAt != null)
+            .OrderBy(d => d.CreatedAt)
+            .Take(batchSize < 1 ? 100 : batchSize)
+            .ToListAsync();
+    }
+
     public async Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
+
     {
         if (entry.TenantId == Guid.Empty)
         {
@@ -223,16 +296,6 @@ public class ExecutionRepository : IExecutionRepository
             .ToListAsync();
     }
 
-    public async Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAcrossTenantsAsync(int batchSize)
-    {
-        return await _context.DeadLetterEntries
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(d => d.Status == "Pending")
-            .OrderBy(d => d.CreatedAt)
-            .Take(batchSize)
-            .ToListAsync();
-    }
 
     public async Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync(string? status = null)
     {

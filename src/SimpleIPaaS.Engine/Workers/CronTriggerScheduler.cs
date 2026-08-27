@@ -9,8 +9,11 @@ using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 
-namespace SimpleIPaaS.Infrastructure.Services;
+namespace SimpleIPaaS.Engine.Workers;
 
+// Lives exclusively in the Engine: the UI only saves Schedule-node / trigger data
+// onto the IntegrationFlow row; this scanner is what actually turns due flows into
+// Queued FlowExecutions by writing through FlowRunService.
 public class CronTriggerScheduler : BackgroundService
 {
     private static readonly TimeSpan ScanInterval = TimeSpan.FromSeconds(30);
@@ -74,6 +77,7 @@ public class CronTriggerScheduler : BackgroundService
                     continue;
                 }
 
+                // Clear the marker before enqueueing — at-most-once dispatch.
                 await scheduleRepository.UpdateNextRunAtAsync(flow.Id, flow.TenantId, null);
                 await EnqueueAsync(flow.Id, flow.TenantId, "Schedule", stoppingToken);
                 continue;

@@ -1,4 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 
@@ -245,8 +250,56 @@ public sealed class StubExecutionRepository : IExecutionRepository
     public Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize) =>
         Task.FromResult<IEnumerable<DeadLetterEntry>>(DeadLetters.Where(d => d.Status == "Pending").Take(batchSize).ToList());
 
-    public Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAcrossTenantsAsync(int batchSize) =>
-        GetPendingDeadLettersAsync(batchSize);
+    public Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync()
+    {
+        lock (_lock)
+        {
+            var next = _flowExecutions.Values
+                .Where(e => e.Status == ExecutionStatus.Queued)
+                .OrderBy(e => e.StartedAt)
+                .FirstOrDefault();
+            if (next == null)
+            {
+                return Task.FromResult<QueuedExecutionClaim?>(null);
+            }
+
+            next.Status = ExecutionStatus.InProgress;
+            next.StartedAt = DateTime.UtcNow;
+
+            return Task.FromResult<QueuedExecutionClaim?>(new QueuedExecutionClaim(
+                next.Id,
+                next.FlowId,
+                next.TenantId,
+                next.TriggerSource,
+                next.TriggerPayloadJson));
+        }
+    }
+
+    public Task<IReadOnlyList<Guid>> GetCancelledExecutionIdsAsync(IReadOnlyCollection<Guid> executionIds)
+    {
+        lock (_lock)
+        {
+            IReadOnlyList<Guid> cancelled = executionIds
+                .Where(id => _flowExecutions.TryGetValue(id, out var execution) && execution.Status == ExecutionStatus.Cancelled)
+                .ToList();
+
+            return Task.FromResult(cancelled);
+        }
+    }
+
+    public Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAcrossTenantsAsync(int batchSize)
+    {
+        lock (_lock)
+        {
+            IReadOnlyList<DeadLetterEntry> entries = DeadLetters
+                .Where(d => d.Status == "Pending" || d.ReplayRequestedAt != null)
+                .OrderBy(d => d.CreatedAt)
+                .Take(batchSize < 1 ? 100 : batchSize)
+                .ToList();
+
+            return Task.FromResult(entries);
+        }
+    }
 
     public Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync(string? status = null) =>
         Task.FromResult<IEnumerable<DeadLetterEntry>>(DeadLetters.ToList());

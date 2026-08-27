@@ -3,7 +3,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using SimpleIPaaS.Application.Interfaces;
-using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Shared.Models;
@@ -15,13 +14,12 @@ namespace SimpleIPaaS.Api.Controllers;
 public class ExecutionController : ControllerBase
 {
     private readonly IExecutionRepository _repository;
-    private readonly ExecutionCancellationRegistry _cancellationRegistry;
 
-    public ExecutionController(IExecutionRepository repository, ExecutionCancellationRegistry cancellationRegistry)
+    public ExecutionController(IExecutionRepository repository)
     {
         _repository = repository;
-        _cancellationRegistry = cancellationRegistry;
     }
+
 
     // Kept for any existing callers
     [HttpGet("flow/{id}")]
@@ -155,9 +153,11 @@ public class ExecutionController : ControllerBase
         var execution = await _repository.GetFlowExecutionAsync(id);
         if (execution == null) return NotFound();
 
-        var signalled = _cancellationRegistry.Cancel(id);
-
-        if (execution.Status == ExecutionStatus.Queued)
+        // Cancellation is a database write: the Engine skips rows cancelled before they
+        // started, and its cancellation watcher flips the running token when it observes
+        // Status=Cancelled for an in-flight execution.
+        var cancellable = execution.Status == ExecutionStatus.Queued || execution.Status == ExecutionStatus.InProgress;
+        if (cancellable)
         {
             execution.Status = ExecutionStatus.Cancelled;
             execution.ErrorMessage = "Execution was cancelled.";
@@ -165,7 +165,7 @@ public class ExecutionController : ControllerBase
             await _repository.UpdateFlowExecutionAsync(execution);
         }
 
-        return Ok(new { success = true, signalled, status = execution.Status.ToString() });
+        return Ok(new { success = cancellable, status = execution.Status.ToString() });
     }
 
     private static FlowExecutionDto ToDto(FlowExecution e)

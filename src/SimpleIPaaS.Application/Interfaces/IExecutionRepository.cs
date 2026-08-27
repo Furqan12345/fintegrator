@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
+
 
 namespace SimpleIPaaS.Application.Interfaces;
 
@@ -52,7 +54,11 @@ public interface IExecutionRepository
 
     Task AddFlowExecutionAsync(FlowExecution execution);
     Task UpdateFlowExecutionAsync(FlowExecution execution);
-    
+
+    // Cross-process queue: the standalone Engine claims Queued rows atomically.
+    Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync();
+    Task<IReadOnlyList<Guid>> GetCancelledExecutionIdsAsync(IReadOnlyCollection<Guid> executionIds);
+
     Task AddStepExecutionAsync(StepExecution execution);
     Task UpdateStepExecutionAsync(StepExecution execution);
     Task<IEnumerable<StepExecution>> GetStepExecutionsAsync(Guid flowExecutionId);
@@ -67,8 +73,13 @@ public interface IExecutionRepository
     Task AddDeadLetterEntryAsync(DeadLetterEntry entry);
     Task<DeadLetterEntry?> GetDeadLetterAsync(Guid id);
     Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize);
-    Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAcrossTenantsAsync(int batchSize);
+
+    // Engine-side replay scan: everything auto-retry would consider (Pending) plus
+    // anything the API flagged for manual replay via ReplayRequestedAt.
+    Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAcrossTenantsAsync(int batchSize);
+
     Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync(string? status = null);
     Task<IEnumerable<DeadLetterEntry>> GetDeadLettersByExecutionAsync(Guid flowExecutionId);
     Task UpdateDeadLetterEntryAsync(DeadLetterEntry entry);
 }
+

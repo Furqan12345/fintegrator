@@ -11,12 +11,30 @@ services:
       ConnectionStrings__DefaultConnection: "Data Source=/data/ipaas.db"
       Encryption__Key: "${IPAAS_ENCRYPTION_KEY:?set IPAAS_ENCRYPTION_KEY to a 32-byte value}"
       Cors__AllowedOrigins__0: "${IPAAS_CLIENT_ORIGIN:-http://localhost:5001}"
-      Execution__MaxConcurrency: "4"
-      Execution__MaxFlowDurationSeconds: "600"
-      Scripting__TimeoutSeconds: "10"
     volumes:
       - ipaas-data:/data
     restart: unless-stopped
 
+  # Standalone execution tier. Runs every flow: claims Queued FlowExecutions written
+  # by the API, owns cron/one-time scheduling and dead-letter replay. Communicates
+  # with the API exclusively through the shared database file.
+  engine:
+    image: simpleipaas-api:latest
+    entrypoint: ["dotnet", "SimpleIPaaS.Engine.dll"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Data Source=/data/ipaas.db"
+      Encryption__Key: "${IPAAS_ENCRYPTION_KEY:?set IPAAS_ENCRYPTION_KEY to a 32-byte value}"
+      Execution__MaxConcurrency: "4"
+      Execution__MaxFlowDurationSeconds: "600"
+      Execution__PollIntervalSeconds: "2"
+      Scripting__TimeoutSeconds: "10"
+    volumes:
+      - ipaas-data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   ipaas-data:
+

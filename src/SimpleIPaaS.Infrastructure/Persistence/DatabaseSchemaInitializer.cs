@@ -41,6 +41,23 @@ public static class DatabaseSchemaInitializer
         EnsureColumn(connection, "DeadLetterEntries", "IntegrationName", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(connection, "DeadLetterEntries", "NodeName", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(connection, "IntegrationFlows", "RunAt", "TEXT NULL");
+        EnsureColumn(connection, "FlowExecutions", "TriggerPayloadJson", "TEXT NULL");
+        EnsureColumn(connection, "DeadLetterEntries", "ReplayRequestedAt", "TEXT NULL");
+        EnsureDatabasePragmas(connection);
+    }
+
+    private static void EnsureDatabasePragmas(SqliteConnection connection)
+    {
+        // The API and the Engine share this database file in WAL mode. journal_mode=WAL
+        // persists in the database file itself; busy_timeout is per-connection and lets a
+        // write from one process wait on the other instead of failing with SQLITE_BUSY.
+        using var walCommand = connection.CreateCommand();
+        walCommand.CommandText = "PRAGMA journal_mode=WAL;";
+        walCommand.ExecuteScalar();
+
+        using var busyTimeoutCommand = connection.CreateCommand();
+        busyTimeoutCommand.CommandText = "PRAGMA busy_timeout=8000;";
+        busyTimeoutCommand.ExecuteNonQuery();
     }
 
     private static void EnsureIntegrationsTable(SqliteConnection connection)

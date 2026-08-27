@@ -21,6 +21,9 @@ public class DeadLetterEntry
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastRetriedAt { get; set; }
     public DateTime? ResolvedAt { get; set; }
+    // Set by the API when a user requests a replay; cleared by the Engine before it
+    // executes the replay, giving at-most-once dispatch across process boundaries.
+    public DateTime? ReplayRequestedAt { get; set; }
 
     public string Status { get; set; } = "Pending"; // Pending, Retried, Discarded
 }
