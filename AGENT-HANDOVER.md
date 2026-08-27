@@ -58,14 +58,17 @@ An enterprise iPaaS: users compose integration flows as a DAG in a visual design
 
 ## 2. Running it
 
+Run **three** processes (the Engine must be up or every run stays `Queued` forever):
+
 ```bash
-dotnet run --project src/SimpleIPaaS.Api    # :5000
-dotnet run --project src/SimpleIPaaS.Client # :5001
+dotnet run --project src/SimpleIPaaS.Engine # no port — executes every flow
+dotnet run --project src/SimpleIPaaS.Api    # :5000 — REST, triggers, scheduling
+dotnet run --project src/SimpleIPaaS.Client # :5001 — Blazor UI
 ```
 
-Open **http://localhost:5001**. No login: in Development the API seeds an API key `dev-api-key` and the client sends it automatically (`src/SimpleIPaaS.Client/wwwroot/appsettings.json`). Every API call needs the `X-Api-Key` header except `/health` and `/api/webhooks/*`.
+Open **http://localhost:5001**. No login: in Development the API seeds an API key `dev-api-key` and the client sends it automatically (`src/SimpleIPaaS.Client/wwwroot/appsettings.json`). Every API call needs the `X-Api-Key` header except `/health` and `/api/webhooks/*`. The Api and Engine share the SQLite database (both resolve the connection through `DefaultDatabasePath` when none is configured); the Engine claims `Queued` execution rows, so a run you trigger in the UI executes there, not in the API process.
 
-If using Claude Code, `.claude/launch.json` defines both servers for the preview tooling (not committed by default).
+If using Claude Code, `.claude/launch.json` defines the servers for the preview tooling (not committed by default).
 
 ---
 

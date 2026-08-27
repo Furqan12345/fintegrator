@@ -105,13 +105,14 @@ flowchart TB
 src/
   SimpleIPaaS.Domain          → Entities, enums, no dependencies
   SimpleIPaaS.Application     → FlowExecutor, DeadLetterService, script services, repository interfaces
-  SimpleIPaaS.Infrastructure  → EF Core context, repositories, TransportEngine, auth handlers, encryption
-  SimpleIPaaS.Api             → Controllers, middleware, hosted services, composition root
+  SimpleIPaaS.Infrastructure  → EF Core context, repositories, TransportEngine, auth handlers, encryption, DefaultDatabasePath
+  SimpleIPaaS.Api             → Controllers, middleware, composition root (no execution code)
+  SimpleIPaaS.Engine          → Worker host: FlowExecutionWorker, CronTriggerScheduler, DeadLetterWorker, DbCancellationWatcher
   SimpleIPaaS.Client          → Blazor WASM UI, Fluxor stores
   SimpleIPaaS.Shared          → DTOs shared between Api and Client
 ```
 
-Dependency rule: `Api → Application → Domain`; `Infrastructure` implements `Application` interfaces; `Client` references only `Shared`.
+Dependency rule: `Api → Application → Domain` and `Engine → Application → Domain`; `Infrastructure` implements `Application` interfaces and is referenced by both `Api` and `Engine`; `Client` references only `Shared`. The Engine and Api are separate processes that never call each other — the only coupling is the shared database.
 
 ---
 

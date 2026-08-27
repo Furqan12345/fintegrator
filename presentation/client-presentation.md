@@ -36,7 +36,7 @@ One platform, four capabilities:
 > *Speaker notes:* These are the two features that most directly reduce operational toil. Dedup removes the "did we already process this?" class of bug entirely; recovery history means an auditor can always reconstruct what went wrong and when it was fixed.
 
 ### Slide 4 · Architecture at a Glance
-Blazor WebAssembly client → ASP.NET Core API (API-key auth, tenant-isolated) → queued execution engine (DAG runner, Polly resilience, Roslyn transformations) → EF Core persistence with per-tenant filters and AES-GCM-encrypted credentials.
+Blazor WebAssembly client → ASP.NET Core API (API-key auth, tenant-isolated) → shared SQLite database → standalone **execution engine** (DAG runner, Polly resilience, Roslyn transformations, cron/DLQ/cancellation workers). The API only triggers/schedules by writing to the shared database; the engine does all the running and writes results back.
 
 > *Speaker notes:* Keep to one minute. Land three points: (1) every query is tenant-filtered at the ORM level, (2) credentials are encrypted with a key held outside the codebase, (3) execution is asynchronous and per-flow serialized, so a slow endpoint never blocks the platform. Refer deep-divers to `architecture/solution-architecture.md`.
 
