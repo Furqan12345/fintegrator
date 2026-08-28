@@ -256,7 +256,16 @@
                     continue;
                 }
 
-                await TailAsync();
+                try
+                {
+                    await TailAsync();
+                }
+                catch (Exception)
+                {
+                    // A single bad tick must never kill live tailing: this task is
+                    // fire-and-forget, so an escaping exception would stop the loop
+                    // permanently and silently. Skip this tick and try again.
+                }
             }
         }
         catch (OperationCanceledException)
@@ -291,11 +300,19 @@
         _busy = true;
         _loading = true;
 
-        var page = await SafeFetch.GetAsync<LogPageDto>(
-            Http, $"api/logs?{BuildFilterQuery()}&page=1&pageSize={InitialPageSize}", Dispatcher, "logs");
-
-        _busy = false;
-        _loading = false;
+        LogPageDto? page;
+        try
+        {
+            page = await SafeFetch.GetAsync<LogPageDto>(
+                Http, $"api/logs?{BuildFilterQuery()}&page=1&pageSize={InitialPageSize}", Dispatcher, "logs");
+        }
+        finally
+        {
+            // Must never stick: the poll loop skips every tick while _busy is true,
+            // which silently freezes the live tail with no visible error.
+            _busy = false;
+            _loading = false;
+        }
 
         if (page == null)
         {
@@ -320,14 +337,20 @@
     {
         _busy = true;
 
-        // Ask the browser whether the user is still parked at the bottom BEFORE appending,
-        // so reading scrollback is never interrupted by the tail.
-        _followTail = await IsPinnedToBottomAsync();
+        LogTailDto? tail;
+        try
+        {
+            // Ask the browser whether the user is still parked at the bottom BEFORE appending,
+            // so reading scrollback is never interrupted by the tail.
+            _followTail = await IsPinnedToBottomAsync();
 
-        var tail = await SafeFetch.GetAsync<LogTailDto>(
-            Http, $"api/logs/tail?afterId={_cursor}&{BuildFilterQuery()}&limit=500", Dispatcher, "log tail");
-
-        _busy = false;
+            tail = await SafeFetch.GetAsync<LogTailDto>(
+                Http, $"api/logs/tail?afterId={_cursor}&{BuildFilterQuery()}&limit=500", Dispatcher, "log tail");
+        }
+        finally
+        {
+            _busy = false;
+        }
 
         if (tail == null)
         {
