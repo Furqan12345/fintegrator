@@ -9,61 +9,73 @@
 
 <PageTitle>Connections — SimpleIPaaS</PageTitle>
 
-<div class="page-header">
-    <div class="header-left">
-        <h2>Connections</h2>
-        <p class="subtitle">Manage authentication and endpoints for your integrations</p>
-    </div>
-    <div class="header-right">
-        <button class="btn btn-primary" @onclick="CreateNewConnection">+ New Connection</button>
-    </div>
-</div>
-
-<div class="connections-grid">
-    @if (ConnectionState.Value.IsLoading && !ConnectionState.Value.Connections.Any())
-    {
-        <div class="loading-state">Loading connections...</div>
-    }
-    else if (!ConnectionState.Value.Connections.Any())
-    {
-        <div class="empty-state">
-            <span class="empty-icon"><AppIcon Name="connections" Class="icon icon-lg" /></span>
-            <h3>No connections yet</h3>
-            <p>Create a connection to authenticate with external APIs.</p>
-            <button class="btn btn-primary" @onclick="CreateNewConnection">Create Connection</button>
+<div class="page-scroll">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="connections" Class="icon icon-xs" /> Credentials</p>
+            <h2>Connections <span class="header-count">@ConnectionState.Value.Connections.Count</span></h2>
+            <p class="subtitle">Reusable authentication and base endpoints. Flow steps reference a connection instead of storing secrets themselves.</p>
         </div>
-    }
-    else
-    {
-        @foreach (var conn in ConnectionState.Value.Connections)
+        <div class="header-right">
+            <button class="btn btn-primary" @onclick="CreateNewConnection">
+                <AppIcon Name="plus" Class="icon icon-sm" /> New connection
+            </button>
+        </div>
+    </div>
+
+    <div class="connections-grid">
+        @if (ConnectionState.Value.IsLoading && !ConnectionState.Value.Connections.Any())
         {
-            <div class="connection-card" @onclick="() => EditConnection(conn.Id)">
-                <div class="card-header">
-                    <h3 class="card-title">@conn.Name</h3>
-                    <span class="status-badge @(conn.Status.ToLower())">@conn.Status</span>
-                </div>
-                <div class="card-body">
-                    <p class="card-desc">@conn.BaseUrl</p>
-                    <div class="card-meta">
-                        <span>Auth: @conn.AuthType</span>
-                    </div>
-                </div>
-                <div class="card-footer">
-                    <span class="text-muted">Updated @conn.UpdatedAt.ToShortDateString()</span>
-                    <button class="btn btn-sm btn-outline" @onclick:stopPropagation="true" @onclick="() => TestConnection(conn.Id)" disabled="@(_testingConnectionId == conn.Id)">
-                        @(_testingConnectionId == conn.Id ? "Testing..." : "Test")
-                    </button>
-                </div>
-                @if (_testResults.TryGetValue(conn.Id, out var testResult))
-                {
-                    <div class="card-footer">
-                        <span class="status-badge @(testResult.Success ? "success" : "failed")">@(testResult.Success ? "✓ Reachable" : "✗ Failed")</span>
-                        <span class="text-muted">@testResult.Message</span>
-                    </div>
-                }
+            <div class="loading-state">Loading connections…</div>
+        }
+        else if (!ConnectionState.Value.Connections.Any())
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="connections" Class="icon icon-lg" /></span>
+                <h3>No connections yet</h3>
+                <p>A connection stores the base URL and credentials for an external API — OAuth, API keys, basic auth or Amazon SP-API — so your flows stay free of secrets.</p>
+                <button class="btn btn-primary btn-lg" @onclick="CreateNewConnection"><AppIcon Name="plus" Class="icon icon-sm" /> Create connection</button>
             </div>
         }
-    }
+        else
+        {
+            @foreach (var conn in ConnectionState.Value.Connections)
+            {
+                <article class="connection-card" @onclick="() => EditConnection(conn.Id)">
+                    <div class="card-header">
+                        <div class="card-headline">
+                            <span class="card-avatar @AvatarTone(conn.Name)">@Monogram(conn.Name)</span>
+                            <div class="card-headline-text">
+                                <h3 class="card-title">@conn.Name</h3>
+                                <p class="card-subtitle">@AuthLabel(conn.AuthType)</p>
+                            </div>
+                        </div>
+                        <span class="status-badge @(conn.Status.ToLower())">@conn.Status</span>
+                    </div>
+                    <div class="integration-card-body">
+                        <p class="card-desc mono">@(string.IsNullOrWhiteSpace(conn.BaseUrl) ? "No base URL set" : conn.BaseUrl)</p>
+                        <div class="card-meta">
+                            <span class="chip"><AppIcon Name="connections" Class="icon icon-xs" /> @conn.AuthType</span>
+                            <span class="chip">Updated @conn.UpdatedAt.ToLocalTime().ToString("MMM d, yyyy")</span>
+                        </div>
+                        @if (_testResults.TryGetValue(conn.Id, out var testResult))
+                        {
+                            <div class="connection-test-result @(testResult.Success ? "is-success" : "is-failed")">
+                                <span class="status-badge @(testResult.Success ? "success" : "failed")">@(testResult.Success ? "Reachable" : "Failed")</span>
+                                <span class="text-muted">@testResult.Message</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="card-footer">
+                        <button class="btn btn-sm btn-outline" @onclick:stopPropagation="true" @onclick="() => EditConnection(conn.Id)">Edit</button>
+                        <button class="btn btn-sm btn-soft" @onclick:stopPropagation="true" @onclick="() => TestConnection(conn.Id)" disabled="@(_testingConnectionId == conn.Id)">
+                            @(_testingConnectionId == conn.Id ? "Testing…" : "Test connection")
+                        </button>
+                    </div>
+                </article>
+            }
+        }
+    </div>
 </div>
 
 @code {
@@ -122,4 +134,41 @@
     {
         NavigationManager.NavigateTo($"/connection-wizard/{connectionId}");
     }
+
+    private static string AuthLabel(string authType) => authType switch
+    {
+        "None" => "No authentication",
+        "Basic" => "Basic authentication",
+        "Bearer" => "Bearer token",
+        "ApiKey" => "API key",
+        "OAuth2ClientCredentials" => "OAuth 2.0 · client credentials",
+        "OAuth2RefreshToken" => "OAuth 2.0 · refresh token",
+        "OAuth2AuthCode" => "OAuth 2.0 · authorization code",
+        "AmazonSpApi" => "Amazon SP-API · LWA + SigV4",
+        "Custom" => "Custom headers",
+        _ => authType
+    };
+
+    private static string Monogram(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "?";
+        }
+
+        var parts = name.Split(new[] { ' ', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2)
+        {
+            return $"{char.ToUpperInvariant(parts[0][0])}{char.ToUpperInvariant(parts[1][0])}";
+        }
+
+        return name.Trim().Length >= 2
+            ? name.Trim().Substring(0, 2).ToUpperInvariant()
+            : name.Trim().ToUpperInvariant();
+    }
+
+    private static readonly string[] AvatarTones = { "", "tone-teal", "tone-violet", "tone-cyan", "tone-pink", "tone-amber" };
+
+    private static string AvatarTone(string name) =>
+        string.IsNullOrEmpty(name) ? string.Empty : AvatarTones[name.Aggregate(0, (acc, ch) => acc + ch) % AvatarTones.Length];
 }

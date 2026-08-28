@@ -7,35 +7,43 @@
 
 <PageTitle>Transaction Details - SimpleIPaaS</PageTitle>
 
+<div class="page-scroll">
 <div class="page-header">
     <div class="header-left">
-        <h2>Transaction Details</h2>
-        <p class="subtitle">Transaction ID: @TransactionId</p>
+        <p class="breadcrumb">
+            <a href="transaction-history">Transaction history</a>
+            <span class="breadcrumb-sep">/</span>
+            <span class="mono">@ShortId(TransactionId)</span>
+        </p>
+        <h2>Transaction details</h2>
+        <p class="subtitle">Every card in this run, with the payload it received and the response it returned.</p>
     </div>
     <div class="header-right">
-        <button class="btn btn-outline" @onclick="GoBack">Back to History</button>
+        <button class="btn btn-outline" @onclick="GoBack">← Back to history</button>
     </div>
 </div>
 
 <div class="transaction-detail-container">
     @if (_isLoading)
     {
-        <div class="loading-state">Loading transaction cards...</div>
+        <div class="loading-state">Loading transaction cards…</div>
     }
     else if (!string.IsNullOrWhiteSpace(_error))
     {
-        <div class="empty-state">
-            <span class="empty-icon"><AppIcon Name="info" Class="icon icon-lg" /></span>
+        <div class="empty-state empty-state-hero">
+            <span class="empty-icon"><AppIcon Name="alert" Class="icon icon-lg" /></span>
             <h3>Unable to load transaction</h3>
             <p>@_error</p>
+            <button class="btn btn-outline" @onclick="GoBack">Back to history</button>
         </div>
     }
     else if (_steps.Count == 0)
     {
-        <div class="empty-state">
+        <div class="empty-state empty-state-hero">
             <span class="empty-icon"><AppIcon Name="transactions" Class="icon icon-lg" /></span>
             <h3>No cards recorded</h3>
             <p>This run did not capture card-level transaction data.</p>
+            <button class="btn btn-outline" @onclick="GoBack">Back to history</button>
         </div>
     }
     else
@@ -90,6 +98,7 @@
             }
         </div>
     }
+</div>
 </div>
 
 @code {

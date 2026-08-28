@@ -16,14 +16,21 @@
         </div>
 
         <nav class="sidebar-nav">
-            <NavLink class="sidebar-link" href="" Match="NavLinkMatch.All" title="Integrations">
-                <span class="sidebar-icon"><AppIcon Name="integrations" /></span>
-                <span>Integrations</span>
+            <div class="sidebar-section-label">Build</div>
+            <NavLink class="sidebar-link" href="" Match="NavLinkMatch.All" title="Dashboard">
+                <span class="sidebar-icon"><AppIcon Name="dashboard" /></span>
+                <span>Dashboard</span>
             </NavLink>
             <NavLink class="sidebar-link" href="connections" title="Connections">
                 <span class="sidebar-icon"><AppIcon Name="connections" /></span>
                 <span>Connections</span>
             </NavLink>
+            <NavLink class="sidebar-link" href="cross-references" title="Cross-References">
+                <span class="sidebar-icon"><AppIcon Name="crossreferences" /></span>
+                <span>Cross-References</span>
+            </NavLink>
+
+            <div class="sidebar-section-label">Monitor</div>
             <NavLink class="sidebar-link" href="activity" title="Activity Log">
                 <span class="sidebar-icon"><AppIcon Name="activity" /></span>
                 <span>Activity Log</span>
@@ -36,9 +43,9 @@
                 <span class="sidebar-icon"><AppIcon Name="deadletters" /></span>
                 <span>Dead Letters</span>
             </NavLink>
-            <NavLink class="sidebar-link" href="cross-references" title="Cross-References">
-                <span class="sidebar-icon"><AppIcon Name="crossreferences" /></span>
-                <span>Cross-References</span>
+            <NavLink class="sidebar-link" href="logs" title="Debug Logs">
+                <span class="sidebar-icon"><AppIcon Name="logs" /></span>
+                <span>Debug Logs</span>
             </NavLink>
         </nav>
 
@@ -230,7 +237,7 @@
 
         return segment switch
         {
-            "" => "Integrations",
+            "" => "Dashboard",
             "connections" => "Connections",
             "connection-wizard" => "Connection Setup",
             "flow" or "flow-designer" => "Flow Designer",
@@ -239,6 +246,7 @@
             "execution" or "execution-detail" => "Execution Details",
             "deadletters" => "Dead Letters",
             "cross-references" => "Cross-References",
+            "logs" => "Debug Logs",
             _ => "SimpleIPaaS"
         };
     }

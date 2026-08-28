@@ -9,7 +9,7 @@
         <div class="modal-container" @onclick:stopPropagation="true" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
             <div class="modal-header">
                 <h2 class="modal-title">@ModalTitle</h2>
-                <button class="modal-close-btn" @onclick="Close">X</button>
+                <button class="modal-close-btn" @onclick="Close" aria-label="Close">✕</button>
             </div>
 
             <div class="modal-body">

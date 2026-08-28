@@ -13,9 +13,15 @@
 
 <PageTitle>Execution Details — SimpleIPaaS</PageTitle>
 
+<div class="page-scroll">
 <div class="page-header">
     <div class="header-left">
-        <h2>Execution @ShortId(ExecutionId)</h2>
+        <p class="breadcrumb">
+            <a href="activity">Activity log</a>
+            <span class="breadcrumb-sep">/</span>
+            <span class="mono">@ShortId(ExecutionId)</span>
+        </p>
+        <h2>Execution timeline</h2>
         <p class="subtitle">
             @if (_execution != null)
             {
@@ -36,23 +42,25 @@
     <div class="header-right">
         @if (_execution != null)
         {
-            <span class="status-badge @_execution.Status.ToLowerInvariant()">@StatusIcon(_execution.Status) @_execution.Status</span>
+            <span class="status-badge no-dot @_execution.Status.ToLowerInvariant()">@StatusIcon(_execution.Status) @_execution.Status</span>
         }
-        <button class="btn btn-outline" @onclick="GoBack">Back to Activity</button>
+        <a class="btn btn-outline" href="@($"transaction-history/{ExecutionId}")">Inspect payloads</a>
+        <button class="btn btn-outline" @onclick="GoBack">← Back to activity</button>
     </div>
 </div>
 
 <div class="execution-detail-container">
     @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.CurrentStepExecutions.Any())
     {
-        <div class="loading-state">Loading step details...</div>
+        <div class="loading-state">Loading step details…</div>
     }
     else if (!ExecutionState.Value.CurrentStepExecutions.Any() && !UnreachedNodes.Any())
     {
-        <div class="empty-state">
+        <div class="empty-state empty-state-hero">
             <span class="empty-icon"><AppIcon Name="info" Class="icon icon-lg" /></span>
             <h3>No steps recorded</h3>
             <p>This execution did not produce any step results.</p>
+            <button class="btn btn-outline" @onclick="GoBack">Back to activity</button>
         </div>
     }
     else
@@ -140,13 +148,14 @@
                         <h4><span class="step-status-icon">○</span> @NodeLabel(node)</h4>
                         <div class="step-header-meta">
                             <span class="step-metric">—</span>
-                            <span class="status-badge pending">Not reached</span>
+                            <span class="status-badge notreached">Not reached</span>
                         </div>
                     </div>
                 </div>
             }
         </div>
     }
+</div>
 </div>
 
 @code {

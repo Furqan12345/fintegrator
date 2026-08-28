@@ -15,37 +15,54 @@
 <div class="wizard-container">
     <div class="page-header">
         <div class="header-left">
-            <h2>@(ConnectionId.HasValue ? "Edit Connection" : "New Connection")</h2>
+            <p class="breadcrumb">
+                <a href="connections">Connections</a>
+                <span class="breadcrumb-sep">/</span>
+                <span>@(ConnectionId.HasValue ? "Edit" : "New")</span>
+            </p>
+            <h2>@(ConnectionId.HasValue ? "Edit connection" : "New connection")</h2>
+            <p class="subtitle">Store the endpoint and credentials once — every flow step can then reference this connection by name.</p>
         </div>
         <div class="header-right">
             <button class="btn btn-outline" @onclick="GoBack">Cancel</button>
-            <button class="btn btn-primary" @onclick="SaveConnection" disabled="@ConnectionState.Value.IsLoading">Save</button>
+            <button class="btn btn-primary" @onclick="SaveConnection" disabled="@ConnectionState.Value.IsLoading">
+                @(ConnectionState.Value.IsLoading ? "Saving…" : "Save connection")
+            </button>
         </div>
     </div>
 
     <div class="wizard-form">
-        <div class="form-group">
-            <label>Name</label>
-            <input type="text" class="form-control" @bind="_connection.Name" placeholder="e.g. Salesforce Production" />
-        </div>
-        <div class="form-group">
-            <label>Base URL</label>
-            <input type="text" class="form-control" @bind="_connection.BaseUrl" placeholder="https://api.example.com" />
-        </div>
-        <div class="form-group">
-            <label>Auth Type</label>
-            <select class="form-control" @bind="_connection.AuthType">
-                <option value="None">None</option>
-                <option value="Basic">Basic Auth</option>
-                <option value="Bearer">Bearer Token</option>
-                <option value="ApiKey">API Key</option>
-                <option value="OAuth2ClientCredentials">OAuth 2.0 Client Credentials</option>
-                <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
-                <option value="OAuth2AuthCode">OAuth 2.0 Authorization Code</option>
-                <option value="AmazonSpApi">Amazon SP-API (LWA + AWS SigV4)</option>
-                <option value="Custom">Custom Headers</option>
-            </select>
-        </div>
+        <section class="wizard-section">
+            <h3 class="wizard-section-title"><AppIcon Name="connections" Class="icon icon-sm" /> Endpoint</h3>
+            <p class="wizard-section-hint">Where requests are sent and how this connection is identified in the designer.</p>
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" class="form-control" @bind="_connection.Name" placeholder="e.g. Salesforce Production" />
+            </div>
+            <div class="form-group">
+                <label>Base URL</label>
+                <input type="text" class="form-control" @bind="_connection.BaseUrl" placeholder="https://api.example.com" />
+                <small class="field-hint">HTTP Action steps append their path to this base URL.</small>
+            </div>
+        </section>
+
+        <section class="wizard-section">
+            <h3 class="wizard-section-title"><AppIcon Name="settings" Class="icon icon-sm" /> Authentication</h3>
+            <p class="wizard-section-hint">Secrets are encrypted at rest and never returned to the browser.</p>
+            <div class="form-group">
+                <label>Auth Type</label>
+                <select class="form-control" @bind="_connection.AuthType">
+                    <option value="None">None</option>
+                    <option value="Basic">Basic Auth</option>
+                    <option value="Bearer">Bearer Token</option>
+                    <option value="ApiKey">API Key</option>
+                    <option value="OAuth2ClientCredentials">OAuth 2.0 Client Credentials</option>
+                    <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
+                    <option value="OAuth2AuthCode">OAuth 2.0 Authorization Code</option>
+                    <option value="AmazonSpApi">Amazon SP-API (LWA + AWS SigV4)</option>
+                    <option value="Custom">Custom Headers</option>
+                </select>
+            </div>
 
         @if (ShowStoredSecretHint)
         {
@@ -233,9 +250,10 @@
                         <button class="btn btn-outline" type="button" @onclick="() => RemoveCustomHeader(header)">Remove</button>
                     </div>
                 }
-                <button class="btn btn-outline" type="button" @onclick="AddCustomHeader">Add Header</button>
+                <button class="btn btn-outline" type="button" @onclick="AddCustomHeader"><AppIcon Name="plus" Class="icon icon-xs" /> Add header</button>
             </div>
         }
+        </section>
     </div>
 </div>
 

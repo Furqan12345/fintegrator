@@ -8,89 +8,106 @@
 
 <PageTitle>Dead Letters — SimpleIPaaS</PageTitle>
 
-<div class="page-header">
-    <div class="header-left">
-        <h2>Dead Letters</h2>
-        <p class="subtitle">Retry or discard failed integration messages</p>
+<div class="page-scroll">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="deadletters" Class="icon icon-xs" /> Recovery queue</p>
+            <h2>Dead letters <span class="header-count">@PendingCount</span></h2>
+            <p class="subtitle">Messages a step could not deliver. Automatic retries are disabled — each one waits here until you retry or discard it.</p>
+        </div>
+        <div class="header-right">
+            <label class="filter-field">
+                <span class="filter-label">Status</span>
+                <select class="form-control filter-select-sm" value="@_statusFilter" @onchange="OnStatusFilterChanged">
+                    <option value="">All statuses</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Retrying">Retrying</option>
+                    <option value="Resolved">Resolved</option>
+                    <option value="Discarded">Discarded</option>
+                </select>
+            </label>
+        </div>
     </div>
-    <div class="header-right">
-        <select class="form-control filter-select-sm" value="@_statusFilter" @onchange="OnStatusFilterChanged">
-            <option value="">All statuses</option>
-            <option value="Pending">Pending</option>
-            <option value="Retrying">Retrying</option>
-            <option value="Resolved">Resolved</option>
-            <option value="Discarded">Discarded</option>
-        </select>
-    </div>
-</div>
 
-@if (ExecutionId.HasValue)
-{
-    <div class="validation-banner">
-        <strong>Filtered</strong> to execution @ShortId(ExecutionId.Value)@(StepId.HasValue ? $", step {ShortId(StepId.Value)}" : string.Empty).
-        <button class="btn btn-sm btn-outline" @onclick="ClearScopeFilter">Show all</button>
-    </div>
-}
-
-<div class="activity-log-container">
-    @if (DeadLetterState.Value.IsLoading && !DeadLetterState.Value.DeadLetters.Any())
+    @if (ExecutionId.HasValue)
     {
-        <div class="loading-state">Loading dead letters...</div>
-    }
-    else if (!VisibleEntries.Any())
-    {
-        <div class="empty-state">
-            <span class="empty-icon"><AppIcon Name="deadletters" Class="icon icon-lg" /></span>
-            <h3>No dead letters</h3>
-            <p>Failed messages will land here for retry or discard.</p>
+        <div class="scope-banner">
+            <AppIcon Name="filter" Class="icon icon-sm" />
+            <span>Scoped to execution <strong>@ShortId(ExecutionId.Value)</strong>@(StepId.HasValue ? $", step {ShortId(StepId.Value)}" : string.Empty).</span>
+            <button class="btn btn-sm btn-outline" @onclick="ClearScopeFilter">Show all</button>
         </div>
     }
-    else
-    {
-        <table class="table table-hover">
-            <thead>
-                <tr>
-                    <th>Flow</th>
-                    <th>Node</th>
-                    <th>Error</th>
-                    <th>Retries</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var entry in VisibleEntries)
-                {
-                    <tr>
-                        <td>
-                            @ResolveFlowName(entry)
-                            @if (!string.IsNullOrWhiteSpace(entry.IntegrationName))
+
+    <div class="activity-log-container">
+        @if (DeadLetterState.Value.IsLoading && !DeadLetterState.Value.DeadLetters.Any())
+        {
+            <div class="loading-state">Loading dead letters…</div>
+        }
+        else if (!VisibleEntries.Any())
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="check-circle" Class="icon icon-lg" /></span>
+                <h3>Nothing waiting for recovery</h3>
+                <p>When a step exhausts its retries, the failing payload is parked here so you can replay or discard it without re-running the whole flow.</p>
+                <a class="btn btn-outline" href="activity">Open activity log</a>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <div class="table-scroll">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Flow</th>
+                                <th>Node</th>
+                                <th>Error</th>
+                                <th>Retries</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                                <th class="cell-actions">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var entry in VisibleEntries)
                             {
-                                <div class="text-muted">@entry.IntegrationName</div>
+                                <tr>
+                                    <td>
+                                        <span class="cell-primary">@ResolveFlowName(entry)</span>
+                                        @if (!string.IsNullOrWhiteSpace(entry.IntegrationName))
+                                        {
+                                            <span class="text-muted">@entry.IntegrationName</span>
+                                        }
+                                    </td>
+                                    <td><span class="chip">@ResolveNodeName(entry)</span></td>
+                                    <td class="cell-error" title="@entry.ErrorMessage">@Truncate(entry.ErrorMessage, 72)</td>
+                                    <td class="cell-num">
+                                        @entry.RetryCount/@MaxRetries
+                                        @if (entry.RetryCount >= MaxRetries)
+                                        {
+                                            <span class="status-badge warning" title="Maximum retries reached">max</span>
+                                        }
+                                    </td>
+                                    <td><span class="status-badge @(entry.Status.ToLowerInvariant())">@entry.Status</span></td>
+                                    <td>
+                                        <span class="cell-num">@entry.CreatedAt.ToLocalTime().ToString("MMM d, h:mm tt")</span>
+                                        <span class="text-muted">@RelativeTime(entry.CreatedAt)</span>
+                                    </td>
+                                    <td class="cell-actions">
+                                        <span class="inline-actions">
+                                            <button class="btn btn-sm btn-soft" @onclick="() => Retry(entry)" disabled="@DeadLetterState.Value.IsLoading">Retry</button>
+                                            <button class="btn btn-sm btn-outline" @onclick="() => ViewExecution(entry.FlowExecutionId)">Execution</button>
+                                            <button class="btn btn-sm btn-soft-danger" @onclick="() => AskDiscard(entry)" disabled="@DeadLetterState.Value.IsLoading">Discard</button>
+                                        </span>
+                                    </td>
+                                </tr>
                             }
-                        </td>
-                        <td>@ResolveNodeName(entry)</td>
-                        <td title="@entry.ErrorMessage">@Truncate(entry.ErrorMessage, 60)</td>
-                        <td>
-                            @entry.RetryCount/@MaxRetries
-                            @if (entry.RetryCount >= MaxRetries)
-                            {
-                                <span class="status-badge warning" title="Maximum retries reached">max</span>
-                            }
-                        </td>
-                        <td><span class="status-badge @(entry.Status.ToLowerInvariant())">@entry.Status</span></td>
-                        <td>@entry.CreatedAt.ToLocalTime()</td>
-                        <td>
-                            <button class="btn btn-sm btn-outline" @onclick="() => Retry(entry)" disabled="@DeadLetterState.Value.IsLoading">Retry</button>
-                            <button class="btn btn-sm btn-outline" @onclick="() => AskDiscard(entry)" disabled="@DeadLetterState.Value.IsLoading">Discard</button>
-                            <button class="btn btn-sm btn-outline" @onclick="() => ViewExecution(entry.FlowExecutionId)">Execution</button>
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+    </div>
 </div>
 
 @if (_discardTarget != null)
@@ -200,4 +217,16 @@
 
     private static string Truncate(string value, int maxLength) =>
         string.IsNullOrEmpty(value) || value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
+
+    private int PendingCount => VisibleEntries.Count();
+
+    private static string RelativeTime(DateTime utc)
+    {
+        var delta = DateTime.UtcNow - DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+        if (delta.TotalSeconds < 60) return "just now";
+        if (delta.TotalMinutes < 60) return $"{(int)delta.TotalMinutes}m ago";
+        if (delta.TotalHours < 24) return $"{(int)delta.TotalHours}h ago";
+        if (delta.TotalDays < 30) return $"{(int)delta.TotalDays}d ago";
+        return utc.ToLocalTime().ToString("MMM d, yyyy");
+    }
 }

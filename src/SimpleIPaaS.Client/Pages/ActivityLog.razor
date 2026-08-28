@@ -11,106 +11,147 @@
 
 <PageTitle>Activity Log — SimpleIPaaS</PageTitle>
 
-<div class="page-header">
-    <div class="header-left">
-        <h2>Activity Log</h2>
-        <p class="subtitle">Monitor integration execution history and status</p>
-    </div>
-    <div class="header-right">
-        <select class="form-control filter-select" value="@_integrationFilter" @onchange="OnIntegrationFilterChanged">
-            <option value="">All integrations</option>
-            @foreach (var integration in _integrations)
-            {
-                <option value="@integration.Id">@integration.Name</option>
-            }
-        </select>
-        <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
-            <option value="">All flows</option>
-            @foreach (var flow in FilteredFlows)
-            {
-                <option value="@flow.Id">@flow.Name</option>
-            }
-        </select>
-        <select class="form-control filter-select-sm" value="@_statusFilter" @onchange="OnStatusFilterChanged">
-            <option value="">All statuses</option>
-            <option value="Queued">Queued</option>
-            <option value="InProgress">Running</option>
-            <option value="Success">Success</option>
-            <option value="PartialSuccess">Partial Success</option>
-            <option value="Failed">Failed</option>
-            <option value="Recovered">Recovered</option>
-            <option value="Cancelled">Cancelled</option>
-        </select>
-    </div>
-</div>
-
-<div class="activity-log-container">
-    @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
-    {
-        <div class="loading-state">Loading activity log...</div>
-    }
-    else if (!ExecutionState.Value.Executions.Any())
-    {
-        <div class="empty-state">
-            <span class="empty-icon"><AppIcon Name="activity" Class="icon icon-lg" /></span>
-            <h3>No executions yet</h3>
-            <p>Run an integration flow to see activity here.</p>
+<div class="page-scroll">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="activity" Class="icon icon-xs" /> Observability</p>
+            <h2>Activity log</h2>
+            <p class="subtitle">Every flow execution, with the trigger that started it and how it finished.</p>
         </div>
-    }
-    else
-    {
-        <table class="table table-hover">
-            <thead>
-                <tr>
-                    <th>Flow</th>
-                    <th>Status</th>
-                    <th>Trigger</th>
-                    <th>Started At</th>
-                    <th>Completed At</th>
-                    <th>Records (Success/Fail)</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var exec in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
-                {
-                    <tr>
-                        <td>
-                            @ResolveFlowName(exec)
-                            @if (!string.IsNullOrWhiteSpace(exec.IntegrationName))
-                            {
-                                <div class="text-muted">@exec.IntegrationName</div>
-                            }
-                        </td>
-                        <td>
-                            <span class="status-badge @(exec.Status.ToLower())">@exec.Status</span>
-                            @if (IsRecovered(exec))
-                            {
-                                <div class="text-muted" title="This run failed initially and was resynced">Failed earlier · resynced @RecoveredLabel(exec)</div>
-                            }
-                        </td>
-                        <td>@(string.IsNullOrWhiteSpace(exec.TriggerSource) ? "-" : exec.TriggerSource)</td>
-                        <td>@exec.StartedAt.ToLocalTime()</td>
-                        <td>@(exec.CompletedAt?.ToLocalTime().ToString() ?? "-")</td>
-                        <td>@exec.TotalRecords (@exec.SuccessRecords / @exec.FailedRecords)</td>
-                        <td>
-                            <button class="btn btn-sm btn-outline" @onclick="() => ViewDetails(exec.Id)">Details</button>
-                            @if (IsActive(exec))
-                            {
-                                <button class="btn btn-sm btn-outline" @onclick="() => CancelExecution(exec.Id)">Cancel</button>
-                            }
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-
-        <div class="table-pagination">
-            <button class="btn btn-sm btn-outline" @onclick="PreviousPage" disabled="@(_page <= 1)">◀ Prev</button>
-            <span class="text-muted">Page @_page</span>
-            <button class="btn btn-sm btn-outline" @onclick="NextPage" disabled="@(ExecutionState.Value.Executions.Count < PageSize)">Next ▶</button>
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick="LoadExecutions" title="Reload executions">
+                <AppIcon Name="refresh" Class="icon icon-sm" /> Refresh
+            </button>
         </div>
-    }
+    </div>
+
+    <div class="filter-bar">
+        <div class="filter-bar-group">
+            <label class="filter-field">
+                <span class="filter-label">Integration</span>
+                <select class="form-control filter-select" value="@_integrationFilter" @onchange="OnIntegrationFilterChanged">
+                    <option value="">All integrations</option>
+                    @foreach (var integration in _integrations)
+                    {
+                        <option value="@integration.Id">@integration.Name</option>
+                    }
+                </select>
+            </label>
+            <label class="filter-field">
+                <span class="filter-label">Flow</span>
+                <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
+                    <option value="">All flows</option>
+                    @foreach (var flow in FilteredFlows)
+                    {
+                        <option value="@flow.Id">@flow.Name</option>
+                    }
+                </select>
+            </label>
+            <label class="filter-field">
+                <span class="filter-label">Status</span>
+                <select class="form-control filter-select-sm" value="@_statusFilter" @onchange="OnStatusFilterChanged">
+                    <option value="">All statuses</option>
+                    <option value="Queued">Queued</option>
+                    <option value="InProgress">Running</option>
+                    <option value="Success">Success</option>
+                    <option value="PartialSuccess">Partial Success</option>
+                    <option value="Failed">Failed</option>
+                    <option value="Recovered">Recovered</option>
+                    <option value="Cancelled">Cancelled</option>
+                </select>
+            </label>
+        </div>
+        <div class="filter-summary">@ExecutionState.Value.Executions.Count run@(ExecutionState.Value.Executions.Count == 1 ? "" : "s") on page @_page</div>
+    </div>
+
+    <div class="activity-log-container">
+        @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
+        {
+            <div class="loading-state">Loading activity log…</div>
+        }
+        else if (!ExecutionState.Value.Executions.Any())
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="activity" Class="icon icon-lg" /></span>
+                <h3>No executions match these filters</h3>
+                <p>Run a flow from the dashboard or the designer and its execution history will show up here within seconds.</p>
+                <a class="btn btn-outline" href="">Back to dashboard</a>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <div class="table-scroll">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Flow</th>
+                                <th>Status</th>
+                                <th>Trigger</th>
+                                <th>Started</th>
+                                <th>Duration</th>
+                                <th>Records</th>
+                                <th class="cell-actions">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var exec in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
+                            {
+                                <tr>
+                                    <td>
+                                        <span class="cell-primary">@ResolveFlowName(exec)</span>
+                                        @if (!string.IsNullOrWhiteSpace(exec.IntegrationName))
+                                        {
+                                            <span class="text-muted">@exec.IntegrationName</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <span class="status-badge @(exec.Status.ToLower())">@exec.Status</span>
+                                        @if (IsRecovered(exec))
+                                        {
+                                            <span class="text-muted" title="This run failed initially and was resynced">Failed earlier · resynced @RecoveredLabel(exec)</span>
+                                        }
+                                    </td>
+                                    <td><span class="chip">@(string.IsNullOrWhiteSpace(exec.TriggerSource) ? "—" : exec.TriggerSource)</span></td>
+                                    <td>
+                                        <span class="cell-num">@exec.StartedAt.ToLocalTime().ToString("MMM d, h:mm:ss tt")</span>
+                                        <span class="text-muted">@RelativeTime(exec.StartedAt)</span>
+                                    </td>
+                                    <td class="cell-mono">@DurationLabel(exec)</td>
+                                    <td class="cell-num">
+                                        @if (exec.TotalRecords == 0)
+                                        {
+                                            <span class="text-muted">—</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="cell-primary">@exec.TotalRecords</span>
+                                            <span class="text-muted">@exec.SuccessRecords ok · @exec.FailedRecords failed</span>
+                                        }
+                                    </td>
+                                    <td class="cell-actions">
+                                        <span class="inline-actions">
+                                            <button class="btn btn-sm btn-outline" @onclick="() => ViewDetails(exec.Id)">Details</button>
+                                            @if (IsActive(exec))
+                                            {
+                                                <button class="btn btn-sm btn-soft-danger" @onclick="() => CancelExecution(exec.Id)">Cancel</button>
+                                            }
+                                        </span>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="table-pagination">
+                <button class="btn btn-sm btn-outline" @onclick="PreviousPage" disabled="@(_page <= 1)">← Previous</button>
+                <span class="text-muted">Page @_page</span>
+                <button class="btn btn-sm btn-outline" @onclick="NextPage" disabled="@(ExecutionState.Value.Executions.Count < PageSize)">Next →</button>
+            </div>
+        }
+    </div>
 </div>
 
 @code {
@@ -238,6 +279,31 @@
 
     private static string RecoveredLabel(FlowExecutionDto exec) =>
         exec.RecoveredAt.HasValue ? exec.RecoveredAt.Value.ToLocalTime().ToString("MMM d, h:mm tt") : "on retry";
+
+    private static string RelativeTime(DateTime utc)
+    {
+        var delta = DateTime.UtcNow - DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+        if (delta.TotalSeconds < 60) return "just now";
+        if (delta.TotalMinutes < 60) return $"{(int)delta.TotalMinutes}m ago";
+        if (delta.TotalHours < 24) return $"{(int)delta.TotalHours}h ago";
+        if (delta.TotalDays < 30) return $"{(int)delta.TotalDays}d ago";
+        return utc.ToLocalTime().ToString("MMM d, yyyy");
+    }
+
+    private static string DurationLabel(FlowExecutionDto exec)
+    {
+        if (!exec.CompletedAt.HasValue)
+        {
+            return IsActive(exec) ? "running…" : "—";
+        }
+
+        var span = exec.CompletedAt.Value - exec.StartedAt;
+        if (span.TotalMilliseconds < 0) return "—";
+        if (span.TotalSeconds < 1) return $"{span.TotalMilliseconds:F0} ms";
+        if (span.TotalSeconds < 60) return $"{span.TotalSeconds:F1} s";
+        if (span.TotalMinutes < 60) return $"{(int)span.TotalMinutes}m {span.Seconds}s";
+        return $"{(int)span.TotalHours}h {span.Minutes}m";
+    }
 
     private void ViewDetails(Guid executionId)
     {

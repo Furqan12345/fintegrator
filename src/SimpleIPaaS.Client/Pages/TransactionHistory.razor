@@ -10,82 +10,114 @@
 
 <PageTitle>Transaction History - SimpleIPaaS</PageTitle>
 
-<div class="page-header">
-    <div class="header-left">
-        <h2>Transaction History</h2>
-        <p class="subtitle">Review flow runs and inspect the data each card received and returned.</p>
-    </div>
-    <div class="header-right">
-        <select class="form-control filter-select" value="@_integrationFilter" @onchange="OnIntegrationFilterChanged">
-            <option value="">All integrations</option>
-            @foreach (var integration in _integrations)
-            {
-                <option value="@integration.Id">@integration.Name</option>
-            }
-        </select>
-        <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
-            <option value="">All flows</option>
-            @foreach (var flow in FilteredFlows)
-            {
-                <option value="@flow.Id">@flow.Name</option>
-            }
-        </select>
-    </div>
-</div>
-
-<div class="activity-log-container">
-    @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
-    {
-        <div class="loading-state">Loading transaction history...</div>
-    }
-    else if (!ExecutionState.Value.Executions.Any())
-    {
-        <div class="empty-state">
-            <span class="empty-icon"><AppIcon Name="transactions" Class="icon icon-lg" /></span>
-            <h3>No transactions yet</h3>
-            <p>Run a flow to capture transaction history.</p>
+<div class="page-scroll">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="transactions" Class="icon icon-xs" /> Payload audit</p>
+            <h2>Transaction history</h2>
+            <p class="subtitle">Review flow runs and inspect the data each card received and returned.</p>
         </div>
-    }
-    else
-    {
-        <table class="table table-hover">
-            <thead>
-                <tr>
-                    <th>Transaction</th>
-                    <th>Flow</th>
-                    <th>Status</th>
-                    <th>Run Date</th>
-                    <th>Run Time</th>
-                    <th>Cards</th>
-                    <th>Result</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var transaction in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
-                {
-                    <tr>
-                        <td>@ShortId(transaction.Id)</td>
-                        <td>
-                            @ResolveFlowName(transaction)
-                            @if (!string.IsNullOrWhiteSpace(transaction.IntegrationName))
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick="LoadExecutions" title="Reload transactions">
+                <AppIcon Name="refresh" Class="icon icon-sm" /> Refresh
+            </button>
+        </div>
+    </div>
+
+    <div class="filter-bar">
+        <div class="filter-bar-group">
+            <label class="filter-field">
+                <span class="filter-label">Integration</span>
+                <select class="form-control filter-select" value="@_integrationFilter" @onchange="OnIntegrationFilterChanged">
+                    <option value="">All integrations</option>
+                    @foreach (var integration in _integrations)
+                    {
+                        <option value="@integration.Id">@integration.Name</option>
+                    }
+                </select>
+            </label>
+            <label class="filter-field">
+                <span class="filter-label">Flow</span>
+                <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
+                    <option value="">All flows</option>
+                    @foreach (var flow in FilteredFlows)
+                    {
+                        <option value="@flow.Id">@flow.Name</option>
+                    }
+                </select>
+            </label>
+        </div>
+        <div class="filter-summary">@ExecutionState.Value.Executions.Count transaction@(ExecutionState.Value.Executions.Count == 1 ? "" : "s")</div>
+    </div>
+
+    <div class="activity-log-container">
+        @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
+        {
+            <div class="loading-state">Loading transaction history…</div>
+        }
+        else if (!ExecutionState.Value.Executions.Any())
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="transactions" Class="icon icon-lg" /></span>
+                <h3>No transactions captured</h3>
+                <p>Once a flow runs, every card it touches records the payload it received and the response it produced — all inspectable here.</p>
+                <a class="btn btn-outline" href="">Back to dashboard</a>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <div class="table-scroll">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Transaction</th>
+                                <th>Flow</th>
+                                <th>Status</th>
+                                <th>Run at</th>
+                                <th>Cards</th>
+                                <th>Result</th>
+                                <th class="cell-actions">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var transaction in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
                             {
-                                <div class="text-muted">@transaction.IntegrationName</div>
+                                <tr>
+                                    <td class="cell-mono">@ShortId(transaction.Id)</td>
+                                    <td>
+                                        <span class="cell-primary">@ResolveFlowName(transaction)</span>
+                                        @if (!string.IsNullOrWhiteSpace(transaction.IntegrationName))
+                                        {
+                                            <span class="text-muted">@transaction.IntegrationName</span>
+                                        }
+                                    </td>
+                                    <td><span class="status-badge @(transaction.Status.ToLowerInvariant())">@transaction.Status</span></td>
+                                    <td>
+                                        <span class="cell-num">@transaction.StartedAt.ToLocalTime().ToString("MMM d, yyyy")</span>
+                                        <span class="text-muted">@transaction.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</span>
+                                    </td>
+                                    <td class="cell-num">@CardCount(transaction)</td>
+                                    <td>
+                                        <span class="inline-actions">
+                                            <span class="chip chip-success">@transaction.SuccessRecords ok</span>
+                                            @if (transaction.FailedRecords > 0)
+                                            {
+                                                <span class="chip chip-danger">@transaction.FailedRecords failed</span>
+                                            }
+                                        </span>
+                                    </td>
+                                    <td class="cell-actions">
+                                        <button class="btn btn-sm btn-outline" @onclick="() => CheckTransaction(transaction.Id)">Inspect</button>
+                                    </td>
+                                </tr>
                             }
-                        </td>
-                        <td><span class="status-badge @(transaction.Status.ToLowerInvariant())">@transaction.Status</span></td>
-                        <td>@transaction.StartedAt.ToLocalTime().ToString("MMM d, yyyy")</td>
-                        <td>@transaction.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</td>
-                        <td>@CardCount(transaction)</td>
-                        <td>@transaction.SuccessRecords success / @transaction.FailedRecords failed</td>
-                        <td>
-                            <button class="btn btn-sm btn-outline" @onclick="() => CheckTransaction(transaction.Id)">Check</button>
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+    </div>
 </div>
 
 @code {

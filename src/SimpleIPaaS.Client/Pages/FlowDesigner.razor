@@ -43,24 +43,30 @@
                 }
             </select>
             <div class="toolbar-divider"></div>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Schedule)">+ Schedule</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.HttpAction)">+ HTTP Action</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Mapping)">+ Mapper</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Branch)">+ Branch</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceStore)">+ XRef Store</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.CrossReferenceFilter)">+ XRef Filter</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.PersistedState)">+ Persisted State</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.Debug)">+ Debug</button>
-            <button class="btn btn-outline" @onclick="() => AddNode(StepType.ForEach)">+ For Each</button>
+            <div class="toolbar-group" role="group" aria-label="Add node">
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Schedule)" title="Add a schedule trigger">+ Schedule</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.HttpAction)" title="Add an HTTP action">+ HTTP Action</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Mapping)" title="Add a mapper">+ Mapper</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Branch)" title="Add a branch">+ Branch</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.CrossReferenceStore)" title="Add a cross-reference store">+ XRef Store</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.CrossReferenceFilter)" title="Add a cross-reference filter">+ XRef Filter</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.PersistedState)" title="Add persisted state">+ Persisted State</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Debug)" title="Add a debug node">+ Debug</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.ForEach)" title="Add a for-each loop">+ For Each</button>
+            </div>
             <div class="toolbar-divider"></div>
-            <button class="btn btn-outline" @onclick="DeleteSelectedNodes" title="Delete selected node(s)">Delete Node</button>
-            <button class="btn btn-outline" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)">Flow Settings</button>
+            <button class="btn btn-outline btn-sm" @onclick="DeleteSelectedNodes" title="Delete selected node(s)">
+                <AppIcon Name="trash" Class="icon icon-xs" /> Delete
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)" title="Flow settings">
+                <AppIcon Name="settings" Class="icon icon-xs" /> Settings
+            </button>
             <div class="toolbar-divider"></div>
-            <button class="btn" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
-                @(FlowState.Value.IsLoading ? "Saving..." : "Save")
+            <button class="btn btn-primary" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
+                @(FlowState.Value.IsLoading ? "Saving…" : "Save")
             </button>
             <button class="btn btn-success" @onclick="RunFlow" disabled="@(FlowState.Value.IsLoading || FlowState.Value.CurrentFlow == null)">
-                Run
+                <AppIcon Name="play" Class="icon icon-xs" /> Run
             </button>
         </div>
 
@@ -118,8 +124,11 @@
     <div class="modal-overlay" @onclick="CloseFlowSettings">
         <div class="modal-container flow-settings-modal" @onclick:stopPropagation="true">
             <div class="modal-header">
-                <h2 class="modal-title">Flow Settings</h2>
-                <button class="modal-close-btn" @onclick="CloseFlowSettings">✕</button>
+                <div>
+                    <h2 class="modal-title">Flow settings</h2>
+                    <p class="modal-subtitle">@settingsFlow.Name</p>
+                </div>
+                <button class="modal-close-btn" @onclick="CloseFlowSettings" aria-label="Close">✕</button>
             </div>
             <div class="modal-body modal-body-scroll">
                 <div class="form-group">
@@ -201,7 +210,7 @@
 
                 <div class="modal-actions">
                     <button class="btn btn-outline" @onclick="CloseFlowSettings">Close</button>
-                    <button class="btn" @onclick="SaveFlowSettings" disabled="@FlowState.Value.IsLoading">Save Settings</button>
+                    <button class="btn btn-primary" @onclick="SaveFlowSettings" disabled="@FlowState.Value.IsLoading">Save settings</button>
                 </div>
             </div>
         </div>

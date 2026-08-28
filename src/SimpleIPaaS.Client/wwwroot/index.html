@@ -72,24 +72,58 @@
             align-items: center;
             justify-content: center;
             height: 100vh;
-            background: #f5f6f8;
-            color: #697586;
+            background:
+                radial-gradient(900px 420px at 50% -10%, rgba(79, 70, 229, 0.14), transparent 65%),
+                #f4f6fa;
+            color: #6a7891;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Roboto, sans-serif;
             font-size: 14px;
+            text-align: center;
         }
 
+        #app-splash .app-splash-mark {
+            width: 46px;
+            height: 46px;
+            margin: 0 auto 20px;
+            border-radius: 13px;
+            background: linear-gradient(140deg, #7c7cf5 0%, #4f46e5 48%, #3b31b8 100%);
+            box-shadow: 0 8px 20px -8px rgba(79, 70, 229, 0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 22px;
+            line-height: 1;
+        }
+
+        #app-splash .app-splash-title {
+            margin: 0 0 6px;
+            font-size: 16px;
+            font-weight: 650;
+            letter-spacing: -0.02em;
+            color: #0d1526;
+        }
+
+        #app-splash p { margin: 0; font-size: 13px; }
+
         #app-splash .app-splash-spinner {
-            width: 34px;
-            height: 34px;
-            margin: 0 auto 16px;
-            border: 3px solid #e2e5ea;
+            width: 26px;
+            height: 26px;
+            margin: 18px auto 0;
+            border: 2px solid #e3e8ef;
             border-top-color: #4f46e5;
             border-radius: 50%;
             animation: app-splash-spin 0.9s linear infinite;
         }
 
-        html[data-theme="dark"] #app-splash { background: #0d1117; color: #8792a4; }
-        html[data-theme="dark"] #app-splash .app-splash-spinner { border-color: #2a3240; border-top-color: #8b95ff; }
+        html[data-theme="dark"] #app-splash {
+            background:
+                radial-gradient(900px 420px at 50% -10%, rgba(124, 124, 245, 0.18), transparent 65%),
+                #0a0d14;
+            color: #8593a8;
+        }
+        html[data-theme="dark"] #app-splash .app-splash-title { color: #e8ecf3; }
+        html[data-theme="dark"] #app-splash .app-splash-spinner { border-color: #262e3d; border-top-color: #8b95ff; }
 
         @keyframes app-splash-spin { to { transform: rotate(360deg); } }
     </style>
@@ -101,8 +135,14 @@
     <div id="app">
         <div id="app-splash">
             <div>
+                <div class="app-splash-mark">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M13 2 4.5 13.5H11l-.5 8.5L19.5 10H13z" />
+                    </svg>
+                </div>
+                <p class="app-splash-title">SimpleIPaaS</p>
+                <p>Preparing your integration workspace…</p>
                 <div class="app-splash-spinner"></div>
-                <p>Loading SimpleIPaaS...</p>
             </div>
         </div>
     </div>
