@@ -28,6 +28,11 @@ public class IPaaSContext : DbContext
     public DbSet<CrossReferenceList> CrossReferenceLists { get; set; } = null!;
     public DbSet<CrossReferenceEntry> CrossReferenceEntries { get; set; } = null!;
 
+    // Host-wide application log. Intentionally NOT tenant-filtered: entries come from
+    // background workers that log outside any tenant scope (startup, cron scans, claim
+    // loops) and the Debug Logs console has to show them all.
+    public DbSet<AppLogEntry> AppLogEntries { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -51,6 +56,15 @@ public class IPaaSContext : DbContext
         modelBuilder.Entity<CrossReferenceEntry>()
             .HasIndex(e => new { e.TenantId, e.ListName, e.KeyValue })
             .IsUnique();
+
+        modelBuilder.Entity<AppLogEntry>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedOnAdd();
+            entity.HasIndex(e => e.Timestamp);
+            entity.HasIndex(e => e.Level);
+            entity.HasIndex(e => e.FlowExecutionId);
+        });
 
 
         modelBuilder.Entity<IntegrationFlow>()

@@ -1,0 +1,438 @@
+/* Scoped styles for the Debug Logs console.
+   Everything here is Blazor CSS isolation — nothing leaks into the shared theme, and every
+   colour/spacing value comes from the app's custom properties so it follows the theme. */
+
+.logs-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 12px);
+    height: 100%;
+    min-height: 0;
+}
+
+/* ---------- header ---------- */
+
+.logs-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-3, 12px);
+}
+
+.logs-title h2 {
+    margin: 0;
+    color: var(--text-primary, #101828);
+}
+
+.logs-subtitle {
+    margin: 2px 0 0;
+    color: var(--text-muted, #697586);
+    font-size: 0.85rem;
+}
+
+.logs-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 8px);
+}
+
+.logs-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: var(--radius-pill, 999px);
+    border: 1px solid var(--border-color, #e2e5ea);
+    background: var(--bg-subtle, #f0f2f5);
+    color: var(--text-secondary, #4b5565);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.logs-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted, #697586);
+}
+
+.logs-status.live .logs-status-dot {
+    background: var(--success, #047857);
+    animation: logs-pulse 1.8s ease-in-out infinite;
+}
+
+.logs-status.paused .logs-status-dot {
+    background: var(--warning, #b45309);
+}
+
+@keyframes logs-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+.logs-btn {
+    padding: 6px 12px;
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid var(--border-color, #e2e5ea);
+    background: var(--bg-card, #ffffff);
+    color: var(--text-primary, #101828);
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.logs-btn:hover:not(:disabled) {
+    background: var(--bg-subtle, #f0f2f5);
+    border-color: var(--border-strong, #cbd0d9);
+}
+
+.logs-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.logs-btn.danger {
+    color: var(--danger, #b42318);
+    border-color: color-mix(in srgb, var(--danger, #b42318) 35%, transparent);
+}
+
+.logs-btn.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger, #b42318) 10%, transparent);
+}
+
+.logs-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring, 0 0 0 3px rgba(79, 70, 229, 0.16));
+}
+
+/* ---------- filters ---------- */
+
+.logs-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3, 12px);
+    padding: var(--space-3, 12px);
+    border: 1px solid var(--border-color, #e2e5ea);
+    border-radius: var(--radius-lg, 10px);
+    background: var(--bg-card, #ffffff);
+}
+
+.logs-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 150px;
+}
+
+.logs-field.grow {
+    flex: 1 1 240px;
+}
+
+.logs-field > span {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted, #697586);
+}
+
+.logs-field select,
+.logs-field input {
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid var(--border-color, #e2e5ea);
+    background: var(--bg-input, #ffffff);
+    color: var(--text-primary, #101828);
+    font-family: inherit;
+    font-size: 0.82rem;
+}
+
+.logs-field input {
+    font-family: var(--font-mono, monospace);
+}
+
+.logs-field select:focus-visible,
+.logs-field input:focus-visible {
+    outline: none;
+    border-color: var(--primary, #4f46e5);
+    box-shadow: var(--focus-ring, 0 0 0 3px rgba(79, 70, 229, 0.16));
+}
+
+.logs-count {
+    margin-left: auto;
+    align-self: flex-end;
+    padding-bottom: 6px;
+    color: var(--text-secondary, #4b5565);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.logs-cursor {
+    display: inline-block;
+    margin-left: var(--space-2, 8px);
+    padding: 1px 8px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--bg-subtle, #f0f2f5);
+    color: var(--text-muted, #697586);
+    font-family: var(--font-mono, monospace);
+    font-size: 0.7rem;
+}
+
+.logs-notice {
+    padding: 8px 12px;
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid color-mix(in srgb, var(--warning, #b45309) 35%, transparent);
+    background: color-mix(in srgb, var(--warning, #b45309) 10%, transparent);
+    color: var(--warning, #b45309);
+    font-size: 0.82rem;
+}
+
+/* ---------- console ---------- */
+
+.logs-console {
+    flex: 1 1 auto;
+    min-height: 320px;
+    max-height: calc(100vh - 320px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: var(--space-2, 8px) 0;
+    border: 1px solid var(--border-color, #e2e5ea);
+    border-radius: var(--radius-lg, 10px);
+    background: var(--surface-code, #0f172a);
+    color: var(--surface-code-text, #e2e8f0);
+    font-family: var(--font-mono, 'Cascadia Code', Consolas, monospace);
+    font-size: 0.78rem;
+    line-height: 1.55;
+}
+
+.logs-empty {
+    padding: var(--space-6, 24px);
+    text-align: center;
+    color: color-mix(in srgb, var(--surface-code-text, #e2e8f0) 55%, transparent);
+}
+
+.logs-row {
+    display: grid;
+    grid-template-columns: 84px 44px 62px minmax(90px, 150px) 1fr 16px;
+    align-items: baseline;
+    gap: 10px;
+    padding: 2px 12px;
+    border-left: 3px solid transparent;
+}
+
+.logs-row.expandable {
+    cursor: pointer;
+}
+
+.logs-row:hover {
+    background: rgba(148, 163, 184, 0.12);
+}
+
+.logs-row.expanded {
+    background: rgba(148, 163, 184, 0.16);
+}
+
+.logs-time {
+    color: color-mix(in srgb, var(--surface-code-text, #e2e8f0) 55%, transparent);
+    white-space: nowrap;
+}
+
+.logs-level {
+    font-weight: 700;
+    letter-spacing: 0.03em;
+}
+
+.logs-source {
+    padding: 0 6px;
+    border-radius: var(--radius-sm, 6px);
+    background: rgba(148, 163, 184, 0.22);
+    color: var(--surface-code-text, #e2e8f0);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.logs-source.src-engine {
+    background: rgba(45, 212, 191, 0.22);
+    color: #5eead4;
+}
+
+.logs-source.src-api {
+    background: rgba(167, 139, 250, 0.22);
+    color: #c4b5fd;
+}
+
+.logs-category {
+    overflow: hidden;
+    color: #93c5fd;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.logs-message {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.logs-caret {
+    color: color-mix(in srgb, var(--surface-code-text, #e2e8f0) 50%, transparent);
+    text-align: center;
+}
+
+.logs-chip {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: var(--radius-pill, 999px);
+    background: rgba(148, 163, 184, 0.18);
+    color: color-mix(in srgb, var(--surface-code-text, #e2e8f0) 80%, transparent);
+    font-size: 0.68rem;
+    vertical-align: middle;
+}
+
+.logs-chip.link {
+    cursor: pointer;
+    text-decoration: underline dotted;
+}
+
+.logs-chip.link:hover {
+    background: rgba(148, 163, 184, 0.32);
+    color: var(--surface-code-text, #e2e8f0);
+}
+
+/* level colour coding */
+
+.logs-row.level-trace { border-left-color: #64748b; }
+.logs-row.level-trace .logs-level { color: #94a3b8; }
+
+.logs-row.level-debug { border-left-color: #64748b; }
+.logs-row.level-debug .logs-level { color: #a5b4fc; }
+
+.logs-row.level-information { border-left-color: #38bdf8; }
+.logs-row.level-information .logs-level { color: #7dd3fc; }
+
+.logs-row.level-warning { border-left-color: #f59e0b; }
+.logs-row.level-warning .logs-level { color: #fbbf24; }
+.logs-row.level-warning .logs-message { color: #fde68a; }
+
+.logs-row.level-error { border-left-color: #ef4444; }
+.logs-row.level-error .logs-level { color: #f87171; }
+.logs-row.level-error .logs-message { color: #fecaca; }
+
+.logs-row.level-critical { border-left-color: #ec4899; }
+.logs-row.level-critical .logs-level { color: #f9a8d4; }
+.logs-row.level-critical .logs-message { color: #fbcfe8; }
+.logs-row.level-critical { background: rgba(236, 72, 153, 0.12); }
+
+/* ---------- expanded detail ---------- */
+
+.logs-detail {
+    margin: 0 12px 8px 15px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md, 8px);
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.logs-meta {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 2px 12px;
+    margin: 0 0 8px;
+}
+
+.logs-meta dt {
+    color: color-mix(in srgb, var(--surface-code-text, #e2e8f0) 55%, transparent);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.logs-meta dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.logs-meta dd:last-child {
+    margin-bottom: 0;
+}
+
+.logs-exception {
+    margin: 0;
+    max-height: 320px;
+    overflow: auto;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm, 6px);
+    background: rgba(127, 29, 29, 0.28);
+    color: #fecaca;
+    font-family: inherit;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- confirm modal ---------- */
+
+.logs-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal, 1000);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-4, 16px);
+    background: rgba(16, 24, 40, 0.5);
+}
+
+.logs-modal {
+    width: min(460px, 100%);
+    padding: var(--space-5, 20px);
+    border-radius: var(--radius-xl, 14px);
+    border: 1px solid var(--border-color, #e2e5ea);
+    background: var(--bg-card, #ffffff);
+    box-shadow: var(--shadow-lg, 0 16px 28px -8px rgba(16, 24, 40, 0.14));
+    color: var(--text-primary, #101828);
+}
+
+.logs-modal h3 {
+    margin: 0 0 var(--space-2, 8px);
+}
+
+.logs-modal p {
+    margin: 0 0 var(--space-4, 16px);
+    color: var(--text-secondary, #4b5565);
+    font-size: 0.85rem;
+}
+
+.logs-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2, 8px);
+}
+
+/* ---------- narrow viewports ---------- */
+
+@media (max-width: 900px) {
+    .logs-row {
+        grid-template-columns: 72px 42px 1fr 16px;
+    }
+
+    .logs-source {
+        grid-column: 3;
+    }
+
+    .logs-category {
+        display: none;
+    }
+
+    .logs-message {
+        grid-column: 1 / -1;
+    }
+}

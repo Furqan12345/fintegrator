@@ -63,6 +63,7 @@ public class CronTriggerScheduler : BackgroundService
         var repository = scanScope.ServiceProvider.GetRequiredService<IIntegrationRepository>();
         var scheduleRepository = scanScope.ServiceProvider.GetRequiredService<ICronScheduleRepository>();
         var flows = await repository.GetActiveCronFlowsAcrossTenantsAsync();
+        _logger.LogDebug("Cron scan evaluating {FlowCount} scheduled flow(s)", flows.Count());
 
         foreach (var flow in flows)
         {
@@ -76,6 +77,10 @@ public class CronTriggerScheduler : BackgroundService
                 {
                     continue;
                 }
+
+                _logger.LogInformation(
+                    "One-time schedule fired for flow {FlowId} '{FlowName}' (was due {DueAt:u})",
+                    flow.Id, flow.Name, flow.NextRunAt);
 
                 // Clear the marker before enqueueing — at-most-once dispatch.
                 await scheduleRepository.UpdateNextRunAtAsync(flow.Id, flow.TenantId, null);
@@ -97,6 +102,9 @@ public class CronTriggerScheduler : BackgroundService
             if (flow.NextRunAt == null)
             {
                 var next = expression.GetNextOccurrence(now);
+                _logger.LogInformation(
+                    "Primed cron schedule '{CronExpression}' for flow {FlowId} '{FlowName}'; first run at {NextRunAt:u}",
+                    flow.CronExpression, flow.Id, flow.Name, next);
                 await scheduleRepository.UpdateNextRunAtAsync(flow.Id, flow.TenantId, next);
                 continue;
             }
@@ -106,9 +114,12 @@ public class CronTriggerScheduler : BackgroundService
                 continue;
             }
 
-            await EnqueueAsync(flow.Id, flow.TenantId, "Cron", stoppingToken);
-
             var nextRun = expression.GetNextOccurrence(now);
+            _logger.LogInformation(
+                "Cron '{CronExpression}' fired for flow {FlowId} '{FlowName}' (due {DueAt:u}); next run at {NextRunAt:u}",
+                flow.CronExpression, flow.Id, flow.Name, flow.NextRunAt, nextRun);
+
+            await EnqueueAsync(flow.Id, flow.TenantId, "Cron", stoppingToken);
             await scheduleRepository.UpdateNextRunAtAsync(flow.Id, flow.TenantId, nextRun);
         }
     }

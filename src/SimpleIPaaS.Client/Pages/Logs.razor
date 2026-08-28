@@ -1,0 +1,581 @@
+@page "/logs"
+@using System.Globalization
+@using System.Net.Http.Json
+@using System.Threading
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@implements IAsyncDisposable
+@inject HttpClient Http
+@inject IDispatcher Dispatcher
+@inject IJSRuntime JS
+
+<PageTitle>Debug Logs — SimpleIPaaS</PageTitle>
+
+<div class="logs-page">
+    <header class="logs-header">
+        <div class="logs-title">
+            <h2>Debug Logs</h2>
+            <p class="logs-subtitle">Live application log from the Engine and API processes</p>
+        </div>
+        <div class="logs-actions">
+            <span class="logs-status @(_paused ? "paused" : "live")">
+                <span class="logs-status-dot"></span>
+                @(_paused ? "Paused" : "Live")
+            </span>
+            <button type="button" class="logs-btn" @onclick="TogglePause">
+                @(_paused ? "Resume" : "Pause")
+            </button>
+            <button type="button" class="logs-btn" @onclick="RefreshAsync" disabled="@_busy">Refresh</button>
+            <button type="button" class="logs-btn danger" @onclick="() => _confirmClear = true">Clear logs</button>
+        </div>
+    </header>
+
+    <div class="logs-filters">
+        <label class="logs-field">
+            <span>Minimum level</span>
+            <select value="@_level" @onchange="OnLevelChanged">
+                <option value="">All levels</option>
+                @foreach (var level in _levels)
+                {
+                    <option value="@level">@level and above</option>
+                }
+            </select>
+        </label>
+
+        <label class="logs-field">
+            <span>Source</span>
+            <select value="@_source" @onchange="OnSourceChanged">
+                <option value="">All sources</option>
+                @foreach (var source in _sources)
+                {
+                    <option value="@source">@source</option>
+                }
+            </select>
+        </label>
+
+        <label class="logs-field grow">
+            <span>Search</span>
+            <input type="search"
+                   placeholder="Message, category, node or exception text — press Enter"
+                   value="@_search"
+                   @onchange="OnSearchChanged" />
+        </label>
+
+        <label class="logs-field">
+            <span>Execution id</span>
+            <input type="text"
+                   placeholder="correlate by execution"
+                   value="@_executionFilter"
+                   @onchange="OnExecutionFilterChanged" />
+        </label>
+
+        <div class="logs-count">
+            Showing <strong>@_entries.Count</strong>@(_total > _entries.Count ? $" of {_total} matching" : string.Empty)
+            <span class="logs-cursor" title="Live tail cursor">cursor @_cursor</span>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_notice))
+    {
+        <div class="logs-notice">@_notice</div>
+    }
+
+    <div class="logs-console" @ref="_consoleRef">
+        @if (_entries.Count == 0)
+        {
+            <div class="logs-empty">
+                @if (_loading)
+                {
+                    <span>Loading log entries…</span>
+                }
+                else
+                {
+                    <span>No log entries match the current filters.</span>
+                }
+            </div>
+        }
+        else
+        {
+            @foreach (var entry in _entries)
+            {
+                var expandable = HasDetail(entry);
+                <div class="logs-row level-@entry.Level.ToLowerInvariant() @(expandable ? "expandable" : string.Empty) @(_expanded.Contains(entry.Id) ? "expanded" : string.Empty)"
+                     @onclick="() => ToggleExpanded(entry)">
+                    <span class="logs-time">@entry.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)</span>
+                    <span class="logs-level">@ShortLevel(entry.Level)</span>
+                    <span class="logs-source src-@entry.Source.ToLowerInvariant()">@entry.Source</span>
+                    <span class="logs-category" title="@entry.Category">@ShortCategory(entry.Category)</span>
+                    <span class="logs-message">
+                        @entry.Message
+                        @if (!string.IsNullOrWhiteSpace(entry.NodeName))
+                        {
+                            <span class="logs-chip">node @entry.NodeName</span>
+                        }
+                        @if (entry.FlowExecutionId.HasValue)
+                        {
+                            <span class="logs-chip link"
+                                  title="Filter by this execution"
+                                  @onclick:stopPropagation="true"
+                                  @onclick="() => FilterByExecutionAsync(entry.FlowExecutionId!.Value)">
+                                exec @ShortId(entry.FlowExecutionId.Value)
+                            </span>
+                        }
+                    </span>
+                    @if (expandable)
+                    {
+                        <span class="logs-caret">@(_expanded.Contains(entry.Id) ? "▾" : "▸")</span>
+                    }
+                </div>
+
+                @if (expandable && _expanded.Contains(entry.Id))
+                {
+                    <div class="logs-detail">
+                        <dl class="logs-meta">
+                            <dt>Id</dt><dd>@entry.Id</dd>
+                            <dt>Timestamp (UTC)</dt><dd>@entry.Timestamp.ToString("u", CultureInfo.InvariantCulture)</dd>
+                            <dt>Category</dt><dd>@entry.Category</dd>
+                            @if (entry.FlowExecutionId.HasValue)
+                            {
+                                <dt>Execution</dt><dd>@entry.FlowExecutionId</dd>
+                            }
+                            @if (entry.FlowId.HasValue)
+                            {
+                                <dt>Flow</dt><dd>@entry.FlowId</dd>
+                            }
+                            @if (entry.TenantId.HasValue)
+                            {
+                                <dt>Tenant</dt><dd>@entry.TenantId</dd>
+                            }
+                        </dl>
+                        @if (!string.IsNullOrWhiteSpace(entry.Exception))
+                        {
+                            <pre class="logs-exception">@entry.Exception</pre>
+                        }
+                    </div>
+                }
+            }
+        }
+    </div>
+</div>
+
+@if (_confirmClear)
+{
+    <div class="logs-modal-overlay" @onclick="() => _confirmClear = false">
+        <div class="logs-modal" @onclick:stopPropagation="true">
+            <h3>Clear logs</h3>
+            <p>
+                This permanently deletes every application log row from the shared database.
+                Flows, executions and cross-reference data are not affected.
+            </p>
+            <div class="logs-modal-actions">
+                <button type="button" class="logs-btn" @onclick="() => _confirmClear = false">Cancel</button>
+                <button type="button" class="logs-btn danger" @onclick="ClearLogsAsync">Clear logs</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private const int MaxBufferedEntries = 2000;
+    private const int InitialPageSize = 300;
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
+
+    private readonly List<AppLogEntryDto> _entries = new();
+    private readonly HashSet<long> _expanded = new();
+    private readonly CancellationTokenSource _cts = new();
+
+    private string[] _levels = Array.Empty<string>();
+    private string[] _sources = Array.Empty<string>();
+
+    private string _level = "Information";
+    private string _source = string.Empty;
+    private string _search = string.Empty;
+    private string _executionFilter = string.Empty;
+
+    private long _cursor;
+    private int _total;
+    private bool _paused;
+    private bool _busy;
+    private bool _loading = true;
+    private bool _confirmClear;
+    private string? _notice;
+
+    private ElementReference _consoleRef;
+    private IJSObjectReference? _module;
+    private bool _followTail = true;
+    private bool _scrollAfterRender;
+    private Task? _pollTask;
+
+    [SupplyParameterFromQuery(Name = "executionId")]
+    public Guid? ExecutionId { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (ExecutionId.HasValue)
+        {
+            _executionFilter = ExecutionId.Value.ToString();
+        }
+
+        await LoadFilterOptionsAsync();
+        await ReloadAsync();
+
+        _pollTask = PollAsync(_cts.Token);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Dynamic import keeps this page self-contained: no script tag in index.html.
+            try
+            {
+                _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/logs-console.js");
+            }
+            catch (Exception)
+            {
+                _module = null; // Auto-scroll degrades gracefully to "no auto-scroll".
+            }
+        }
+
+        if (_scrollAfterRender)
+        {
+            _scrollAfterRender = false;
+            await ScrollToBottomAsync();
+        }
+    }
+
+    private async Task PollAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(PollInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                if (_paused || _busy)
+                {
+                    continue;
+                }
+
+                await TailAsync();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away.
+        }
+    }
+
+    private async Task LoadFilterOptionsAsync()
+    {
+        var levels = await SafeFetch.GetAsync<string[]>(Http, "api/logs/levels", Dispatcher, "log levels");
+        if (levels != null)
+        {
+            _levels = levels;
+        }
+
+        await RefreshSourcesAsync();
+    }
+
+    private async Task RefreshSourcesAsync()
+    {
+        var sources = await SafeFetch.GetAsync<string[]>(Http, "api/logs/sources", Dispatcher, "log sources");
+        if (sources != null)
+        {
+            _sources = sources;
+        }
+    }
+
+    // Full refresh: replaces the buffer and re-anchors the tail cursor.
+    private async Task ReloadAsync()
+    {
+        _busy = true;
+        _loading = true;
+
+        var page = await SafeFetch.GetAsync<LogPageDto>(
+            Http, $"api/logs?{BuildFilterQuery()}&page=1&pageSize={InitialPageSize}", Dispatcher, "logs");
+
+        _busy = false;
+        _loading = false;
+
+        if (page == null)
+        {
+            _notice = "Log polling paused because the API could not be reached. Press Resume to try again.";
+            _paused = true;
+            return;
+        }
+
+        _notice = null;
+        _entries.Clear();
+        _expanded.Clear();
+
+        // The API returns newest-first for paging; the console reads oldest-first.
+        _entries.AddRange(page.Items.OrderBy(entry => entry.Id));
+        _total = page.Total;
+        _cursor = page.Cursor;
+        _followTail = true;
+        _scrollAfterRender = true;
+    }
+
+    private async Task TailAsync()
+    {
+        _busy = true;
+
+        // Ask the browser whether the user is still parked at the bottom BEFORE appending,
+        // so reading scrollback is never interrupted by the tail.
+        _followTail = await IsPinnedToBottomAsync();
+
+        var tail = await SafeFetch.GetAsync<LogTailDto>(
+            Http, $"api/logs/tail?afterId={_cursor}&{BuildFilterQuery()}&limit=500", Dispatcher, "log tail");
+
+        _busy = false;
+
+        if (tail == null)
+        {
+            // Stop hammering a dead API — one toast, then wait for the user.
+            _paused = true;
+            _notice = "Log polling paused because the API could not be reached. Press Resume to try again.";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        if (tail.Reset)
+        {
+            // Cursor was ahead of the table (logs cleared elsewhere): rebuild the buffer.
+            _entries.Clear();
+            _expanded.Clear();
+        }
+
+        if (tail.Entries.Count == 0 && !tail.Reset)
+        {
+            _cursor = tail.Cursor;
+            return;
+        }
+
+        _entries.AddRange(tail.Entries);
+        _cursor = tail.Cursor;
+        _total = Math.Max(_total, _entries.Count);
+        TrimBuffer();
+
+        if (_followTail)
+        {
+            _scrollAfterRender = true;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void TrimBuffer()
+    {
+        if (_entries.Count <= MaxBufferedEntries)
+        {
+            return;
+        }
+
+        var excess = _entries.Count - MaxBufferedEntries;
+        for (var i = 0; i < excess; i++)
+        {
+            _expanded.Remove(_entries[i].Id);
+        }
+
+        _entries.RemoveRange(0, excess);
+    }
+
+    private string BuildFilterQuery()
+    {
+        var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(_level))
+        {
+            parts.Add($"level={Uri.EscapeDataString(_level)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_source))
+        {
+            parts.Add($"source={Uri.EscapeDataString(_source)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            parts.Add($"search={Uri.EscapeDataString(_search)}");
+        }
+
+        if (Guid.TryParse(_executionFilter, out var executionId))
+        {
+            parts.Add($"flowExecutionId={executionId}");
+        }
+
+        return string.Join("&", parts);
+    }
+
+    private async Task OnLevelChanged(ChangeEventArgs args)
+    {
+        _level = args.Value?.ToString() ?? string.Empty;
+        await ReloadAsync();
+    }
+
+    private async Task OnSourceChanged(ChangeEventArgs args)
+    {
+        _source = args.Value?.ToString() ?? string.Empty;
+        await ReloadAsync();
+    }
+
+    private async Task OnSearchChanged(ChangeEventArgs args)
+    {
+        _search = args.Value?.ToString() ?? string.Empty;
+        await ReloadAsync();
+    }
+
+    private async Task OnExecutionFilterChanged(ChangeEventArgs args)
+    {
+        _executionFilter = args.Value?.ToString()?.Trim() ?? string.Empty;
+        await ReloadAsync();
+    }
+
+    private async Task FilterByExecutionAsync(Guid executionId)
+    {
+        _executionFilter = executionId.ToString();
+        await ReloadAsync();
+    }
+
+    private async Task TogglePause()
+    {
+        _paused = !_paused;
+        if (!_paused)
+        {
+            _notice = null;
+            await ReloadAsync();
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        await RefreshSourcesAsync();
+        await ReloadAsync();
+    }
+
+    private async Task ClearLogsAsync()
+    {
+        _confirmClear = false;
+
+        var result = await SafeFetch.SendAsync<LogDeleteResultDto>(
+            () => Http.DeleteAsync("api/logs"), Dispatcher, "the log clear");
+
+        if (result != null)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Cleared {result.Deleted} log entr{(result.Deleted == 1 ? "y" : "ies")}." });
+        }
+
+        _cursor = 0;
+        await ReloadAsync();
+    }
+
+    private void ToggleExpanded(AppLogEntryDto entry)
+    {
+        if (!HasDetail(entry))
+        {
+            return;
+        }
+
+        if (!_expanded.Remove(entry.Id))
+        {
+            _expanded.Add(entry.Id);
+        }
+    }
+
+    private async Task<bool> IsPinnedToBottomAsync()
+    {
+        if (_module == null)
+        {
+            return true;
+        }
+
+        try
+        {
+            return await _module.InvokeAsync<bool>("isPinnedToBottom", _consoleRef);
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    private async Task ScrollToBottomAsync()
+    {
+        if (_module == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _module.InvokeVoidAsync("scrollToBottom", _consoleRef);
+        }
+        catch (Exception)
+        {
+            // The page is going away, or JS interop is unavailable.
+        }
+    }
+
+    private static bool HasDetail(AppLogEntryDto entry) =>
+        !string.IsNullOrWhiteSpace(entry.Exception)
+        || entry.FlowExecutionId.HasValue
+        || entry.FlowId.HasValue
+        || entry.TenantId.HasValue
+        || entry.Category.Contains('.');
+
+    private static string ShortLevel(string level) => level switch
+    {
+        "Information" => "INFO",
+        "Warning" => "WARN",
+        "Critical" => "CRIT",
+        "Trace" => "TRCE",
+        "Debug" => "DBUG",
+        "Error" => "FAIL",
+        _ => level.ToUpperInvariant()
+    };
+
+    // Loggers are categorised by full type name; the last segment is what reads well.
+    private static string ShortCategory(string category)
+    {
+        if (string.IsNullOrEmpty(category))
+        {
+            return "-";
+        }
+
+        var index = category.LastIndexOf('.');
+        return index >= 0 && index < category.Length - 1 ? category[(index + 1)..] : category;
+    }
+
+    private static string ShortId(Guid id) => id == Guid.Empty ? "-" : id.ToString()[..8];
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+
+        if (_pollTask != null)
+        {
+            try
+            {
+                await _pollTask;
+            }
+            catch (Exception)
+            {
+                // Cancellation during navigation.
+            }
+        }
+
+        if (_module != null)
+        {
+            try
+            {
+                await _module.DisposeAsync();
+            }
+            catch (Exception)
+            {
+                // The circuit/runtime may already be gone.
+            }
+        }
+
+        _cts.Dispose();
+    }
+}

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -95,9 +96,28 @@ public class DeadLetterWorker : BackgroundService
             }
         }
 
+        if (work.Count > 0)
+        {
+            _logger.LogInformation(
+                "Dead letter scan found {ReplayCount} entr(y/ies) to replay ({ManualCount} manually requested)",
+                work.Count, work.Count(item => item.Force));
+        }
+
         foreach (var (entry, force) in work)
         {
             stoppingToken.ThrowIfCancellationRequested();
+
+            using var correlationScope = _logger.BeginScope(new Dictionary<string, object>
+            {
+                ["FlowExecutionId"] = entry.FlowExecutionId,
+                ["TenantId"] = entry.TenantId,
+                ["NodeName"] = entry.NodeName ?? string.Empty
+            });
+
+            var startedAt = Stopwatch.GetTimestamp();
+            _logger.LogInformation(
+                "Replaying dead letter {DeadLetterId} for execution {FlowExecutionId} node '{NodeName}' (forced: {Forced}, attempt {RetryCount})",
+                entry.Id, entry.FlowExecutionId, entry.NodeName, force, entry.RetryCount);
 
             try
             {
@@ -107,6 +127,10 @@ public class DeadLetterWorker : BackgroundService
 
                 var deadLetterService = scope.ServiceProvider.GetRequiredService<DeadLetterService>();
                 await deadLetterService.ReplayEntryAsync(entry.Id, force, stoppingToken);
+
+                _logger.LogInformation(
+                    "Dead letter {DeadLetterId} replay finished in {DurationMs}ms",
+                    entry.Id, (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
             }
             catch (Exception ex)
             {

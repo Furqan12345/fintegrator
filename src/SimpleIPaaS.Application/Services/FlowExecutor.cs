@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -51,6 +52,13 @@ public class FlowExecutor
         var flowExecution = await _executionRepository.GetFlowExecutionAsync(executionId)
             ?? throw new InvalidOperationException($"FlowExecution {executionId} not found.");
 
+        using var executionScope = _logger.BeginScope(new Dictionary<string, object>
+        {
+            ["ExecutionId"] = executionId,
+            ["FlowId"] = flowId,
+            ["TenantId"] = flowExecution.TenantId
+        });
+
         flowExecution.Status = ExecutionStatus.InProgress;
         flowExecution.StartedAt = DateTime.UtcNow;
         await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
@@ -90,6 +98,10 @@ public class FlowExecutor
             if (!startNodes.Any()) throw new InvalidOperationException("Could not find a starting node.");
 
             var sortedNodes = TopologicalSort(flow);
+            _logger.LogInformation(
+                "Execution {ExecutionId}: flow '{FlowName}' planned as {NodeCount} node(s) / {EdgeCount} edge(s), starting at [{StartNodes}]",
+                executionId, flow.Name, sortedNodes.Count, flow.Edges.Count,
+                string.Join(", ", startNodes.Select(n => n.NodeName)));
 
             var flowStateContext = new JObject();
             if (!string.IsNullOrWhiteSpace(triggerPayload))
@@ -173,7 +185,17 @@ public class FlowExecutor
         string persistedStateJson = persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None);
         string currentPayload = string.Empty;
 
-        _logger.LogInformation("Execution {ExecutionId}: running node {NodeName} ({StepType})",
+        // Scope so every line emitted while this node runs (including transport/script
+        // logging) carries the node correlation into the database log sink.
+        using var nodeScope = _logger.BeginScope(new Dictionary<string, object>
+        {
+            ["ExecutionId"] = executionId,
+            ["FlowId"] = flow.Id,
+            ["NodeName"] = node.NodeName ?? string.Empty
+        });
+
+        var nodeStartedAt = Stopwatch.GetTimestamp();
+        _logger.LogInformation("Execution {ExecutionId}: node {NodeName} ({StepType}) started",
             executionId, node.NodeName, node.StepType);
 
         try
@@ -613,6 +635,12 @@ public class FlowExecutor
             stepExecution.Status = ExecutionStatus.Success;
             stepExecution.CompletedAt = DateTime.UtcNow;
             lock (_executionLock) { flowExecution.SuccessRecords++; }
+
+            _logger.LogInformation(
+                "Execution {ExecutionId}: node {NodeName} finished with status {Status} in {DurationMs}ms (HTTP {HttpStatusCode}, {ResponseBytes} bytes out)",
+                executionId, node.NodeName, ExecutionStatus.Success,
+                (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds,
+                stepExecution.HttpStatusCode, stepExecution.ResponsePayload?.Length ?? 0);
         }
         catch (OperationCanceledException)
         {
@@ -620,6 +648,10 @@ public class FlowExecutor
             stepExecution.ErrorMessage = "Execution was cancelled.";
             stepExecution.CompletedAt = DateTime.UtcNow;
             await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+
+            _logger.LogWarning(
+                "Execution {ExecutionId}: node {NodeName} cancelled after {DurationMs}ms",
+                executionId, node.NodeName, (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds);
             throw;
         }
         catch (Exception ex)
@@ -629,7 +661,9 @@ public class FlowExecutor
             stepExecution.CompletedAt = DateTime.UtcNow;
             lock (_executionLock) { flowExecution.FailedRecords++; }
 
-            _logger.LogError(ex, "Execution {ExecutionId}: node {NodeName} failed", executionId, node.NodeName);
+            _logger.LogError(ex,
+                "Execution {ExecutionId}: node {NodeName} failed after {DurationMs}ms — dead-lettering",
+                executionId, node.NodeName, (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds);
 
             var deadLetter = new DeadLetterEntry
             {

@@ -19,6 +19,7 @@ public static class DatabaseSchemaInitializer
         EnsureApiKeysTable(connection);
         EnsureCrossReferenceTables(connection);
         EnsureStepPacketLogsTable(connection);
+        EnsureAppLogEntriesTable(connection);
         EnsureColumn(connection, "IntegrationFlows", "IntegrationId", "TEXT NULL");
         EnsureColumn(connection, "IntegrationFlows", "PersistedStateJson", "TEXT NOT NULL DEFAULT '{}'");
         EnsureColumn(connection, "IntegrationSteps", "UrlMode", "INTEGER NOT NULL DEFAULT 0");
@@ -149,6 +150,41 @@ public static class DatabaseSchemaInitializer
             );
             CREATE INDEX IF NOT EXISTS IX_StepPacketLogs_StepExecutionId_Sequence
                 ON StepPacketLogs (StepExecutionId, Sequence);
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    // Application log sink shared by both hosts. Public because the batched
+    // DatabaseLoggerProvider opens its own raw connection (it must never go through EF —
+    // that would feed EF's own command logging straight back into this table) and needs
+    // to be able to create the table before its very first flush, independently of
+    // whichever host happens to boot first.
+    public static void EnsureAppLogEntriesTable(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS AppLogEntries (
+                Id INTEGER NOT NULL CONSTRAINT PK_AppLogEntries PRIMARY KEY AUTOINCREMENT,
+                Timestamp TEXT NOT NULL,
+                Level TEXT NOT NULL,
+                Source TEXT NOT NULL,
+                Category TEXT NOT NULL,
+                Message TEXT NOT NULL,
+                Exception TEXT NULL,
+                TenantId TEXT NULL,
+                FlowExecutionId TEXT NULL,
+                FlowId TEXT NULL,
+                NodeName TEXT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_AppLogEntries_Timestamp
+                ON AppLogEntries (Timestamp);
+
+            CREATE INDEX IF NOT EXISTS IX_AppLogEntries_Level
+                ON AppLogEntries (Level);
+
+            CREATE INDEX IF NOT EXISTS IX_AppLogEntries_FlowExecutionId
+                ON AppLogEntries (FlowExecutionId);
             """;
         command.ExecuteNonQuery();
     }

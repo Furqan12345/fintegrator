@@ -8,6 +8,7 @@ using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Engine.Workers;
+using SimpleIPaaS.Infrastructure.Logging;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 using SimpleIPaaS.Infrastructure.Persistence;
 using SimpleIPaaS.Infrastructure.Services;
@@ -22,6 +23,11 @@ using SimpleIPaaS.Infrastructure.Services.Security;
 // designer, honours Cancelled rows, and performs dead-letter replays flagged by
 // the API. It intentionally exposes no HTTP endpoints and never calls the API.
 var builder = Host.CreateApplicationBuilder(args);
+
+// Mirror every log line into the shared database so the UI's Debug Logs console can tail
+// what this out-of-process worker is doing. Batched and non-blocking; see
+// SimpleIPaaS.Infrastructure.Logging.DatabaseLoggerProvider.
+builder.Logging.AddDatabaseLogging(builder.Configuration, "Engine");
 
 builder.Services.Configure<ExecutionOptions>(builder.Configuration.GetSection("Execution"));
 

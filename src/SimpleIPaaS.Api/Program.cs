@@ -13,6 +13,7 @@ using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain.Entities;
+using SimpleIPaaS.Infrastructure.Logging;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 using SimpleIPaaS.Infrastructure.Persistence;
 using SimpleIPaaS.Infrastructure.Services;
@@ -21,6 +22,11 @@ using SimpleIPaaS.Infrastructure.Services.Security;
 using SimpleIPaaS.Shared.Models;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Mirror API log lines into the shared database alongside the Engine's, so the Debug Logs
+// console shows both tiers. Batched and non-blocking; EF Core's own SQL logging is
+// excluded by the provider to prevent a write/read feedback loop.
+builder.Logging.AddDatabaseLogging(builder.Configuration, "Api");
 
 // Add services to the container.
 builder.Services.AddControllers();
@@ -60,6 +66,7 @@ builder.Services.AddScoped<IIntegrationCatalogRepository, IntegrationCatalogRepo
 builder.Services.AddScoped<IConnectionRepository, ConnectionRepository>();
 builder.Services.AddScoped<IExecutionRepository, ExecutionRepository>();
 builder.Services.AddScoped<ICrossReferenceRepository, CrossReferenceRepository>();
+builder.Services.AddScoped<ILogRepository, LogRepository>();
 
 builder.Services.AddScoped<ITransportEngine, TransportEngine>();
 builder.Services.AddScoped<IAuthenticationHandlerFactory, AuthenticationHandlerFactory>();
