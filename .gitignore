@@ -65,3 +65,7 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local database backups
+*.db.bak*
+ipaas.db.bak-*

@@ -12,6 +12,12 @@
       "runtimeExecutable": "dotnet",
       "runtimeArgs": ["run", "--project", "src/SimpleIPaaS.Client/SimpleIPaaS.Client.csproj", "--urls", "http://localhost:5001"],
       "port": 5001
+    },
+    {
+      "name": "engine",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "src/SimpleIPaaS.Engine/SimpleIPaaS.Engine.csproj"],
+      "port": 5002
     }
   ]
 }
