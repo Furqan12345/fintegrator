@@ -19,6 +19,8 @@ public class IntegrationFlow
     public DateTime? NextRunAt { get; set; }
     public DateTime? RunAt { get; set; }
     public bool AllowPostReplay { get; set; }
+    public int? PublishedVersion { get; set; }
+    public DateTime? LastPublishedAt { get; set; }
     
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

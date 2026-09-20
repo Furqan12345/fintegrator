@@ -1,0 +1,38 @@
+groups:
+  - name: simpleipaas
+    rules:
+      - alert: SimpleIPaaSEngineDown
+        expr: simpleipaas_engine_heartbeat_healthy == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: SimpleIPaaS execution engine is not responding
+          description: The API has not observed a healthy engine heartbeat within the configured timeout.
+
+      - alert: SimpleIPaaSApiErrors
+        expr: rate(simpleipaas_http_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: SimpleIPaaS API is returning server errors
+          description: The API has returned 5xx responses during the last five minutes.
+
+      - alert: SimpleIPaaSFlowFailures
+        expr: increase(simpleipaas_flow_executions{status="Failed"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: A SimpleIPaaS flow execution failed
+          description: One or more flow executions entered Failed status during the last five minutes.
+
+      - alert: SimpleIPaaSQueuedExecutionsGrowing
+        expr: simpleipaas_flow_executions{status="Queued"} > 25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: SimpleIPaaS queued work is accumulating
+          description: More than 25 executions have remained queued for at least ten minutes.

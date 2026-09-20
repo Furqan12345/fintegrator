@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging.Abstractions;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
@@ -98,7 +99,7 @@ public class PaginationTests
 
         public List<string> RequestedUrls { get; } = new();
 
-        public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
+        public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default, FlowTestContext? testContext = null)
         {
             RequestedUrls.Add(step.EndpointUrl);
             var response = _responses.Dequeue();

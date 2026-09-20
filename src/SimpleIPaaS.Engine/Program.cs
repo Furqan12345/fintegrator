@@ -30,6 +30,7 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddDatabaseLogging(builder.Configuration, "Engine");
 
 builder.Services.Configure<ExecutionOptions>(builder.Configuration.GetSection("Execution"));
+builder.Services.Configure<OperationsOptions>(builder.Configuration.GetSection("Operations"));
 
 // Shared persistence layer (identical registrations to the API). Both hosts must
 // land on the SAME database file; DefaultDatabasePath prevents per-project splits.
@@ -44,6 +45,7 @@ builder.Services.AddScoped<IIntegrationCatalogRepository, IntegrationCatalogRepo
 builder.Services.AddScoped<IConnectionRepository, ConnectionRepository>();
 builder.Services.AddScoped<IExecutionRepository, ExecutionRepository>();
 builder.Services.AddScoped<ICrossReferenceRepository, CrossReferenceRepository>();
+builder.Services.AddScoped<IFlowTestRepository, FlowTestRepository>();
 
 // Outbound transport stack used by the executor and dead-letter replays.
 builder.Services.AddScoped<ITransportEngine, TransportEngine>();
@@ -57,6 +59,7 @@ builder.Services.AddSingleton<ExecutionCancellationRegistry>();
 builder.Services.AddScoped<FlowExecutor>();
 builder.Services.AddScoped<DeadLetterService>();
 
+builder.Services.AddHostedService<EngineHeartbeatWorker>();
 builder.Services.AddHostedService<FlowExecutionWorker>();
 builder.Services.AddHostedService<CronTriggerScheduler>();
 builder.Services.AddHostedService<DeadLetterWorker>();

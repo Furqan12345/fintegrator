@@ -47,23 +47,31 @@ public class FlowExecutor
         Dictionary<string, JToken> PerNodeOutputs,
         JToken? IterationOutput);
 
-    public async Task<FlowExecution> ExecuteFlowAsync(Guid flowId, Guid executionId, string? triggerPayload, CancellationToken cancellationToken)
+    public async Task<FlowExecution> ExecuteFlowAsync(Guid flowId, Guid executionId, string? triggerPayload, CancellationToken cancellationToken, FlowTestContext? testContext = null)
     {
         var flowExecution = await _executionRepository.GetFlowExecutionAsync(executionId)
             ?? throw new InvalidOperationException($"FlowExecution {executionId} not found.");
 
-        using var executionScope = _logger.BeginScope(new Dictionary<string, object>
+        triggerPayload = testContext?.ResolveTriggerPayload(triggerPayload) ?? triggerPayload;
+
+        using var executionScope = _logger.BeginScope(new Dictionary<string, object?>
         {
             ["ExecutionId"] = executionId,
             ["FlowId"] = flowId,
-            ["TenantId"] = flowExecution.TenantId
+            ["FlowName"] = flowExecution.FlowName,
+            ["IntegrationId"] = flowExecution.IntegrationId ?? Guid.Empty,
+            ["IntegrationName"] = flowExecution.IntegrationName,
+            ["TenantId"] = flowExecution.TenantId,
+            ["IsTest"] = flowExecution.IsTest,
+            ["TestCaseId"] = flowExecution.TestCaseId,
+            ["TestRunId"] = flowExecution.TestRunId
         });
 
         flowExecution.Status = ExecutionStatus.InProgress;
         flowExecution.StartedAt = DateTime.UtcNow;
         await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
 
-        _logger.LogInformation("Execution {ExecutionId} started for flow {FlowId} (trigger: {TriggerSource})",
+        _logger.LogInformation(new EventId(1300, "flow.execution.started"), "Execution {ExecutionId} started for flow {FlowId} (trigger: {TriggerSource})",
             executionId, flowId, flowExecution.TriggerSource);
 
         var flow = await _repository.GetByIdAsync(flowId);
@@ -129,12 +137,12 @@ public class FlowExecutor
 
                 await RunStepAsync(node, flow, flowStateContext, persistedStateBox,
                     flowExecution, executionId, sortedNodes, activeNodes, executedNodes,
-                    cancellationToken);
+                    cancellationToken, testContext);
             }
 
             flowExecution.Status = ExecutionStatus.Success;
             flowExecution.CompletedAt = DateTime.UtcNow;
-            _logger.LogInformation("Execution {ExecutionId} completed successfully ({TotalRecords} steps)",
+            _logger.LogInformation(new EventId(1301, "flow.execution.completed"), "Execution {ExecutionId} completed successfully ({TotalRecords} steps)",
                 executionId, flowExecution.TotalRecords);
         }
         catch (OperationCanceledException)
@@ -142,14 +150,14 @@ public class FlowExecutor
             flowExecution.Status = ExecutionStatus.Cancelled;
             flowExecution.ErrorMessage = "Execution was cancelled.";
             flowExecution.CompletedAt = DateTime.UtcNow;
-            _logger.LogWarning("Execution {ExecutionId} was cancelled", executionId);
+            _logger.LogWarning(new EventId(1302, "flow.execution.cancelled"), "Execution {ExecutionId} was cancelled", executionId);
         }
         catch (Exception ex)
         {
             flowExecution.Status = ExecutionStatus.Failed;
             flowExecution.ErrorMessage = ex.Message;
             flowExecution.CompletedAt = DateTime.UtcNow;
-            _logger.LogError(ex, "Execution {ExecutionId} failed", executionId);
+            _logger.LogError(new EventId(1303, "flow.execution.failed"), ex, "Execution {ExecutionId} failed", executionId);
         }
 
         await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
@@ -166,7 +174,8 @@ public class FlowExecutor
         List<IntegrationStep> sortedNodes,
         HashSet<Guid> activeNodes,
         HashSet<Guid> executedNodes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FlowTestContext? testContext)
     {
         var receivedInput = ResolveNodeInput(flow, node, flowStateContext);
         var stepExecution = new StepExecution
@@ -187,23 +196,69 @@ public class FlowExecutor
 
         // Scope so every line emitted while this node runs (including transport/script
         // logging) carries the node correlation into the database log sink.
-        using var nodeScope = _logger.BeginScope(new Dictionary<string, object>
+        using var nodeScope = _logger.BeginScope(new Dictionary<string, object?>
         {
             ["ExecutionId"] = executionId,
             ["FlowId"] = flow.Id,
-            ["NodeName"] = node.NodeName ?? string.Empty
+            ["CardId"] = node.Id,
+            ["CardType"] = node.StepType.ToString(),
+            ["StepExecutionId"] = stepExecution.Id,
+            ["NodeName"] = node.NodeName ?? string.Empty,
+            ["IsTest"] = flowExecution.IsTest,
+            ["TestCaseId"] = flowExecution.TestCaseId,
+            ["TestRunId"] = flowExecution.TestRunId
         });
 
+        using var cardActivity = new Activity($"flow.card:{node.NodeName}");
+        cardActivity.SetTag("flow.id", flow.Id);
+        cardActivity.SetTag("flow.execution.id", executionId);
+        cardActivity.SetTag("card.id", node.Id);
+        cardActivity.SetTag("card.type", node.StepType.ToString());
+        cardActivity.Start();
+
         var nodeStartedAt = Stopwatch.GetTimestamp();
-        _logger.LogInformation("Execution {ExecutionId}: node {NodeName} ({StepType}) started",
+        _logger.LogInformation(new EventId(1400, "flow.card.started"), "Execution {ExecutionId}: node {NodeName} ({StepType}) started",
             executionId, node.NodeName, node.StepType);
 
         try
         {
-            if (node.StepType == StepType.HttpAction)
+            if (testContext?.TryGetCardOverride(node.Id, out var cardOverride) == true && node.StepType != StepType.ForEach)
+            {
+                stepExecution.RequestPayload = receivedInput.ToString(Newtonsoft.Json.Formatting.None);
+                stepExecution.HttpStatusCode = cardOverride.StatusCode ?? 200;
+                currentPayload = testContext.Resolve(cardOverride.OutputJson);
+                stepExecution.ResponsePayload = currentPayload;
+                if (!string.IsNullOrWhiteSpace(cardOverride.ErrorMessage) || stepExecution.HttpStatusCode < 200 || stepExecution.HttpStatusCode >= 300)
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(cardOverride.ErrorMessage)
+                        ? $"Supplied output for card {node.NodeName} returned HTTP status {stepExecution.HttpStatusCode}."
+                        : testContext.Resolve(cardOverride.ErrorMessage));
+
+                if (node.StepType == StepType.Branch)
+                {
+                    var branchValue = false;
+                    try
+                    {
+                        var token = JToken.Parse(currentPayload);
+                        branchValue = token.Type == JTokenType.Boolean
+                            ? token.Value<bool>()
+                            : token["branchResult"]?.Value<bool>() ?? false;
+                    }
+                    catch { branchValue = string.Equals(currentPayload.Trim(), "true", StringComparison.OrdinalIgnoreCase); }
+                    foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == node.Id))
+                    {
+                        var port = (edge.SourcePortId ?? string.Empty).ToLowerInvariant();
+                        if ((branchValue && port == "true") || (!branchValue && port == "false")) activeNodes.Add(edge.TargetNodeId);
+                    }
+                }
+                else
+                {
+                    foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == node.Id)) activeNodes.Add(edge.TargetNodeId);
+                }
+            }
+            else if (node.StepType == StepType.HttpAction)
             {
                 var httpResult =
-                    await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken);
+                    await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken, testContext);
 
                 stepExecution.RequestPayload = httpResult.RequestPayload;
                 stepExecution.HttpStatusCode = httpResult.StatusCode;
@@ -302,7 +357,10 @@ public class FlowExecutor
                     currentPayload = await RunScriptAsync(node, "PersistedState",
                         () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson));
                     persistedStateBox.Value = ParseObjectOrEmpty(currentPayload);
-                    await _repository.UpdatePersistedStateAsync(flow.Id, persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None));
+                    if (testContext == null)
+                    {
+                        await _repository.UpdatePersistedStateAsync(flow.Id, persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None));
+                    }
                     stepExecution.ResponsePayload = currentPayload;
                 }
 
@@ -330,7 +388,10 @@ public class FlowExecutor
                 var records = CrossReferenceKeyBuilder.ToRecords(
                     ResolveRecordSourcePaths(input, flowStateContext, config.ArrayPath));
 
-                await _crossReferenceRepository.EnsureListAsync(config.ListName, string.Empty);
+                if (testContext == null)
+                {
+                    await _crossReferenceRepository.EnsureListAsync(config.ListName, string.Empty);
+                }
 
                 var entries = records
                     .Select(record => new
@@ -348,7 +409,10 @@ public class FlowExecutor
                     })
                     .ToList();
 
-                var stored = await _crossReferenceRepository.UpsertEntriesAsync(config.ListName, entries);
+                var stored = testContext == null
+                    ? await _crossReferenceRepository.UpsertEntriesAsync(config.ListName, entries)
+                    : entries.Count;
+                testContext?.StoreCrossReferenceKeys(config.ListName, entries.Select(entry => entry.KeyValue));
 
                 stepExecution.ResponsePayload = new JObject
                 {
@@ -385,7 +449,9 @@ public class FlowExecutor
                     .Distinct(StringComparer.Ordinal)
                     .ToList();
 
-                var knownKeys = await _crossReferenceRepository.GetExistingKeysAsync(config.ListName, lookupKeys);
+                var knownKeys = testContext == null
+                    ? await _crossReferenceRepository.GetExistingKeysAsync(config.ListName, lookupKeys)
+                    : lookupKeys.Where(key => testContext.ContainsCrossReferenceKey(config.ListName, key)).ToArray();
 
                 var knownKeySet = new HashSet<string>(knownKeys, StringComparer.Ordinal);
                 var seenKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -447,7 +513,9 @@ public class FlowExecutor
                         $"ForEach node {node.NodeName} has no array path configured.");
                 }
 
-                var input = ResolveNodeInput(flow, node, flowStateContext);
+                var input = testContext != null && testContext.TryGetCardOverride(node.Id, out var foreachOverride)
+                    ? ParseTokenOrString(testContext.Resolve(foreachOverride.OutputJson))
+                    : ResolveNodeInput(flow, node, flowStateContext);
                 var (arrayRoot, arrayActualPath) = ResolveArraySource(input, flowStateContext, config.ArrayPath);
                 var arrayElements = CrossReferenceKeyBuilder.ResolvePath(arrayRoot, arrayActualPath)
                     ?.ToArray() ?? Array.Empty<JToken>();
@@ -490,7 +558,7 @@ public class FlowExecutor
                                     lastPayload = await RunStepAsync(
                                         subNode, flow, iterationState, persistedStateBox,
                                         flowExecution, executionId, sortedNodes,
-                                        activeNodes, executedNodes, ct);
+                                        activeNodes, executedNodes, ct, testContext);
 
                                     if (!string.IsNullOrWhiteSpace(subNode.NodeName))
                                     {
@@ -556,7 +624,7 @@ public class FlowExecutor
                                 lastPayload = await RunStepAsync(
                                     subNode, flow, iterationState, persistedStateBox,
                                     flowExecution, executionId, sortedNodes,
-                                    activeNodes, executedNodes, cancellationToken);
+                                    activeNodes, executedNodes, cancellationToken, testContext);
 
                                 if (!string.IsNullOrWhiteSpace(subNode.NodeName))
                                 {
@@ -609,7 +677,7 @@ public class FlowExecutor
 
                 stepExecution.ResponsePayload = currentPayload;
 
-                _logger.LogInformation(
+                _logger.LogInformation(new EventId(1404, "flow.loop.completed"),
                     "Execution {ExecutionId}: ForEach node {NodeName} iterated {Count} items",
                     executionId, node.NodeName, arrayElements.Length);
 
@@ -636,7 +704,7 @@ public class FlowExecutor
             stepExecution.CompletedAt = DateTime.UtcNow;
             lock (_executionLock) { flowExecution.SuccessRecords++; }
 
-            _logger.LogInformation(
+            _logger.LogInformation(new EventId(1401, "flow.card.completed"),
                 "Execution {ExecutionId}: node {NodeName} finished with status {Status} in {DurationMs}ms (HTTP {HttpStatusCode}, {ResponseBytes} bytes out)",
                 executionId, node.NodeName, ExecutionStatus.Success,
                 (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds,
@@ -649,7 +717,7 @@ public class FlowExecutor
             stepExecution.CompletedAt = DateTime.UtcNow;
             await _executionRepository.UpdateStepExecutionAsync(stepExecution);
 
-            _logger.LogWarning(
+            _logger.LogWarning(new EventId(1402, "flow.card.cancelled"),
                 "Execution {ExecutionId}: node {NodeName} cancelled after {DurationMs}ms",
                 executionId, node.NodeName, (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds);
             throw;
@@ -661,7 +729,7 @@ public class FlowExecutor
             stepExecution.CompletedAt = DateTime.UtcNow;
             lock (_executionLock) { flowExecution.FailedRecords++; }
 
-            _logger.LogError(ex,
+            _logger.LogError(new EventId(1403, "flow.card.failed"), ex,
                 "Execution {ExecutionId}: node {NodeName} failed after {DurationMs}ms — dead-lettering",
                 executionId, node.NodeName, (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds);
 
@@ -766,7 +834,7 @@ public class FlowExecutor
         IReadOnlyList<StepPacketLog> Packets);
 
     public async Task<HttpExecutionResult> ExecuteHttpNodeAsync(
-        IntegrationStep node, string flowStateJson, string persistedStateJson, CancellationToken cancellationToken)
+        IntegrationStep node, string flowStateJson, string persistedStateJson, CancellationToken cancellationToken, FlowTestContext? testContext = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -794,6 +862,7 @@ public class FlowExecutor
             AuthPassword = node.AuthPassword,
             AuthConfigJson = node.AuthConfigJson,
             ConnectionId = node.ConnectionId,
+            Id = node.Id,
             StepConfig = node.StepConfig
         };
 
@@ -808,7 +877,7 @@ public class FlowExecutor
         {
             cancellationToken.ThrowIfCancellationRequested();
             nodeToDispatch.EndpointUrl = nextUrl;
-            var transportResponse = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId, cancellationToken);
+            var transportResponse = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId, cancellationToken, testContext);
             statusCode = transportResponse.StatusCode;
             foreach (var attempt in transportResponse.Attempts)
             {

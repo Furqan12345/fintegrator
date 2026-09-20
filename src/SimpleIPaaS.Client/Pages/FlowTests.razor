@@ -1,0 +1,365 @@
+@page "/flow-tests/{FlowId:guid}"
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Blazor.Diagrams
+@using Blazor.Diagrams.Components
+@using Blazor.Diagrams.Core
+@using Blazor.Diagrams.Core.Models
+@using Blazor.Diagrams.Core.PathGenerators
+@using Blazor.Diagrams.Core.Routers
+@using Blazor.Diagrams.Options
+@using SimpleIPaaS.Client.Components.Nodes
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject NavigationManager NavigationManager
+
+<PageTitle>Test mode · @(_flow?.Name ?? "Flow")</PageTitle>
+<div class="flow-test-app">
+    <header class="flow-test-toolbar">
+        <div class="flow-test-toolbar-left">
+            <button class="flow-test-back" type="button" @onclick="BackToDesigner">‹</button>
+            <div class="flow-test-title-block"><span class="flow-test-eyebrow">FLOW TESTING</span><strong>@(_flow?.Name ?? "Flow")</strong></div>
+            <span class="flow-test-mode">Test mode</span>
+        </div>
+        <div class="flow-test-toolbar-actions">
+            <button class="flow-test-tool-button" @onclick="ToggleScenarioDrawer">Scenarios <span>@_tests.Count</span></button>
+            <button class="flow-test-tool-button" @onclick="NewScenario">New</button>
+            <button class="flow-test-tool-button" @onclick="DuplicateScenario" disabled="@(_selectedTest == null)">Duplicate</button>
+            <button class="flow-test-tool-button" @onclick="OpenInputs">Scenario inputs</button>
+            <button class="flow-test-tool-button" @onclick="SaveAsync" disabled="@_busy">Save</button>
+            <button class="flow-test-primary" @onclick="RunAsync" disabled="@(_busy || _selectedTest == null)">Run test</button>
+            <button class="flow-test-tool-button" @onclick="RunEnabledAsync" disabled="@_busy">Run enabled tests</button>
+        </div>
+    </header>
+    <div class="flow-test-workspace @(ScenarioDrawerOpen ? "has-scenarios" : "") @(_selectedNode != null ? "has-inspector" : "")">
+        @if (ScenarioDrawerOpen)
+        {
+            <aside class="flow-test-scenarios">
+                <div class="flow-test-pane-heading"><div><span class="flow-test-eyebrow">SCENARIOS</span><h2>@_tests.Count</h2></div><button class="flow-test-icon-button" @onclick="ToggleScenarioDrawer">×</button></div>
+                <div class="flow-test-scenario-search"><input @bind="_scenarioSearch" @bind:event="oninput" placeholder="Search scenarios" /></div>
+                <div class="flow-test-scenario-list">
+                    @foreach (var test in FilteredTests)
+                    {
+                        <button class="flow-test-scenario @(test.Id == _selectedId ? "is-selected" : "")" @onclick="() => SelectScenario(test)"><span class="flow-test-scenario-status @(ScenarioStatusClass(test))"></span><span class="flow-test-scenario-copy"><strong>@test.Name</strong><small>@(test.Enabled ? "Enabled" : "Disabled") · @(test.Definition.Assertions?.Count ?? 0) checks</small></span><span>›</span></button>
+                    }
+                    @if (!FilteredTests.Any()) { <div class="flow-test-empty">No scenarios match this search.</div> }
+                </div>
+                <div class="flow-test-scenario-foot"><span class="status-dot"></span> Isolated data and mocked responses</div>
+            </aside>
+        }
+        <main class="flow-test-canvas-area">
+            <div class="flow-test-canvas-head">
+                <div><div class="flow-test-breadcrumb"><button @onclick="BackToDesigner">Designer</button><span>/</span><span>Test mode</span></div><input class="flow-test-scenario-name" @bind="_scenarioName" placeholder="Scenario name" /><textarea class="flow-test-scenario-description" rows="2" @bind="_description" placeholder="What does this scenario prove?"></textarea></div>
+                <div class="flow-test-canvas-head-actions">@if (!ScenarioDrawerOpen) { <button class="flow-test-tool-button" @onclick="ToggleScenarioDrawer">Show scenarios</button> }<button class="flow-test-tool-button" @onclick="OpenInputs">Inputs</button><button class="flow-test-fit" @onclick="FitDiagram">Fit</button></div>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(_message)) { <div class="flow-test-message @(_message.Contains("saved", StringComparison.OrdinalIgnoreCase) || _message.Contains("queued", StringComparison.OrdinalIgnoreCase) ? "is-good" : "is-warning")">@_message</div> }
+            <div class="flow-test-canvas">
+                <div class="flow-test-canvas-legend"><span><i class="legend-line normal"></i>Runs normally</span><span><i class="legend-line mocked"></i>Mocked</span><span><i class="legend-line needs"></i>Needs response</span></div>
+                @if (_selectedNode == null) { <div class="flow-test-canvas-hint"><strong>Select a card to configure this scenario</strong><span>Choose mock responses, supplied outputs, and checks without leaving the canvas.</span></div> }
+                @if (_flow == null) { <div class="flow-test-loading">Loading flow canvas…</div> }
+                else { <CascadingValue Value="Diagram"><CascadingValue Value="this"><DiagramCanvas /></CascadingValue></CascadingValue> }
+                <div class="flow-test-zoom"><button @onclick="ZoomOut">−</button><button @onclick="ZoomIn">+</button><button @onclick="FitDiagram">Fit</button></div>
+            </div>
+        </main>
+        @if (_selectedNode != null)
+        {
+            <aside class="flow-test-inspector">
+                <div class="flow-test-inspector-head"><div><span class="flow-test-eyebrow">CARD INSPECTOR</span><h2>@_selectedNode.StepConfig.NodeName</h2><small>@_selectedNode.StepConfig.StepType</small></div><button class="flow-test-icon-button" @onclick="CloseInspector">×</button></div>
+                <nav class="flow-test-tabs"><button class="@(InspectorTab == "Behavior" ? "active" : "")" @onclick="ShowBehaviorTab">Behavior</button><button class="@(InspectorTab == "Checks" ? "active" : "")" @onclick="ShowChecksTab">Checks <span>@SelectedChecks.Count()</span></button><button class="@(InspectorTab == "Results" ? "active" : "")" @onclick="ShowResultsTab">Results</button></nav>
+                <div class="flow-test-inspector-body">
+                    @if (InspectorTab == "Behavior")
+                    {
+                        <section class="inspector-section">
+                            <div class="inspector-section-title"><div><strong>Card behavior</strong><small>Use production logic or supply a deterministic result.</small></div><span class="status-pill @NodeStatusClass(_selectedNode)">@NodeStatus(_selectedNode)</span></div>
+                            <label class="flow-test-radio"><input type="radio" name="behavior" checked="@(!IsCardMocked)" @onchange="() => SetCardMode(false)" /><span><strong>Run normal logic</strong><small>Use the production card configuration.</small></span></label>
+                            <label class="flow-test-radio"><input type="radio" name="behavior" checked="@(IsCardMocked)" @onchange="() => SetCardMode(true)" /><span><strong>Supply test output</strong><small>Replace this computation and continue normal routing.</small></span></label>
+                            @if (IsCardMocked)
+                            {
+                                <div class="flow-test-field"><label>Output format</label><select @bind="CurrentOverride.OutputFormat"><option value="Json">JSON</option><option value="Text">Text</option><option value="Xml">XML</option></select></div>
+                                <div class="flow-test-field"><label>Supplied output</label><textarea rows="10" @bind="CurrentOverride.OutputJson" placeholder="Paste card output"></textarea><small>JSON is compared structurally; text and XML are preserved exactly.</small></div>
+                                <div class="flow-test-field"><label>HTTP status (optional)</label><input type="number" @bind="CurrentOverride.StatusCode" /></div>
+                                <div class="inspector-note">Branch routing still follows configured true/false ports. Loop configuration remains responsible for iteration.</div>
+                            }
+                            @if (IsHttpCard)
+                            {
+                                <div class="inspector-divider"></div><div class="inspector-section-title"><div><strong>HTTP response fixtures</strong><small>Required when this card runs normally.</small></div><button class="small-link" @onclick="AddHttpResponse">Add response</button></div>
+                                <div class="response-policy"><label>When responses run out</label><select @bind="_definition.ResponseExhaustionBehavior"><option value="RepeatFinalResponse">Repeat final response</option><option value="FailWhenExhausted">Fail when exhausted</option></select></div>
+                                @foreach (var response in CurrentHttpResponses.Select((item, index) => (item, index)))
+                                {
+                                    <div class="http-response-fixture"><div class="fixture-row-head"><strong>Response @(response.index + 1)</strong><span><button class="small-link" disabled="@(response.index == 0)" @onclick="() => MoveHttpResponse(response.item, -1)">↑</button><button class="small-link" disabled="@(response.index == CurrentHttpResponses.Count - 1)" @onclick="() => MoveHttpResponse(response.item, 1)">↓</button><button class="small-link danger" @onclick="() => RemoveHttpResponse(response.item)">Remove</button></span></div><label>Status</label><input type="number" @bind="response.item.StatusCode" /><label>Body format</label><select @bind="response.item.ResponseFormat"><option value="Json">JSON</option><option value="Text">Text</option><option value="Xml">XML</option></select><label>Body</label><textarea rows="6" @bind="response.item.ResponseBody"></textarea><label>Headers (JSON)</label><textarea rows="3" @bind="HeadersText[response.item]"></textarea></div>
+                                }
+                                @if (!CurrentHttpResponses.Any() && !IsCardMocked) { <div class="fixture-empty">Needs response. Add a fixture before running.</div> }
+                            }
+                        </section>
+                    }
+                    else if (InspectorTab == "Checks")
+                    {
+                        <section class="inspector-section"><div class="inspector-section-title"><div><strong>Checks for this card</strong><small>Checks attach to the card, never to a node ID.</small></div><span class="inspector-section-actions"><a class="small-link" href="@($"/docs/flow-test-assertions?flowId={FlowId}")">Help</a><button class="small-link" @onclick="AddCheck">Add check</button></span></div>
+                            @foreach (var check in SelectedChecks)
+                            {
+                                <div class="check-editor"><div class="check-summary">@CheckSummary(check)</div><div class="flow-test-field"><label>Inspect</label><select @bind="check.Field"><option value="Status">Card status</option><option value="ResponsePayload">Output</option><option value="ReceivedInput">Input</option><option value="HttpStatusCode">HTTP status</option><option value="ErrorMessage">Error text</option><option value="InvocationCount">Invocation count</option></select></div>@if (check.Field is "ResponsePayload" or "ReceivedInput") { <div class="flow-test-field"><label>Field path (optional)</label><input @bind="check.Path" placeholder="orders[0].SellerSKU" /></div> }<div class="check-grid"><div class="flow-test-field"><label>Must</label><select @bind="check.Operator"><option value="Equals">equal</option><option value="NotEquals">not equal</option><option value="Contains">contain</option><option value="NotContains">not contain</option><option value="StartsWith">start with</option><option value="EndsWith">end with</option><option value="Exists">exist</option><option value="Missing">be missing</option><option value="GreaterThan">be greater than</option><option value="GreaterOrEqual">be at least</option><option value="LessThan">be less than</option><option value="LessOrEqual">be at most</option><option value="CollectionCount">have collection count</option></select></div><div class="flow-test-field"><label>Expected</label><input @bind="check.ExpectedValue" /></div></div><div class="check-grid"><div class="flow-test-field"><label>Repeated card</label><select @bind="check.InvocationScope"><option value="Every">Every invocation</option><option value="Any">Any invocation</option><option value="InvocationNumber">Invocation number</option></select></div>@if (check.InvocationScope == "InvocationNumber") { <div class="flow-test-field"><label>Invocation #</label><input type="number" @bind="check.InvocationNumber" /></div> }</div><button class="remove-check" @onclick="() => RemoveCheck(check)">Remove check</button></div>
+                            }
+                            @if (!SelectedChecks.Any()) { <div class="fixture-empty">No checks yet. Add one from this card.</div> }
+                        </section>
+                    }
+                    else
+                    {
+                        <section class="inspector-section results-inspector"><div class="inspector-section-title"><div><strong>Recorded result</strong><small>Results are tied to the immutable run snapshot.</small></div></div><div class="result-state"><span class="status-pill @NodeStatusClass(_selectedNode)">@NodeStatus(_selectedNode)</span>@if (SelectedCardResult != null) { <span>@SelectedCardResult.DurationMs ms · @SelectedCardResult.InvocationCount invocation(s)</span> }</div>@if (SelectedCardResult != null) { <label>Actual output</label><pre>@SelectedCardResult.Output</pre>@if (!string.IsNullOrWhiteSpace(SelectedCardResult.ErrorMessage)) { <div class="result-error">@SelectedCardResult.ErrorMessage</div> } } else { <div class="fixture-empty">Run this scenario to record a result.</div> }</section>
+                    }
+                </div>
+            </aside>
+        }
+    </div>
+    @if (_showInputs)
+    {
+        <div class="flow-test-modal-backdrop" @onclick="CloseInputs"><aside class="flow-test-inputs-panel" @onclick:stopPropagation="true"><div class="flow-test-inspector-head"><div><span class="flow-test-eyebrow">SCENARIO INPUTS</span><h2>Controlled inputs</h2><small>Isolated to this scenario.</small></div><button class="flow-test-icon-button" @onclick="CloseInputs">×</button></div><div class="flow-test-inputs-body"><div class="flow-test-field"><label>Trigger payload</label><textarea rows="9" @bind="_definition.TriggerPayloadJson"></textarea><small>Use JSON for nested payloads. Variables use {{variableName}}.</small></div><div class="input-subsection"><div class="inspector-section-title"><div><strong>Reusable variables</strong></div><button class="small-link" @onclick="AddVariable">Add</button></div>@foreach (var variable in _variables) { <div class="input-row"><input @bind="variable.Name" placeholder="Name" /><input @bind="variable.Value" placeholder="Value" /><button class="remove-check" @onclick="() => _variables.Remove(variable)">Remove</button></div> }</div><div class="input-subsection"><div class="inspector-section-title"><div><strong>Isolated cross-reference rows</strong></div><button class="small-link" @onclick="AddCrossReference">Add</button></div>@foreach (var row in _definition.CrossReferenceRows) { <div class="input-row input-row-three"><input @bind="row.ListName" placeholder="List" /><input @bind="row.KeyValue" placeholder="Key" /><input @bind="row.ValueJson" placeholder="Value JSON" /><button class="remove-check" @onclick="() => _definition.CrossReferenceRows.Remove(row)">Remove</button></div> }</div><label class="flow-test-checkbox"><input type="checkbox" @bind="_requiredForPublish" /><span><strong>Required before publish</strong><small>Must pass for the current flow revision.</small></span></label></div></aside></div>
+    }    @if (_showResults)
+    {
+        <section class="flow-test-results-panel"><div class="results-panel-head"><div><span class="flow-test-eyebrow">LATEST RESULT</span><h2>@(_latestRun?.Status ?? "No run yet")</h2><small>@(_latestRun?.StartedAt.ToLocalTime().ToString("g") ?? "Run the scenario to see results.")</small></div><div><button class="flow-test-tool-button" @onclick="LoadRunsAsync">Refresh</button><button class="flow-test-icon-button" @onclick="() => _showResults = false">×</button></div></div>@if (_latestEvaluation != null) { <div class="results-summary"><span class="status-pill @(_latestEvaluation.Passed ? "passed" : "failed")">@(_latestEvaluation.Passed ? "Passed" : "Failed")</span><span>@_latestEvaluation.Checks.Count(c => c.Status == "Passed") of @_latestEvaluation.Checks.Count checks passed</span><span>@_latestEvaluation.Cards.Count cards reached</span></div>@foreach (var check in _latestEvaluation.Checks) { <button class="result-check-row @check.Status.ToLowerInvariant()" @onclick="() => FocusCheck(check)"><span>@(check.Status == "Passed" ? "✓" : "!")</span><strong>@check.CardName</strong><span>@check.ActualValue</span><small>@check.FailureReason</small></button> } } else { <div class="fixture-empty">No structured result is available yet.</div> }</section>
+    }
+</div>
+@code {
+    [Parameter] public Guid FlowId { get; set; }
+    private BlazorDiagram Diagram { get; set; } = null!;
+    private IntegrationFlowDto? _flow;
+    private List<FlowTestCaseDto> _tests = new();
+    private FlowTestCaseDto? _selectedTest;
+    private Guid _selectedId;
+    private FlowTestDefinitionDto _definition = new();
+    private IntegrationNodeModel? _selectedNode;
+    private FlowTestCardOverrideDto _selectedOverride = new();
+    private List<FlowHttpResponseOverrideDto> _selectedHttpResponses = new();
+    private Dictionary<FlowHttpResponseOverrideDto, string> HeadersText { get; } = new();
+    private List<VariableEditorRow> _variables = new();
+    private List<FlowTestRunDto> _runs = new();
+    private FlowTestRunDto? _latestRun;
+    private FlowTestEvaluationDto? _latestEvaluation;
+    private string _scenarioSearch = string.Empty;
+    private string _scenarioName = "New scenario";
+    private string _description = string.Empty;
+    private string InspectorTab { get; set; } = "Behavior";
+    private string _message = string.Empty;
+    private bool _busy;
+    private bool _showInputs;
+    private bool _showResults;
+    private bool _scenarioDrawerOpen = true;
+    private bool _requiredForPublish;
+    private bool _dirty;
+    private bool _fitAfterRender;
+
+    private bool ScenarioDrawerOpen => _scenarioDrawerOpen;
+    private bool IsCardMocked => _selectedOverride.CardId != Guid.Empty && _selectedOverride.Mode.Equals("Supply", StringComparison.OrdinalIgnoreCase);
+    private bool IsHttpCard => _selectedNode?.StepConfig.StepType.Equals("HttpAction", StringComparison.OrdinalIgnoreCase) == true;
+    private FlowTestCardOverrideDto CurrentOverride => _selectedOverride;
+    private IEnumerable<FlowTestAssertionDto> SelectedChecks => _definition.Assertions.Where(check => check.CardId == _selectedNode?.StepConfig.Id || (check.CardId == null && check.NodeName.Equals(_selectedNode?.StepConfig.NodeName, StringComparison.OrdinalIgnoreCase)));
+    private FlowTestCardResultDto? SelectedCardResult => _latestEvaluation?.Cards.FirstOrDefault(result => result.CardId == _selectedNode?.StepConfig.Id);
+    private List<FlowHttpResponseOverrideDto> CurrentHttpResponses => _selectedHttpResponses;
+    private IEnumerable<FlowTestCaseDto> FilteredTests => string.IsNullOrWhiteSpace(_scenarioSearch) ? _tests : _tests.Where(test => test.Name.Contains(_scenarioSearch, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        SetupDiagram();
+        _flow = await Http.GetFromJsonAsync<IntegrationFlowDto>($"api/integrationflow/{FlowId}");
+        await LoadScenariosAsync();
+        if (_tests.Count > 0) SelectScenario(_tests[0]); else NewScenario();
+        BuildDiagram();
+    }
+
+    private void SetupDiagram()
+    {
+        var options = new BlazorDiagramOptions
+        {
+            AllowMultiSelection = false,
+            Zoom = { Enabled = true, ScaleFactor = 1.1 },
+            Links = { DefaultRouter = new NormalRouter(), DefaultPathGenerator = new SmoothPathGenerator() }
+        };
+
+        Diagram = new BlazorDiagram(options);
+        Diagram.RegisterComponent<IntegrationNodeModel, IntegrationNodeWidget>();
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_fitAfterRender && _flow != null)
+        {
+            _fitAfterRender = false;
+            Diagram.ZoomToFit(64);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private void BuildDiagram()
+    {
+        Diagram.Nodes.Clear(); Diagram.Links.Clear(); if (_flow == null) return;
+        foreach (var step in _flow.Nodes) { var node = new IntegrationNodeModel(step) { IsTestMode = true, TestClick = OnNodeClicked }; UpdateNodeStatus(node); node.SetPosition(step.PositionX, step.PositionY); Diagram.Nodes.Add(node); }
+        foreach (var edge in _flow.Edges) { var source = Diagram.Nodes.OfType<IntegrationNodeModel>().FirstOrDefault(node => node.StepConfig.Id == edge.SourceNodeId); var target = Diagram.Nodes.OfType<IntegrationNodeModel>().FirstOrDefault(node => node.StepConfig.Id == edge.TargetNodeId); if (source == null || target == null) continue; var sourcePort = source.Ports.FirstOrDefault(port => port.Id.Equals(edge.SourcePortId, StringComparison.OrdinalIgnoreCase)) ?? source.Ports.FirstOrDefault(); var targetPort = target.Ports.FirstOrDefault(port => port.Id.Equals(edge.TargetPortId, StringComparison.OrdinalIgnoreCase)) ?? target.Ports.FirstOrDefault(); if (sourcePort != null && targetPort != null) Diagram.Links.Add(new LinkModel(sourcePort, targetPort)); }
+        _fitAfterRender = true;
+    }
+
+    private void UpdateNodeStatus(IntegrationNodeModel node)
+    {
+        var overrideItem = _definition.CardOverrides.FirstOrDefault(item => item.CardId == node.StepConfig.Id);
+        node.IsMocked = overrideItem?.Mode.Equals("Supply", StringComparison.OrdinalIgnoreCase) == true || _definition.HttpResponses.ContainsKey(node.StepConfig.Id.ToString());
+        var result = _latestEvaluation?.Cards.FirstOrDefault(item => item.CardId == node.StepConfig.Id);
+        node.TestStatus = result?.Status ?? (node.IsMocked ? "Mocked" : node.StepConfig.StepType.Equals("HttpAction", StringComparison.OrdinalIgnoreCase) ? "Needs response" : "Runs normally");
+    }
+
+    private void RefreshCanvasStatuses() { foreach (var node in Diagram.Nodes.OfType<IntegrationNodeModel>()) UpdateNodeStatus(node); StateHasChanged(); }
+    private Task OnNodeClicked(IntegrationNodeModel node)
+    {
+        _selectedNode = node;
+        _selectedOverride = _definition.CardOverrides.FirstOrDefault(item => item.CardId == node.StepConfig.Id) ?? new FlowTestCardOverrideDto { CardId = node.StepConfig.Id, CardName = node.StepConfig.NodeName };
+        _selectedHttpResponses = _definition.HttpResponses.TryGetValue(node.StepConfig.Id.ToString(), out var responses) ? responses : new();
+        HeadersText.Clear();
+        foreach (var response in _selectedHttpResponses)
+        {
+            HeadersText[response] = JsonSerializer.Serialize(response.Headers ?? new());
+        }
+
+        InspectorTab = "Behavior";
+        return InvokeAsync(StateHasChanged);
+    }    private void CloseInspector() => _selectedNode = null;
+    private void ShowBehaviorTab() => InspectorTab = "Behavior";
+    private void ShowChecksTab() => InspectorTab = "Checks";
+    private void ShowResultsTab() => InspectorTab = "Results";
+    private void ToggleScenarioDrawer() => _scenarioDrawerOpen = !_scenarioDrawerOpen;
+    private void OpenInputs() => _showInputs = true;
+    private void CloseInputs() => _showInputs = false;
+    private void BackToDesigner() => NavigationManager.NavigateTo($"flow/{FlowId}");
+    private void FitDiagram() => Diagram.ZoomToFit(64);
+    private void ZoomIn() => Diagram.SetZoom(Diagram.Zoom * 1.2);
+    private void ZoomOut() => Diagram.SetZoom(Diagram.Zoom / 1.2);
+
+    private async Task LoadScenariosAsync() => _tests = await Http.GetFromJsonAsync<List<FlowTestCaseDto>>($"api/integrationflow/{FlowId}/test-cases") ?? new();
+
+    private void NewScenario()
+    {
+        _selectedTest = null; _selectedId = Guid.Empty; _scenarioName = "New scenario"; _description = string.Empty; _definition = new FlowTestDefinitionDto { TriggerPayloadJson = "{}", Assertions = new() { new FlowTestAssertionDto { Type = "ExecutionStatus", Field = "Status", Operator = "Equals", ExpectedValue = "Success" } } }; _variables = new(); _runs = new(); _latestRun = null; _latestEvaluation = null; _requiredForPublish = false; _message = "New scenario. Save it after configuring the cards."; _dirty = true; _selectedNode = null; BuildDiagram();
+    }
+
+    private void DuplicateScenario()
+    {
+        if (_selectedTest == null) return; var source = _selectedTest; _selectedTest = null; _selectedId = Guid.Empty; _scenarioName = $"Copy of {source.Name}"; _description = source.Description; _definition = Clone(source.Definition); _requiredForPublish = false; _message = "Scenario duplicated. Save it as a new scenario."; _dirty = true;
+    }
+
+    private void SelectScenario(FlowTestCaseDto test)
+    {
+        _selectedTest = test; _selectedId = test.Id; _scenarioName = test.Name; _description = test.Description; _definition = Clone(test.Definition ?? new()); _requiredForPublish = test.RequiredForPublish; _variables = _definition.Variables.Select(item => new VariableEditorRow { Name = item.Key, Value = item.Value }).ToList(); _selectedNode = null; _latestRun = null; _latestEvaluation = null; _message = string.Empty; _dirty = false; _ = LoadRunsAsync(); BuildDiagram();
+    }
+
+    private static FlowTestDefinitionDto Clone(FlowTestDefinitionDto source) => JsonSerializer.Deserialize<FlowTestDefinitionDto>(JsonSerializer.Serialize(source), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+
+    private async Task SaveAsync()
+    {
+        if (_flow == null) return; _busy = true;
+        try
+        {
+            _definition.Variables = _variables.Where(item => !string.IsNullOrWhiteSpace(item.Name)).GroupBy(item => item.Name.Trim(), StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.Last().Value ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+            if (!ApplyHeaders() || !ValidateScenario()) return;
+            var dto = new FlowTestCaseDto { Id = _selectedId, FlowId = FlowId, Name = string.IsNullOrWhiteSpace(_scenarioName) ? "New scenario" : _scenarioName.Trim(), Description = _description ?? string.Empty, Enabled = _selectedTest?.Enabled ?? true, RequiredForPublish = _requiredForPublish, Definition = _definition };
+            if (_selectedTest == null) { var response = await Http.PostAsJsonAsync($"api/integrationflow/{FlowId}/test-cases", dto); if (!response.IsSuccessStatusCode) { _message = await response.Content.ReadAsStringAsync(); return; } _selectedTest = await response.Content.ReadFromJsonAsync<FlowTestCaseDto>(); }
+            else { var response = await Http.PutAsJsonAsync($"api/integrationflow/{FlowId}/test-cases/{_selectedId}", dto); if (!response.IsSuccessStatusCode) { _message = await response.Content.ReadAsStringAsync(); return; } _selectedTest = await response.Content.ReadFromJsonAsync<FlowTestCaseDto>(); }
+            if (_selectedTest != null) { _selectedId = _selectedTest.Id; _definition = Clone(_selectedTest.Definition); } await LoadScenariosAsync(); _dirty = false; _message = "Scenario saved."; RefreshCanvasStatuses();
+        }
+        finally { _busy = false; }
+    }    private bool ValidateScenario()
+    {
+        foreach (var response in _definition.HttpResponses.Values.SelectMany(item => item).Where(response => response.ResponseFormat.Equals("Json", StringComparison.OrdinalIgnoreCase))) if (!TryValidateJson(response.ResponseBody)) { _message = "A JSON HTTP fixture has invalid JSON."; return false; }
+        foreach (var overrideItem in _definition.CardOverrides.Where(item => item.Mode.Equals("Supply", StringComparison.OrdinalIgnoreCase) && item.OutputFormat.Equals("Json", StringComparison.OrdinalIgnoreCase))) if (!TryValidateJson(overrideItem.OutputJson)) { _message = $"The supplied JSON output for {overrideItem.CardName} is invalid."; return false; }
+        foreach (var node in _flow?.Nodes.Where(node => node.StepType.Equals("HttpAction", StringComparison.OrdinalIgnoreCase)) ?? Enumerable.Empty<IntegrationStepDto>()) { var supplied = _definition.CardOverrides.Any(item => item.CardId == node.Id && item.Mode.Equals("Supply", StringComparison.OrdinalIgnoreCase)); if (!supplied && (!_definition.HttpResponses.TryGetValue(node.Id.ToString(), out var fixture) || fixture.Count == 0)) { _message = $"{node.NodeName} needs a response fixture before this scenario can run."; return false; } }
+        return true;
+    }
+    private static bool TryValidateJson(string? value) { if (string.IsNullOrWhiteSpace(value)) return true; try { JsonDocument.Parse(value); return true; } catch { return false; } }
+
+    private async Task RunAsync()
+    {
+        if (_selectedTest == null) { _message = "Save the scenario before running it."; return; }
+        await SaveAsync(); if (_dirty || _selectedId == Guid.Empty) return; _busy = true; _message = "Test queued."; _showResults = true;
+        try { var response = await Http.PostAsync($"api/integrationflow/{FlowId}/test-cases/{_selectedId}/run", null); _message = response.IsSuccessStatusCode ? "Test queued. Results will appear below." : await response.Content.ReadAsStringAsync(); await Task.Delay(400); await LoadRunsAsync(); }
+        finally { _busy = false; }
+    }
+    private async Task RunEnabledAsync()
+    {
+        _busy = true; _showResults = true;
+        try
+        {
+            var enabled = _tests.Where(test => test.Enabled).ToList();
+            var completed = 0;
+            foreach (var test in enabled)
+            {
+                var response = await Http.PostAsync($"api/integrationflow/{FlowId}/test-cases/{test.Id}/run", null);
+                if (response.IsSuccessStatusCode)
+                {
+                    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                    if (document.RootElement.TryGetProperty("testRunId", out var runId) && Guid.TryParse(runId.GetString(), out var testRunId)) await WaitForRunAsync(test.Id, testRunId);
+                }
+                completed++;
+            }
+            _message = $"Completed {completed} enabled scenario(s) sequentially. Individual failures did not stop the suite.";
+            await LoadRunsAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task WaitForRunAsync(Guid testCaseId, Guid testRunId)
+    {
+        for (var attempt = 0; attempt < 240; attempt++)
+        {
+            var runs = await Http.GetFromJsonAsync<List<FlowTestRunDto>>($"api/integrationflow/{FlowId}/test-cases/{testCaseId}/runs") ?? new();
+            var run = runs.FirstOrDefault(item => item.Id == testRunId);
+            if (run?.Status is "Passed" or "Failed" or "Cancelled") return;
+            await Task.Delay(500);
+        }
+    }
+    private async Task LoadRunsAsync()
+    {
+        if (_selectedId == Guid.Empty) return; _runs = await Http.GetFromJsonAsync<List<FlowTestRunDto>>($"api/integrationflow/{FlowId}/test-cases/{_selectedId}/runs") ?? new(); _latestRun = _runs.OrderByDescending(run => run.StartedAt).FirstOrDefault(); _latestEvaluation = null;
+        if (_latestRun != null && !string.IsNullOrWhiteSpace(_latestRun.ResultJson) && _latestRun.ResultJson != "{}") { try { _latestEvaluation = JsonSerializer.Deserialize<FlowTestEvaluationDto>(_latestRun.ResultJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); } catch { } } RefreshCanvasStatuses();
+    }
+
+    private void SetCardMode(bool mocked)
+    {
+        if (_selectedNode == null) return; var item = _definition.CardOverrides.FirstOrDefault(overrideItem => overrideItem.CardId == _selectedNode.StepConfig.Id); if (item == null) { item = new FlowTestCardOverrideDto { CardId = _selectedNode.StepConfig.Id, CardName = _selectedNode.StepConfig.NodeName }; _definition.CardOverrides.Add(item); } _selectedOverride = item; item.Mode = mocked ? "Supply" : "Run"; if (mocked && string.IsNullOrWhiteSpace(item.OutputJson)) item.OutputJson = "{}"; _dirty = true; RefreshCanvasStatuses();
+    }
+    private void AddHttpResponse()
+    {
+        if (_selectedNode == null) return; if (!_definition.HttpResponses.TryGetValue(_selectedNode.StepConfig.Id.ToString(), out var responses)) _definition.HttpResponses[_selectedNode.StepConfig.Id.ToString()] = responses = new(); var response = new FlowHttpResponseOverrideDto(); responses.Add(response); _selectedHttpResponses = responses; HeadersText[response] = "{}"; _dirty = true; RefreshCanvasStatuses();
+    }
+    private void MoveHttpResponse(FlowHttpResponseOverrideDto response, int offset)
+    {
+        var index = _selectedHttpResponses.IndexOf(response);
+        var target = index + offset;
+        if (index < 0 || target < 0 || target >= _selectedHttpResponses.Count) return;
+        _selectedHttpResponses.RemoveAt(index);
+        _selectedHttpResponses.Insert(target, response);
+        if (_selectedNode != null) _definition.HttpResponses[_selectedNode.StepConfig.Id.ToString()] = _selectedHttpResponses;
+        _dirty = true;
+    }
+
+    private bool ApplyHeaders()
+    {
+        foreach (var response in _definition.HttpResponses.Values.SelectMany(item => item))
+        {
+            if (!HeadersText.TryGetValue(response, out var text)) continue;
+            if (string.IsNullOrWhiteSpace(text)) { response.Headers = new(); continue; }
+            try { response.Headers = JsonSerializer.Deserialize<Dictionary<string, string[]>>(text, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new(); }
+            catch { _message = "One HTTP fixture has invalid headers JSON."; return false; }
+        }
+        return true;
+    }    private void RemoveHttpResponse(FlowHttpResponseOverrideDto response) { _selectedHttpResponses.Remove(response); if (_selectedNode != null) _definition.HttpResponses[_selectedNode.StepConfig.Id.ToString()] = _selectedHttpResponses; HeadersText.Remove(response); _dirty = true; RefreshCanvasStatuses(); }
+    private void AddVariable() { _variables.Add(new VariableEditorRow()); _dirty = true; }
+    private void AddCrossReference() { _definition.CrossReferenceRows.Add(new FlowCrossReferenceFixtureDto()); _dirty = true; }
+    private void AddCheck()
+    {
+        if (_selectedNode == null) return; _definition.Assertions.Add(new FlowTestAssertionDto { Type = "Node", CardId = _selectedNode.StepConfig.Id, NodeName = _selectedNode.StepConfig.NodeName, Field = "ResponsePayload", Operator = "Equals", ExpectedValue = "{}", InvocationScope = "Every" }); _dirty = true; InspectorTab = "Checks";
+    }
+    private void RemoveCheck(FlowTestAssertionDto check) { _definition.Assertions.Remove(check); _dirty = true; }
+    private string CheckSummary(FlowTestAssertionDto check) => $"{_selectedNode?.StepConfig.NodeName} → {(string.IsNullOrWhiteSpace(check.Path) ? check.Field : check.Path)} {DisplayOperator(check.Operator)} {check.ExpectedValue}";
+    private static string DisplayOperator(string? value) => value?.ToLowerInvariant() switch { "contains" => "must contain", "notcontains" => "must not contain", "startswith" => "must start with", "endswith" => "must end with", "notequals" => "must not equal", _ => "must equal" };
+    private Task FocusCheck(FlowTestCheckResultDto check) { var node = Diagram.Nodes.OfType<IntegrationNodeModel>().FirstOrDefault(item => item.StepConfig.Id == check.CardId || item.StepConfig.NodeName.Equals(check.CardName, StringComparison.OrdinalIgnoreCase)); if (node == null) return Task.CompletedTask; InspectorTab = "Results"; return OnNodeClicked(node); }
+    private string NodeStatus(IntegrationNodeModel node) => node.TestStatus;
+    private string NodeStatusClass(IntegrationNodeModel node) => node.TestStatus.ToLowerInvariant().Replace(" ", "-");
+    private static string ScenarioStatusClass(FlowTestCaseDto test) => test.LastPassedAt.HasValue && (!test.LastRunAt.HasValue || test.LastPassedAt >= test.LastRunAt) ? "passed" : test.LastRunAt.HasValue ? "failed" : "idle";
+    private sealed class VariableEditorRow { public string Name { get; set; } = string.Empty; public string Value { get; set; } = string.Empty; }
+}

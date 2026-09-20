@@ -40,6 +40,8 @@ public static class DtoMappings
             WebhookSecret = flow.WebhookSecret,
             RunAt = flow.RunAt,
             AllowPostReplay = flow.AllowPostReplay,
+            PublishedVersion = flow.PublishedVersion,
+            LastPublishedAt = flow.LastPublishedAt,
             CreatedAt = flow.CreatedAt,
             UpdatedAt = flow.UpdatedAt,
             PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson,
@@ -112,6 +114,8 @@ public static class DtoMappings
             WebhookSecret = dto.WebhookSecret,
             RunAt = dto.RunAt,
             AllowPostReplay = dto.AllowPostReplay,
+            PublishedVersion = dto.PublishedVersion,
+            LastPublishedAt = dto.LastPublishedAt,
             CreatedAt = dto.CreatedAt,
             UpdatedAt = dto.UpdatedAt,
             PersistedStateJson = string.IsNullOrWhiteSpace(dto.PersistedStateJson) ? "{}" : dto.PersistedStateJson,
@@ -134,7 +138,7 @@ public static class DtoMappings
         return new IntegrationStep
         {
             Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id,
-            StepType = Enum.TryParse<StepType>(dto.StepType, out var stepType) ? stepType : StepType.Mapping,
+            StepType = Enum.TryParse<StepType>(dto.StepType, true, out var stepType) ? stepType : StepType.Mapping,
             NodeName = dto.NodeName,
             PositionX = dto.PositionX,
             PositionY = dto.PositionY,

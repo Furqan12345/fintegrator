@@ -17,6 +17,9 @@ public class FlowExecutionDto
     public DateTime? RecoveredAt { get; set; }
     public string? ErrorMessage { get; set; }
     public string TriggerSource { get; set; } = string.Empty;
+    public bool IsTest { get; set; }
+    public Guid? TestCaseId { get; set; }
+    public Guid? TestRunId { get; set; }
     public int TotalRecords { get; set; }
     public int SuccessRecords { get; set; }
     public int FailedRecords { get; set; }

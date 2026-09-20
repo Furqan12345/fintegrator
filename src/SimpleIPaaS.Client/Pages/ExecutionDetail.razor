@@ -43,6 +43,7 @@
         @if (_execution != null)
         {
             <span class="status-badge no-dot @_execution.Status.ToLowerInvariant()">@StatusIcon(_execution.Status) @_execution.Status</span>
+            @if (_execution.IsTest) { <span class="status-badge no-dot">Test run</span> }
         }
         <a class="btn btn-outline" href="@($"transaction-history/{ExecutionId}")">Inspect payloads</a>
         <button class="btn btn-outline" @onclick="GoBack">← Back to activity</button>

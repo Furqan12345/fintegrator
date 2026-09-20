@@ -51,6 +51,7 @@ public static class DatabaseLoggingExtensions
     {
         var options = new DatabaseLoggerOptions();
         configuration.GetSection(ConfigurationSection).Bind(options);
+        options.EnvironmentName = configuration["ASPNETCORE_ENVIRONMENT"] ?? configuration["DOTNET_ENVIRONMENT"] ?? options.EnvironmentName;
         return options;
     }
 }

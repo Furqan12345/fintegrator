@@ -69,6 +69,12 @@ public class CronTriggerScheduler : BackgroundService
         {
             stoppingToken.ThrowIfCancellationRequested();
 
+            using var flowScope = _logger.BeginScope(new Dictionary<string, object>
+            {
+                ["TenantId"] = flow.TenantId,
+                ["FlowId"] = flow.Id
+            });
+
             var now = DateTime.UtcNow;
 
             if (flow.RunAt != null)
@@ -134,7 +140,15 @@ public class CronTriggerScheduler : BackgroundService
 
             var runService = runScope.ServiceProvider.GetRequiredService<FlowRunService>();
             var executionId = await runService.EnqueueAsync(flowId, tenantId, triggerSource, null, stoppingToken);
-            _logger.LogInformation("{TriggerSource} trigger enqueued execution {ExecutionId} for flow {FlowId}", triggerSource, executionId, flowId);
+            using (_logger.BeginScope(new Dictionary<string, object>
+            {
+                ["TenantId"] = tenantId,
+                ["FlowId"] = flowId,
+                ["FlowExecutionId"] = executionId
+            }))
+            {
+                _logger.LogInformation("{TriggerSource} trigger enqueued execution {ExecutionId} for flow {FlowId}", triggerSource, executionId, flowId);
+            }
         }
         catch (Exception ex)
         {

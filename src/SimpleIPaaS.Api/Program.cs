@@ -4,10 +4,13 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json.Linq;
 using SimpleIPaaS.Api.HealthChecks;
 using SimpleIPaaS.Api.Mappings;
+using SimpleIPaaS.Api.Observability;
 using SimpleIPaaS.Api.Middleware;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
@@ -66,6 +69,7 @@ builder.Services.AddScoped<IIntegrationCatalogRepository, IntegrationCatalogRepo
 builder.Services.AddScoped<IConnectionRepository, ConnectionRepository>();
 builder.Services.AddScoped<IExecutionRepository, ExecutionRepository>();
 builder.Services.AddScoped<ICrossReferenceRepository, CrossReferenceRepository>();
+builder.Services.AddScoped<IFlowTestRepository, FlowTestRepository>();
 builder.Services.AddScoped<ILogRepository, LogRepository>();
 
 builder.Services.AddScoped<ITransportEngine, TransportEngine>();
@@ -81,8 +85,13 @@ builder.Services.AddScoped<FlowRunService>();
 
 
 // Health checks
+builder.Services.Configure<OperationsOptions>(builder.Configuration.GetSection("Operations"));
+
+builder.Services.AddSingleton<OperationalMetrics>();
+
 builder.Services.AddHealthChecks()
-    .AddCheck<DatabaseHealthCheck>("database");
+    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "self", "ready" })
+    .AddCheck<EngineHealthCheck>("engine", tags: new[] { "ready" });
 
 var app = builder.Build();
 
@@ -129,6 +138,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseMiddleware<OperationalMetricsMiddleware>();
+
 app.UseCors("Default");
 
 // API-key authentication + tenant resolution
@@ -137,7 +148,18 @@ app.UseMiddleware<ApiKeyAuthenticationMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false
+});
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("self")
+});
 
 // Ensure the SQLite database exists without wiping persisted local data.
 using (var scope = app.Services.CreateScope())
@@ -181,9 +203,26 @@ using (var scope = app.Services.CreateScope())
             const string sampleFlowName = "Amazon SP-API Orders N+1 Sync + Nested Dedup";
 
             var existing = await db.IntegrationFlows
+
                 .IgnoreQueryFilters()
+                .Include(flow => flow.Nodes)
                 .FirstOrDefaultAsync(f => f.Name == sampleFlowName && f.TenantId == devTenantId);
 
+            IntegrationFlow? demoFlow = existing;
+
+            if (existing != null)
+            {
+                existing.Nodes = await db.IntegrationSteps.IgnoreQueryFilters()
+                    .Where(node => node.FlowId == existing.Id && node.TenantId == devTenantId)
+                    .ToListAsync();
+            }
+
+            if (existing != null && RepairAmazonDemoFlow(existing))
+            {
+                existing.UpdatedAt = DateTime.UtcNow;
+                await db.SaveChangesAsync();
+                app.Logger.LogInformation("Repaired Amazon demo cross-reference key paths for the current flow shape.");
+            }
             if (existing != null && !reseedDemoFlow)
             {
                 app.Logger.LogInformation(
@@ -230,6 +269,21 @@ using (var scope = app.Services.CreateScope())
                         .ExecuteDeleteAsync();
                 }
 
+                var oldTestCaseIds = await db.FlowTestCases
+                    .IgnoreQueryFilters()
+                    .Where(test => test.FlowId == existing.Id && test.TenantId == devTenantId)
+                    .Select(test => test.Id)
+                    .ToListAsync();
+                if (oldTestCaseIds.Count > 0)
+                {
+                    await db.FlowTestRuns.IgnoreQueryFilters()
+                        .Where(run => oldTestCaseIds.Contains(run.TestCaseId) && run.TenantId == devTenantId)
+                        .ExecuteDeleteAsync();
+                    await db.FlowTestCases.IgnoreQueryFilters()
+                        .Where(test => oldTestCaseIds.Contains(test.Id) && test.TenantId == devTenantId)
+                        .ExecuteDeleteAsync();
+                }
+
                 db.IntegrationFlows.Remove(existing);
                 await db.SaveChangesAsync();
                 app.Logger.LogInformation(
@@ -259,11 +313,14 @@ using (var scope = app.Services.CreateScope())
                 }
 
                 db.IntegrationFlows.Add(flow);
+                demoFlow = flow;
                 await db.SaveChangesAsync();
                 app.Logger.LogInformation(
                     "Seeded demo flow '{FlowName}' (id={FlowId}) for dev tenant {TenantId}",
                     flow.Name, flow.Id, devTenantId);
             }
+
+            await SeedAmazonDemoTestAsync(db, demoFlow, devTenantId);
         }
         else
         {
@@ -273,6 +330,145 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+static bool RepairAmazonDemoFlow(IntegrationFlow flow)
+{
+    var changed = false;
+    var filter = flow.Nodes.FirstOrDefault(node => node.NodeName == "FilterNewSKUs");
+    var store = flow.Nodes.FirstOrDefault(node => node.NodeName == "RememberSeenSKUs");
+
+    foreach (var node in new[] { filter, store }.Where(node => node != null))
+    {
+        try
+        {
+            var root = JObject.Parse(node!.StepConfig);
+            if (root["keyPaths"] is JArray keyPaths && keyPaths.Count == 1 &&
+                string.Equals(keyPaths[0]?.ToString(), "sku", StringComparison.OrdinalIgnoreCase))
+            {
+                keyPaths[0] = "SellerSKU";
+                changed = true;
+            }
+
+            if (node == store && root["valuePaths"] is JArray valuePaths && valuePaths.Count > 0 &&
+                valuePaths.Any(path => string.Equals(path?.ToString(), "qty", StringComparison.OrdinalIgnoreCase)))
+            {
+                root["valuePaths"] = new JArray("QuantityOrdered");
+                changed = true;
+            }
+
+            node.StepConfig = root.ToString(Newtonsoft.Json.Formatting.None);
+        }
+        catch (Exception)
+        {
+            // Leave malformed custom configuration untouched; normal flow validation reports it.
+        }
+    }
+
+    return changed;
+}
+static async Task SeedAmazonDemoTestAsync(IPaaSContext db, IntegrationFlow? flow, Guid tenantId)
+{
+    if (flow == null) return;
+
+    const string testName = "Amazon SP-API offline happy path";
+    var existingTest = await db.FlowTestCases.IgnoreQueryFilters().FirstOrDefaultAsync(test =>
+        test.FlowId == flow.Id && test.TenantId == tenantId && test.Name == testName);
+    var fetchOrders = flow.Nodes.FirstOrDefault(node => node.NodeName == "FetchOrders");
+    var fetchLineItems = flow.Nodes.FirstOrDefault(node => node.NodeName == "FetchLineItems");
+    var filterNode = flow.Nodes.FirstOrDefault(node => node.NodeName == "FilterNewOrders")
+        ?? flow.Nodes.FirstOrDefault(node => node.NodeName == "FilterNewSKUs");
+    var processNewItems = flow.Nodes.FirstOrDefault(node => node.NodeName == "ProcessNewItems");
+    if (fetchOrders == null || fetchLineItems == null || filterNode == null)
+    {
+        return;
+    }
+
+    var isSkuVariant = string.Equals(filterNode.NodeName, "FilterNewSKUs", StringComparison.OrdinalIgnoreCase);
+    var fixtureListName = isSkuVariant ? "processed-skus" : "processed-orders";
+    var fixtureKey = isSkuVariant ? "SKU-002" : "ORDER-ALREADY-DONE";
+    var retainedValue = isSkuVariant ? "SKU-001" : "ORDER-100";
+    var removedValue = isSkuVariant ? "SKU-002" : "ORDER-ALREADY-DONE";
+    var definition = new FlowTestDefinition
+    {
+        TriggerPayloadJson = "{}",
+        HttpResponses = new Dictionary<string, List<FlowHttpResponseOverride>>
+        {
+            [fetchOrders.Id.ToString()] = new()
+            {
+                new FlowHttpResponseOverride
+                {
+                    StatusCode = 200,
+                    ResponseBody = "{\"payload\":{\"Orders\":[{\"AmazonOrderId\":\"ORDER-100\",\"OrderStatus\":\"Shipped\"},{\"AmazonOrderId\":\"ORDER-ALREADY-DONE\",\"OrderStatus\":\"Shipped\"}]}}"
+                }
+            },
+            [fetchLineItems.Id.ToString()] = new()
+            {
+                new FlowHttpResponseOverride
+                {
+                    StatusCode = 200,
+                    ResponseBody = "{\"payload\":{\"OrderItems\":[{\"SellerSKU\":\"SKU-001\",\"QuantityOrdered\":1}]}}"
+                },
+                new FlowHttpResponseOverride
+                {
+                    StatusCode = 200,
+                    ResponseBody = "{\"payload\":{\"OrderItems\":[{\"SellerSKU\":\"SKU-002\",\"QuantityOrdered\":2}]}}"
+                }
+            }
+        },
+        CrossReferenceRows = new List<FlowCrossReferenceFixture>
+        {
+            new() { ListName = fixtureListName, KeyValue = fixtureKey, ValueJson = "{\"source\":\"seed\"}" }
+        },
+        Assertions = new List<FlowTestAssertion>
+        {
+            new() { Type = "ExecutionStatus", Operator = "Equals", ExpectedValue = "Success" },
+            new() { Type = "Node", NodeName = filterNode.NodeName, Field = "ResponsePayload", Operator = "Contains", ExpectedValue = retainedValue },
+            new() { Type = "Node", NodeName = filterNode.NodeName, Field = "ResponsePayload", Operator = "NotContains", ExpectedValue = removedValue }
+        }
+    };
+
+    if (processNewItems != null)
+    {
+        definition.HttpResponses[processNewItems.Id.ToString()] = new()
+        {
+            new FlowHttpResponseOverride { StatusCode = 200, ResponseBody = "{\"accepted\":true}" }
+        };
+    }
+
+    if (existingTest != null)
+    {
+        var storedDefinition = JsonSerializer.Deserialize<FlowTestDefinition>(existingTest.DefinitionJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        var needsRepair = isSkuVariant &&
+            (storedDefinition?.CrossReferenceRows?.Any(row => row.ListName.Equals("processed-orders", StringComparison.OrdinalIgnoreCase)) == true
+             || storedDefinition?.Assertions?.Any(assertion =>
+                 assertion.NodeName.Equals(filterNode.NodeName, StringComparison.OrdinalIgnoreCase)
+                 && assertion.Operator.Equals("NotContains", StringComparison.OrdinalIgnoreCase)
+                 && assertion.ExpectedValue.TrimStart().StartsWith("{", StringComparison.Ordinal)) == true);
+        if (!needsRepair)
+        {
+            return;
+        }
+
+        existingTest.DefinitionJson = JsonSerializer.Serialize(definition);
+        existingTest.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        return;
+    }
+    db.FlowTestCases.Add(new FlowTestCase
+    {
+        Id = Guid.NewGuid(),
+        FlowId = flow.Id,
+        TenantId = tenantId,
+        Name = testName,
+        Description = "Runs the Amazon SP-API demo entirely offline with mocked orders, line items, and a seeded processed-order key.",
+        Enabled = true,
+        RequiredForPublish = false,
+        DefinitionJson = JsonSerializer.Serialize(definition),
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow
+    });
+    await db.SaveChangesAsync();
+}
 static string? ResolveSamplePath()
 {
     var dir = new DirectoryInfo(AppContext.BaseDirectory);

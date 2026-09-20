@@ -49,6 +49,7 @@ public sealed class LogsEndpointTests : IDisposable
         string message = "hello",
         string category = "SimpleIPaaS.Engine.Workers.FlowExecutionWorker",
         Guid? executionId = null,
+        Guid? flowId = null,
         DateTime? timestamp = null) => new()
         {
             Timestamp = timestamp ?? DateTime.UtcNow,
@@ -56,7 +57,8 @@ public sealed class LogsEndpointTests : IDisposable
             Source = source,
             Category = category,
             Message = message,
-            FlowExecutionId = executionId
+            FlowExecutionId = executionId,
+            FlowId = flowId
         };
 
     // ---------------- tail cursor ----------------
@@ -228,6 +230,23 @@ public sealed class LogsEndpointTests : IDisposable
         var result = await CreateRepository(context).GetPageAsync(new LogQuery { FlowExecutionId = executionId }, 1, 50);
 
         Assert.Equal(2, result.Total);
+    }
+
+    [Fact]
+    public async Task FlowId_CorrelatesAllExecutionsForASingleFlow()
+    {
+        var flowId = Guid.NewGuid();
+        Seed(
+            Entry(message: "first run", flowId: flowId, executionId: Guid.NewGuid()),
+            Entry(message: "second run", flowId: flowId, executionId: Guid.NewGuid()),
+            Entry(message: "another flow", flowId: Guid.NewGuid()),
+            Entry(message: "uncorrelated"));
+
+        using var context = CreateContext();
+        var result = await CreateRepository(context).GetPageAsync(new LogQuery { FlowId = flowId }, 1, 50);
+
+        Assert.Equal(2, result.Total);
+        Assert.All(result.Items, entry => Assert.Equal(flowId, entry.FlowId));
     }
 
     [Fact]

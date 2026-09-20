@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using SimpleIPaaS.Domain.Entities;
+using SimpleIPaaS.Application.Models;
 
 namespace SimpleIPaaS.Application.Interfaces;
 
@@ -33,5 +34,5 @@ public sealed record TransportResponse(
 
 public interface ITransportEngine
 {
-    Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default);
+    Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default, FlowTestContext? testContext = null);
 }

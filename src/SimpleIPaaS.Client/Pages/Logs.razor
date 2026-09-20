@@ -2,12 +2,14 @@
 @using System.Globalization
 @using System.Net.Http.Json
 @using System.Threading
+@using Microsoft.AspNetCore.Components.Web.Virtualization
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
 @implements IAsyncDisposable
 @inject HttpClient Http
 @inject IDispatcher Dispatcher
 @inject IJSRuntime JS
+@inject NavigationManager NavigationManager
 
 <PageTitle>Debug Logs — SimpleIPaaS</PageTitle>
 
@@ -31,7 +33,7 @@
     </header>
 
     <div class="logs-filters">
-        <label class="logs-field">
+        <label class="logs-field compact">
             <span>Minimum level</span>
             <select value="@_level" @onchange="OnLevelChanged">
                 <option value="">All levels</option>
@@ -42,13 +44,34 @@
             </select>
         </label>
 
-        <label class="logs-field">
+        <label class="logs-field compact">
             <span>Source</span>
             <select value="@_source" @onchange="OnSourceChanged">
                 <option value="">All sources</option>
                 @foreach (var source in _sources)
                 {
                     <option value="@source">@source</option>
+                }
+            </select>
+        </label>
+
+        <label class="logs-field compact">
+            <span>Integration</span>
+            <select value="@_integrationFilter" @onchange="OnIntegrationChanged">
+                <option value="">All integrations</option>
+                @foreach (var integration in _integrations)
+                {
+                    <option value="@integration.Id">@integration.Name</option>
+                }
+            </select>
+        </label>
+        <label class="logs-field flow-filter">
+            <span>Flow</span>
+            <select value="@_flowFilter" @onchange="OnFlowChanged">
+                <option value="">All flows</option>
+                @foreach (var flow in _flows)
+                {
+                    <option value="@flow.Id">@flow.Name</option>
                 }
             </select>
         </label>
@@ -61,7 +84,7 @@
                    @onchange="OnSearchChanged" />
         </label>
 
-        <label class="logs-field">
+        <label class="logs-field execution-filter">
             <span>Execution id</span>
             <input type="text"
                    placeholder="correlate by execution"
@@ -69,6 +92,34 @@
                    @onchange="OnExecutionFilterChanged" />
         </label>
 
+        <label class="logs-field compact observability-filter">
+            <span>Service</span>
+            <select value="@_service" @onchange="OnServiceChanged">
+                <option value="">All services</option>
+                @foreach (var item in _services) { <option value="@item">@item</option> }
+            </select>
+        </label>
+        <label class="logs-field compact observability-filter">
+            <span>Component</span>
+            <select value="@_component" @onchange="OnComponentChanged">
+                <option value="">All components</option>
+                @foreach (var item in _components) { <option value="@item">@item</option> }
+            </select>
+        </label>
+        <label class="logs-field compact observability-filter">
+            <span>Event</span>
+            <select value="@_eventName" @onchange="OnEventChanged">
+                <option value="">All events</option>
+                @foreach (var item in _events) { <option value="@item">@item</option> }
+            </select>
+        </label>
+        <label class="logs-field compact observability-filter">
+            <span>Outcome</span>
+            <select value="@_outcome" @onchange="OnOutcomeChanged">
+                <option value="">All outcomes</option>
+                @foreach (var item in _outcomes) { <option value="@item">@item</option> }
+            </select>
+        </label>
         <div class="logs-count">
             Showing <strong>@_entries.Count</strong>@(_total > _entries.Count ? $" of {_total} matching" : string.Empty)
             <span class="logs-cursor" title="Live tail cursor">cursor @_cursor</span>
@@ -81,6 +132,9 @@
     }
 
     <div class="logs-console" @ref="_consoleRef">
+        <div class="logs-column-header" aria-hidden="true">
+            <span>Time</span><span>Level</span><span>Service / component</span><span>Event</span><span>Integration</span><span>Flow</span><span>Card</span><span>Message</span><span></span>
+        </div>
         @if (_entries.Count == 0)
         {
             <div class="logs-empty">
@@ -96,29 +150,42 @@
         }
         else
         {
-            @foreach (var entry in _entries)
-            {
+            <Virtualize Items="_entries" Context="entry" OverscanCount="20">
+            @{
                 var expandable = HasDetail(entry);
+            }
                 <div class="logs-row level-@entry.Level.ToLowerInvariant() @(expandable ? "expandable" : string.Empty) @(_expanded.Contains(entry.Id) ? "expanded" : string.Empty)"
                      @onclick="() => ToggleExpanded(entry)">
                     <span class="logs-time">@entry.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)</span>
                     <span class="logs-level">@ShortLevel(entry.Level)</span>
-                    <span class="logs-source src-@entry.Source.ToLowerInvariant()">@entry.Source</span>
-                    <span class="logs-category" title="@entry.Category">@ShortCategory(entry.Category)</span>
-                    <span class="logs-message">
-                        @entry.Message
-                        @if (!string.IsNullOrWhiteSpace(entry.NodeName))
+                    <span class="logs-context logs-component" title="@ComponentLabel(entry)">@ComponentLabel(entry)</span>
+                    <span class="logs-context logs-event" title="@entry.EventName">@(string.IsNullOrWhiteSpace(entry.EventName) ? "log" : entry.EventName)</span>
+                    <span class="logs-context logs-integration" title="@IntegrationLabel(entry)">
+                        @if (entry.IntegrationId.HasValue)
                         {
-                            <span class="logs-chip">node @entry.NodeName</span>
+                            <button type="button" class="logs-context-link" @onclick:stopPropagation="true" @onclick="() => FilterByIntegrationAsync(entry.IntegrationId!.Value)">@IntegrationLabel(entry)</button>
                         }
+                        else
+                        {
+                            @IntegrationLabel(entry)
+                        }
+                    </span>
+                    <span class="logs-context logs-flow" title="@FlowLabel(entry)">
+                        @if (entry.FlowId.HasValue)
+                        {
+                            <button type="button" class="logs-context-link" @onclick:stopPropagation="true" @onclick="() => FilterByFlowAsync(entry.FlowId!.Value)">@FlowLabel(entry)</button>
+                        }
+                        else
+                        {
+                            @FlowLabel(entry)
+                        }
+                    </span>
+                    <span class="logs-context logs-node" title="@(string.IsNullOrWhiteSpace(entry.NodeName) ? "No card" : entry.NodeName)">@(string.IsNullOrWhiteSpace(entry.NodeName) ? "—" : entry.NodeName)</span>
+                    <span class="logs-message" title="@entry.Message">
+                        @entry.Message
                         @if (entry.FlowExecutionId.HasValue)
                         {
-                            <span class="logs-chip link"
-                                  title="Filter by this execution"
-                                  @onclick:stopPropagation="true"
-                                  @onclick="() => FilterByExecutionAsync(entry.FlowExecutionId!.Value)">
-                                exec @ShortId(entry.FlowExecutionId.Value)
-                            </span>
+                            <button type="button" class="logs-chip link" title="Filter by this execution" @onclick:stopPropagation="true" @onclick="() => OpenTimelineAsync(entry.FlowExecutionId!.Value)">exec @ShortId(entry.FlowExecutionId.Value)</button>
                         }
                     </span>
                     @if (expandable)
@@ -131,29 +198,63 @@
                 {
                     <div class="logs-detail">
                         <dl class="logs-meta">
-                            <dt>Id</dt><dd>@entry.Id</dd>
+                            <dt>Log id</dt><dd>@entry.Id</dd>
                             <dt>Timestamp (UTC)</dt><dd>@entry.Timestamp.ToString("u", CultureInfo.InvariantCulture)</dd>
+                            <dt>Event id</dt><dd>@entry.EventId · v@entry.EventVersion</dd>
+                            <dt>Event</dt><dd>@entry.EventName · @entry.Outcome</dd>
+                            <dt>Service / component</dt><dd>@ComponentLabel(entry)</dd>
+                            <dt>Environment / version</dt><dd>@entry.EnvironmentName · @entry.ApplicationVersion</dd>
+                            @if (entry.ConnectionId.HasValue)
+                            {
+                                <dt>Connection</dt><dd>@entry.ConnectionId</dd>
+                            }
                             <dt>Category</dt><dd>@entry.Category</dd>
+                            <dt>Integration</dt><dd>@IntegrationLabel(entry)@(entry.IntegrationId.HasValue ? $" · {entry.IntegrationId}" : string.Empty)</dd>
+                            <dt>Flow</dt><dd>@FlowLabel(entry)@(entry.FlowId.HasValue ? $" · {entry.FlowId}" : string.Empty)</dd>
+                            @if (entry.DurationMs.HasValue)
+                            {
+                                <dt>Duration</dt><dd>@entry.DurationMs ms</dd>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(entry.TraceId))
+                            {
+                                <dt>Trace</dt><dd>@entry.TraceId · span @entry.SpanId</dd>
+                            }
                             @if (entry.FlowExecutionId.HasValue)
                             {
                                 <dt>Execution</dt><dd>@entry.FlowExecutionId</dd>
                             }
-                            @if (entry.FlowId.HasValue)
+                            @if (entry.NodeName is not null)
                             {
-                                <dt>Flow</dt><dd>@entry.FlowId</dd>
+                                <dt>Node</dt><dd>@entry.NodeName</dd>
                             }
                             @if (entry.TenantId.HasValue)
                             {
                                 <dt>Tenant</dt><dd>@entry.TenantId</dd>
                             }
                         </dl>
+                        @if (!string.IsNullOrWhiteSpace(entry.Operation))
+                        {
+                            <dt>Operation</dt><dd>@entry.Operation</dd>
+                        }
+                        @if (entry.Invocation.HasValue || entry.RetryAttempt.HasValue || entry.IsTest.HasValue)
+                        {
+                            <dt>Run context</dt><dd>invocation @(entry.Invocation?.ToString() ?? "—") · retry @(entry.RetryAttempt?.ToString() ?? "—") · @(entry.IsTest == true ? "test" : "production")</dd>
+                        }
+                        @if (entry.StepExecutionId.HasValue)
+                        {
+                            <dt>Step execution</dt><dd>@entry.StepExecutionId</dd>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(entry.PropertiesJson) && entry.PropertiesJson != "{}")
+                        {
+                            <dt>Structured properties</dt><dd><pre class="logs-properties">@entry.PropertiesJson</pre></dd>
+                        }
                         @if (!string.IsNullOrWhiteSpace(entry.Exception))
                         {
                             <pre class="logs-exception">@entry.Exception</pre>
                         }
                     </div>
                 }
-            }
+            </Virtualize>
         }
     </div>
 </div>
@@ -186,9 +287,24 @@
 
     private string[] _levels = Array.Empty<string>();
     private string[] _sources = Array.Empty<string>();
+    private List<FlowOption> _flows = new();
+    private List<IntegrationOption> _integrations = new();
+    private string[] _services = Array.Empty<string>();
+    private string[] _components = Array.Empty<string>();
+    private string[] _events = Array.Empty<string>();
+    private string[] _outcomes = Array.Empty<string>();
+
+    [SupplyParameterFromQuery(Name = "flowId")]
+    public Guid? FlowId { get; set; }
 
     private string _level = "Information";
     private string _source = string.Empty;
+    private string _service = string.Empty;
+    private string _component = string.Empty;
+    private string _eventName = string.Empty;
+    private string _outcome = string.Empty;
+    private string _integrationFilter = string.Empty;
+    private string _flowFilter = string.Empty;
     private string _search = string.Empty;
     private string _executionFilter = string.Empty;
 
@@ -214,6 +330,11 @@
         if (ExecutionId.HasValue)
         {
             _executionFilter = ExecutionId.Value.ToString();
+        }
+
+        if (FlowId.HasValue)
+        {
+            _flowFilter = FlowId.Value.ToString();
         }
 
         await LoadFilterOptionsAsync();
@@ -283,14 +404,51 @@
         }
 
         await RefreshSourcesAsync();
+        await RefreshIntegrationsAsync();
+        await RefreshFlowsAsync();
+        await RefreshFacetsAsync();
     }
 
+    private async Task RefreshFacetsAsync()
+    {
+        var facets = await SafeFetch.GetAsync<LogFacetsDto>(Http, "api/logs/facets", Dispatcher, "log facets");
+        if (facets == null) return;
+        _services = facets.Services.ToArray();
+        _components = facets.Components.ToArray();
+        _events = facets.Events.ToArray();
+        _outcomes = facets.Outcomes.ToArray();
+    }
     private async Task RefreshSourcesAsync()
     {
         var sources = await SafeFetch.GetAsync<string[]>(Http, "api/logs/sources", Dispatcher, "log sources");
         if (sources != null)
         {
             _sources = sources;
+        }
+    }
+
+    private async Task RefreshIntegrationsAsync()
+    {
+        var integrations = await SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations", Dispatcher, "integrations");
+        if (integrations != null)
+        {
+            _integrations = integrations
+                .Where(integration => integration.Id != Guid.Empty)
+                .OrderBy(integration => integration.Name)
+                .Select(integration => new IntegrationOption(integration.Id, string.IsNullOrWhiteSpace(integration.Name) ? ShortId(integration.Id) : integration.Name))
+                .ToList();
+        }
+    }
+    private async Task RefreshFlowsAsync()
+    {
+        var flows = await SafeFetch.GetAsync<IntegrationFlowDto[]>(Http, "api/integrationflow", Dispatcher, "flows");
+        if (flows != null)
+        {
+            _flows = flows
+                .Where(flow => flow.Id != Guid.Empty)
+                .OrderBy(flow => flow.Name)
+                .Select(flow => new FlowOption(flow.Id, string.IsNullOrWhiteSpace(flow.Name) ? ShortId(flow.Id) : flow.Name))
+                .ToList();
         }
     }
 
@@ -403,6 +561,8 @@
         _entries.RemoveRange(0, excess);
     }
 
+    private string ComponentLabel(AppLogEntryDto entry) => string.IsNullOrWhiteSpace(entry.Service) ? (string.IsNullOrWhiteSpace(entry.Component) ? entry.Source : entry.Component) : $"{entry.Service} / {(string.IsNullOrWhiteSpace(entry.Component) ? entry.Category : entry.Component)}";
+
     private string BuildFilterQuery()
     {
         var parts = new List<string>();
@@ -412,9 +572,24 @@
             parts.Add($"level={Uri.EscapeDataString(_level)}");
         }
 
+        if (!string.IsNullOrWhiteSpace(_service)) parts.Add($"service={Uri.EscapeDataString(_service)}");
+        if (!string.IsNullOrWhiteSpace(_component)) parts.Add($"component={Uri.EscapeDataString(_component)}");
+        if (!string.IsNullOrWhiteSpace(_eventName)) parts.Add($"eventName={Uri.EscapeDataString(_eventName)}");
+        if (!string.IsNullOrWhiteSpace(_outcome)) parts.Add($"outcome={Uri.EscapeDataString(_outcome)}");
+
         if (!string.IsNullOrWhiteSpace(_source))
         {
             parts.Add($"source={Uri.EscapeDataString(_source)}");
+        }
+
+        if (Guid.TryParse(_integrationFilter, out var integrationId))
+        {
+            parts.Add($"integrationId={integrationId}");
+        }
+
+        if (Guid.TryParse(_flowFilter, out var flowId))
+        {
+            parts.Add($"flowId={flowId}");
         }
 
         if (!string.IsNullOrWhiteSpace(_search))
@@ -430,6 +605,15 @@
         return string.Join("&", parts);
     }
 
+    private Task OnServiceChanged(ChangeEventArgs args) => ApplyFilterAsync(() => _service = args.Value?.ToString() ?? string.Empty);
+    private Task OnComponentChanged(ChangeEventArgs args) => ApplyFilterAsync(() => _component = args.Value?.ToString() ?? string.Empty);
+    private Task OnEventChanged(ChangeEventArgs args) => ApplyFilterAsync(() => _eventName = args.Value?.ToString() ?? string.Empty);
+    private Task OnOutcomeChanged(ChangeEventArgs args) => ApplyFilterAsync(() => _outcome = args.Value?.ToString() ?? string.Empty);
+    private async Task ApplyFilterAsync(Action update)
+    {
+        update();
+        await ReloadAsync();
+    }
     private async Task OnLevelChanged(ChangeEventArgs args)
     {
         _level = args.Value?.ToString() ?? string.Empty;
@@ -442,11 +626,31 @@
         await ReloadAsync();
     }
 
+    private async Task OnIntegrationChanged(ChangeEventArgs args)
+    {
+        _integrationFilter = args.Value?.ToString() ?? string.Empty;
+        await ReloadAsync();
+    }
+
+    private async Task OnFlowChanged(ChangeEventArgs args)
+    {
+        _flowFilter = args.Value?.ToString() ?? string.Empty;
+        await ReloadAsync();
+    }
+
     private async Task OnSearchChanged(ChangeEventArgs args)
     {
         _search = args.Value?.ToString() ?? string.Empty;
         await ReloadAsync();
     }
+
+    private LogTimelineDto? _timeline;
+    private async Task OpenTimelineAsync(Guid executionId)
+    {
+        _timeline = await SafeFetch.GetAsync<LogTimelineDto>(Http, $"api/logs/execution/{executionId}/timeline?limit=1500", Dispatcher, "execution timeline");
+        await InvokeAsync(StateHasChanged);
+    }
+    private void CloseTimeline() => _timeline = null;
 
     private async Task OnExecutionFilterChanged(ChangeEventArgs args)
     {
@@ -457,6 +661,18 @@
     private async Task FilterByExecutionAsync(Guid executionId)
     {
         _executionFilter = executionId.ToString();
+        await ReloadAsync();
+    }
+
+    private async Task FilterByIntegrationAsync(Guid integrationId)
+    {
+        _integrationFilter = integrationId.ToString();
+        await ReloadAsync();
+    }
+
+    private async Task FilterByFlowAsync(Guid flowId)
+    {
+        _flowFilter = flowId.ToString();
         await ReloadAsync();
     }
 
@@ -473,6 +689,7 @@
     private async Task RefreshAsync()
     {
         await RefreshSourcesAsync();
+        await RefreshIntegrationsAsync();
         await ReloadAsync();
     }
 
@@ -541,11 +758,43 @@
 
     private static bool HasDetail(AppLogEntryDto entry) =>
         !string.IsNullOrWhiteSpace(entry.Exception)
+        || !string.IsNullOrWhiteSpace(entry.IntegrationName)
+        || entry.IntegrationId.HasValue
+        || !string.IsNullOrWhiteSpace(entry.FlowName)
         || entry.FlowExecutionId.HasValue
         || entry.FlowId.HasValue
         || entry.TenantId.HasValue
         || entry.Category.Contains('.');
 
+    private string IntegrationLabel(AppLogEntryDto entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.IntegrationName))
+        {
+            return entry.IntegrationName;
+        }
+
+        if (entry.IntegrationId is Guid integrationId)
+        {
+            return _integrations.FirstOrDefault(integration => integration.Id == integrationId)?.Name ?? ShortId(integrationId);
+        }
+
+        return entry.FlowId.HasValue ? "Unassigned" : "System";
+    }
+
+    private string FlowLabel(AppLogEntryDto entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.FlowName))
+        {
+            return entry.FlowName;
+        }
+
+        if (entry.FlowId is Guid flowId)
+        {
+            return _flows.FirstOrDefault(flow => flow.Id == flowId)?.Name ?? ShortId(flowId);
+        }
+
+        return "—";
+    }
     private static string ShortLevel(string level) => level switch
     {
         "Information" => "INFO",
@@ -570,6 +819,10 @@
     }
 
     private static string ShortId(Guid id) => id == Guid.Empty ? "-" : id.ToString()[..8];
+
+    private sealed record IntegrationOption(Guid Id, string Name);
+
+    private sealed record FlowOption(Guid Id, string Name);
 
     public async ValueTask DisposeAsync()
     {

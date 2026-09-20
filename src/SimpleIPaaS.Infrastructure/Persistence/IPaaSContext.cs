@@ -15,6 +15,10 @@ public class IPaaSContext : DbContext
     }
 
     public DbSet<IntegrationFlow> IntegrationFlows { get; set; } = null!;
+    public DbSet<FlowVersion> FlowVersions { get; set; } = null!;
+    public DbSet<FlowTestCase> FlowTestCases { get; set; } = null!;
+    public DbSet<FlowTestRun> FlowTestRuns { get; set; } = null!;
+    public DbSet<HostHeartbeat> HostHeartbeats { get; set; } = null!;
     public DbSet<IntegrationStep> IntegrationSteps { get; set; } = null!;
     public DbSet<IntegrationEdge> IntegrationEdges { get; set; } = null!;
     public DbSet<Integration> Integrations { get; set; } = null!;
@@ -38,6 +42,18 @@ public class IPaaSContext : DbContext
         base.OnModelCreating(modelBuilder);
         
         // Global Query Filters for TenantId
+        modelBuilder.Entity<HostHeartbeat>()
+            .HasIndex(e => new { e.ServiceName, e.InstanceId })
+            .IsUnique();
+
+        modelBuilder.Entity<FlowVersion>()
+            .HasIndex(e => new { e.TenantId, e.FlowId, e.VersionNumber })
+            .IsUnique();
+
+
+        modelBuilder.Entity<FlowVersion>()
+            .HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
+
         modelBuilder.Entity<IntegrationFlow>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<IntegrationStep>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
         modelBuilder.Entity<IntegrationEdge>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
@@ -64,7 +80,10 @@ public class IPaaSContext : DbContext
             entity.HasIndex(e => e.Timestamp);
             entity.HasIndex(e => e.Level);
             entity.HasIndex(e => e.FlowExecutionId);
+            entity.HasIndex(e => e.IntegrationId);
+            entity.HasIndex(e => e.FlowId);
         });
+
 
 
         modelBuilder.Entity<IntegrationFlow>()
@@ -73,6 +92,7 @@ public class IPaaSContext : DbContext
             .HasForeignKey(s => s.FlowId)
             .OnDelete(DeleteBehavior.Cascade);
             
+
         modelBuilder.Entity<IntegrationFlow>()
             .HasMany(f => f.Edges)
             .WithOne()

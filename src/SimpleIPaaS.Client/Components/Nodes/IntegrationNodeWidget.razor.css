@@ -1,0 +1,118 @@
+.custom-node.is-test-node {
+    min-width: 300px;
+    max-width: 340px;
+    padding-bottom: 38px;
+    cursor: pointer;
+    transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.custom-node.is-test-node:hover {
+    transform: translateY(-2px);
+    border-color: #6d859d;
+    box-shadow: 0 10px 24px rgba(29, 53, 76, .16);
+}
+
+.custom-node.is-test-node:focus-within {
+    outline: 3px solid rgba(49, 92, 134, .18);
+    outline-offset: 3px;
+}
+
+.custom-node.is-test-node .card-header {
+    cursor: pointer;
+}
+
+.test-node-status {
+    position: absolute;
+    z-index: 10;
+    right: 12px;
+    bottom: 8px;
+    left: 12px;
+    display: flex;
+    align-items: center;
+    min-height: 26px;
+    gap: 6px;
+    padding: 4px 7px;
+    overflow: hidden;
+    border: 1px solid #cbd7e2;
+    border-radius: 6px;
+    background: #f8fafc;
+    color: #42566b;
+    font: 600 10px/1.2 Inter, ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: .01em;
+    text-align: left;
+    cursor: pointer;
+}
+
+.test-node-status:hover {
+    border-color: #7891aa;
+    background: #f2f6f9;
+    color: #203d5b;
+}
+
+.test-node-status:focus-visible {
+    outline: 2px solid #315c86;
+    outline-offset: 2px;
+}
+
+.test-node-status-dot {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: #718399;
+}
+
+.test-node-status.mocked .test-node-status-dot,
+.test-node-status.passed .test-node-status-dot {
+    background: #277657;
+}
+
+.test-node-status.needs-response .test-node-status-dot {
+    background: #a76b2b;
+}
+
+.test-node-status.failed .test-node-status-dot {
+    background: #a44747;
+}
+
+.test-node-mocked {
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: #e6f1eb;
+    color: #276447;
+    font-size: 9px;
+}
+
+.test-node-configure {
+    margin-left: auto;
+    color: #315c86;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.test-card-fallback {
+    display: flex;
+    min-height: 105px;
+    flex-direction: column;
+    gap: 6px;
+    padding: 16px;
+    background: #fff;
+    color: #233d57;
+}
+
+.test-card-fallback span {
+    color: #697e93;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+.test-card-fallback strong {
+    font-size: 14px;
+}
+
+.test-card-fallback small {
+    color: #718399;
+    font-size: 11px;
+}

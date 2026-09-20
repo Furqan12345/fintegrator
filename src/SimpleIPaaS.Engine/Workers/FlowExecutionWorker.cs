@@ -14,6 +14,7 @@ using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
+using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Engine.Workers;
@@ -97,17 +98,28 @@ public class FlowExecutionWorker : BackgroundService
             // Everything logged inside this scope carries the correlation ids, so the
             // database log sink can populate its ExecutionId/FlowId/TenantId columns and
             // the Debug Logs console can filter a whole run by execution.
-            using var correlationScope = _logger.BeginScope(new Dictionary<string, object>
+            using var executionActivity = new Activity("flow.execution");
+            executionActivity.SetIdFormat(ActivityIdFormat.W3C);
+            if (!string.IsNullOrWhiteSpace(claim.TraceParent)) executionActivity.SetParentId(claim.TraceParent);
+            executionActivity.Start();
+
+            using var correlationScope = _logger.BeginScope(new Dictionary<string, object?>
             {
                 ["ExecutionId"] = claim.ExecutionId,
                 ["FlowId"] = claim.FlowId,
-                ["TenantId"] = claim.TenantId
+                ["FlowName"] = claim.FlowName,
+                ["IntegrationId"] = claim.IntegrationId ?? Guid.Empty,
+                ["IntegrationName"] = claim.IntegrationName,
+                ["TenantId"] = claim.TenantId,
+                ["IsTest"] = claim.IsTest,
+                ["TestCaseId"] = claim.TestCaseId,
+                ["TestRunId"] = claim.TestRunId
             });
 
             var claimedAt = Stopwatch.GetTimestamp();
-            _logger.LogInformation(
-                "Claimed queued execution {ExecutionId} for flow {FlowId} (tenant {TenantId}, trigger {TriggerSource})",
-                claim.ExecutionId, claim.FlowId, claim.TenantId, string.IsNullOrWhiteSpace(claim.TriggerSource) ? "Manual" : claim.TriggerSource);
+            _logger.LogInformation(new EventId(1200, "flow.execution.claimed"),
+                "Claimed queued execution {ExecutionId} for flow {FlowId} (tenant {TenantId}, trigger {TriggerSource}, queue wait {QueueWaitMs}ms)",
+                claim.ExecutionId, claim.FlowId, claim.TenantId, string.IsNullOrWhiteSpace(claim.TriggerSource) ? "Manual" : claim.TriggerSource, claim.QueuedAt.HasValue ? (long)Math.Max(0, (DateTime.UtcNow - claim.QueuedAt.Value).TotalMilliseconds) : 0);
 
             try
             {
@@ -137,7 +149,13 @@ public class FlowExecutionWorker : BackgroundService
     private async Task ExecuteRequestAsync(QueuedExecutionClaim request, CancellationToken stoppingToken)
     {
         var flowLock = _flowLocks.GetOrAdd(request.FlowId, _ => new SemaphoreSlim(1, 1));
+        var lockWaitStartedAt = Stopwatch.GetTimestamp();
         await flowLock.WaitAsync(stoppingToken);
+        var lockWaitMs = (long)Stopwatch.GetElapsedTime(lockWaitStartedAt).TotalMilliseconds;
+        if (lockWaitMs > 0)
+        {
+            _logger.LogInformation(new EventId(1210, "flow.lock.waited"), "Flow lock wait for execution {ExecutionId} was {LockWaitMs}ms", request.ExecutionId, lockWaitMs);
+        }
 
         try
         {
@@ -173,10 +191,54 @@ public class FlowExecutionWorker : BackgroundService
             var maxDuration = _options.MaxFlowDurationSeconds < 1 ? 600 : _options.MaxFlowDurationSeconds;
             linked.CancelAfter(TimeSpan.FromSeconds(maxDuration));
 
+            FlowTestContext? testContext = null;
+            FlowTestRun? testRun = null;
+            FlowTestCase? testCase = null;
+            var testRepository = scope.ServiceProvider.GetRequiredService<IFlowTestRepository>();
+            if (execution.IsTest)
+            {
+                testContext = FlowTestContext.FromJson(execution.TestDefinitionJson, execution.Id);
+                if (execution.TestRunId is Guid testRunId)
+                {
+                    testRun = await testRepository.GetRunAsync(testRunId);
+                    if (testRun != null)
+                    {
+                        testRun.Status = "Running";
+                        testRun.StartedAt = DateTime.UtcNow;
+                        await testRepository.UpdateRunAsync(testRun);
+                    }
+                }
+                if (execution.TestCaseId is Guid testCaseId)
+                {
+                    testCase = await testRepository.GetAsync(testCaseId);
+                }
+            }
+
             var executor = scope.ServiceProvider.GetRequiredService<FlowExecutor>();
             var startedAt = Stopwatch.GetTimestamp();
-            var result = await executor.ExecuteFlowAsync(request.FlowId, request.ExecutionId, request.TriggerPayload, linked.Token);
+            var result = await executor.ExecuteFlowAsync(request.FlowId, request.ExecutionId, request.TriggerPayload, linked.Token, testContext);
             var elapsedMs = (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+
+            if (testRun != null)
+            {
+                var steps = await executionRepository.GetStepExecutionsAsync(execution.Id);
+                var evaluation = FlowTestEvaluator.Evaluate(result, steps, testContext!.Definition);
+                testRun.Status = evaluation.Passed ? "Passed" : "Failed";
+                testRun.ResultJson = evaluation.ToJson();
+                testRun.ErrorMessage = evaluation.Passed ? null : string.Join(" ", evaluation.Failures);
+                testRun.CompletedAt = DateTime.UtcNow;
+                await testRepository.UpdateRunAsync(testRun);
+
+                if (testCase != null)
+                {
+                    testCase.LastRunAt = testRun.CompletedAt;
+                    if (evaluation.Passed) testCase.LastPassedAt = testRun.CompletedAt;
+                    await testRepository.UpdateAsync(testCase);
+                }
+
+                _logger.LogInformation("Test case {TestCaseId} {TestStatus} for execution {ExecutionId}: {TestResult}",
+                    testRun.TestCaseId, testRun.Status, execution.Id, testRun.ErrorMessage ?? "all assertions passed");
+            }
 
             if (result.Status == ExecutionStatus.Failed)
             {

@@ -12,6 +12,9 @@ public interface IIntegrationRepository
     Task<IEnumerable<IntegrationFlow>> GetByIntegrationIdAsync(Guid integrationId);
     Task AddAsync(IntegrationFlow flow);
     Task<bool> UpdateAsync(IntegrationFlow flow);
+    Task<IReadOnlyList<FlowVersion>> GetVersionsAsync(Guid flowId);
+    Task<FlowVersion?> PublishAsync(Guid flowId, string? changeNote = null);
+    Task<IntegrationFlow?> RollbackAsync(Guid flowId, int versionNumber, string? changeNote = null);
     Task DeleteAsync(Guid id);
     Task UpdatePersistedStateAsync(Guid flowId, string persistedStateJson);
     Task<string> GetPersistedStateAsync(Guid flowId);

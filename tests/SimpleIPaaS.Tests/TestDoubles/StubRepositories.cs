@@ -71,6 +71,14 @@ public sealed class StubIntegrationRepository : IIntegrationRepository
         return Task.CompletedTask;
     }
 
+    public Task<IReadOnlyList<FlowVersion>> GetVersionsAsync(Guid flowId) =>
+        Task.FromResult<IReadOnlyList<FlowVersion>>(Array.Empty<FlowVersion>());
+
+    public Task<FlowVersion?> PublishAsync(Guid flowId, string? changeNote = null) =>
+        Task.FromResult<FlowVersion?>(null);
+
+    public Task<IntegrationFlow?> RollbackAsync(Guid flowId, int versionNumber, string? changeNote = null) =>
+        Task.FromResult<IntegrationFlow?>(null);
     public Task<bool> UpdateAsync(IntegrationFlow flow)
     {
         _flows[flow.Id] = flow;
@@ -414,7 +422,7 @@ public sealed class StubTransportEngine : ITransportEngine
 
     public void Enqueue(int statusCode, string response) => _responses.Enqueue((statusCode, response));
 
-    public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
+    public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default, FlowTestContext? testContext = null)
     {
         RequestedUrls.Add(step.EndpointUrl);
         var response = _responses.Count > 0 ? _responses.Dequeue() : (200, "{}");
@@ -424,7 +432,7 @@ public sealed class StubTransportEngine : ITransportEngine
 
 public sealed class UnreachableTransportEngine : ITransportEngine
 {
-    public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default) =>
+    public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default, FlowTestContext? testContext = null) =>
         throw new InvalidOperationException("No transport dispatch was expected in this test.");
 }
 

@@ -9,6 +9,9 @@ public sealed class DatabaseLoggerOptions
     // Master switch. "Logging:Database:Enabled" (default true).
     public bool Enabled { get; set; } = true;
 
+    public string EnvironmentName { get; set; } = "Development";
+    public string ApplicationVersion { get; set; } = typeof(DatabaseLoggerOptions).Assembly.GetName().Version?.ToString() ?? "unknown";
+
     // Provider-specific floor applied on top of the standard "Logging:LogLevel:*" rules.
     // "Logging:Database:MinimumLevel" (default Information).
     public LogLevel MinimumLevel { get; set; } = LogLevel.Information;
@@ -16,8 +19,11 @@ public sealed class DatabaseLoggerOptions
     // Retention: rows older than this are pruned. <= 0 disables age-based pruning.
     public int RetentionHours { get; set; } = 72;
 
+    // Warning and error events remain searchable longer than detailed informational events.
+    public int WarningRetentionHours { get; set; } = 336;
+
     // Hard row cap; the oldest rows above the cap are pruned. <= 0 disables the cap.
-    public int MaxRows { get; set; } = 100_000;
+    public int MaxRows { get; set; } = 1_000_000;
 
     // Flush every FlushIntervalSeconds, or immediately once BatchSize entries are queued.
     public int BatchSize { get; set; } = 200;

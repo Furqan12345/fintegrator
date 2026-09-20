@@ -208,7 +208,7 @@ public class ExecutionRepository : IExecutionRepository
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(e => e.Status == ExecutionStatus.Queued)
-            .OrderBy(e => e.StartedAt)
+            .OrderBy(e => e.QueuedAt ?? e.StartedAt)
             .Select(e => (Guid?)e.Id)
             .FirstOrDefaultAsync();
 
@@ -239,7 +239,15 @@ public class ExecutionRepository : IExecutionRepository
             execution.FlowId,
             execution.TenantId,
             execution.TriggerSource,
-            execution.TriggerPayloadJson);
+            execution.TriggerPayloadJson,
+            execution.FlowName,
+            execution.IntegrationId,
+            execution.IntegrationName,
+            execution.TraceParent,
+            execution.IsTest,
+            execution.TestCaseId,
+            execution.TestRunId,
+            execution.QueuedAt);
     }
 
     public async Task<IReadOnlyList<Guid>> GetCancelledExecutionIdsAsync(IReadOnlyCollection<Guid> executionIds)

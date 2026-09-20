@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json.Linq;
 using System.Text.Json.Nodes;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
@@ -117,7 +118,7 @@ public class ForEachTests
 
         public Task<TransportResponse> DispatchAsync(
             IntegrationStep step, string? payload, Guid? connectionId = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, FlowTestContext? testContext = null)
         {
             RequestedUrls.Add(step.EndpointUrl);
             var response = _responses.Count > 0 ? _responses.Dequeue() : (200, "{}");

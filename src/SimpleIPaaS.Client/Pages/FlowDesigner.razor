@@ -24,6 +24,7 @@
 @inject IDispatcher Dispatcher
 @inject HttpClient Http
 @inject IJSRuntime JSRuntime
+@inject NavigationManager NavigationManager
 
 <PageTitle>Flow Designer - SimpleIPaaS</PageTitle>
 
@@ -60,6 +61,18 @@
             </button>
             <button class="btn btn-outline btn-sm" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)" title="Flow settings">
                 <AppIcon Name="settings" Class="icon icon-xs" /> Settings
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="OpenFlowTests" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="Run isolated test cases for this flow">
+                <AppIcon Name="check" Class="icon icon-xs" /> Tests
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="OpenFlowLogs" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="View debug logs for this flow">
+                <AppIcon Name="search" Class="icon icon-xs" /> Logs
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="PublishFlowAsync" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty || FlowState.Value.IsLoading)" title="Publish this draft">
+                <AppIcon Name="arrow-right" Class="icon icon-xs" /> Publish
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="OpenVersionHistoryAsync" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="View published versions">
+                <AppIcon Name="refresh" Class="icon icon-xs" /> Versions
             </button>
             <div class="toolbar-divider"></div>
             <button class="btn btn-primary" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
@@ -132,11 +145,9 @@
             </div>
             <div class="modal-body modal-body-scroll">
                 <div class="form-group">
-                    <label>Flow Status</label>
-                    <select class="form-control" @bind="settingsFlow.Status">
-                        <option value="Draft">Draft</option>
-                        <option value="Active">Active</option>
-                    </select>
+                    <label>Flow lifecycle</label>
+                    <div class="text-muted">@settingsFlow.Status</div>
+                    <small class="field-hint">Save changes as a draft, then use Publish to make this version active. The currently published version is @(settingsFlow.PublishedVersion.HasValue ? $"v{settingsFlow.PublishedVersion}" : "none").</small>
                 </div>
                 @if (HasScheduleNode)
                 {
@@ -217,6 +228,56 @@
     </div>
 }
 
+@if (_showVersionHistory && FlowState.Value.CurrentFlow != null)
+{
+    <div class="modal-overlay" @onclick="CloseVersionHistory">
+        <div class="modal-container flow-settings-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <div>
+                    <h2 class="modal-title">Published versions</h2>
+                    <p class="modal-subtitle">@FlowState.Value.CurrentFlow.Name</p>
+                </div>
+                <button class="modal-close-btn" @onclick="CloseVersionHistory" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body modal-body-scroll">
+                @if (_versions.Count == 0)
+                {
+                    <p class="text-muted">No published versions yet. Save the flow, then publish it.</p>
+                }
+                else
+                {
+                    @foreach (var version in _versions)
+                    {
+                        <div class="version-history-row">
+                            <div>
+                                <strong>v@version.VersionNumber</strong>
+                                @if (version.IsCurrent)
+                                {
+                                    <span class="text-muted"> · current</span>
+                                }
+                                <div class="text-muted">@version.CreatedAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</div>
+                                <div>@version.ChangeNote</div>
+                                @if (version.RolledBackFromVersion.HasValue)
+                                {
+                                    <small class="field-hint">Rollback from v@version.RolledBackFromVersion</small>
+                                }
+                            </div>
+                            <button class="btn btn-outline btn-sm"
+                                    @onclick="() => RollbackFlowAsync(version.VersionNumber)"
+                                    disabled="@version.IsCurrent">
+                                Rollback
+                            </button>
+                        </div>
+                    }
+                }
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CloseVersionHistory">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public Guid? FlowId { get; set; }
 
@@ -237,6 +298,8 @@
     private List<IntegrationDto> _integrations = new();
     private List<ConnectionDto> _connections = new();
     private bool _showFlowSettings;
+    private bool _showVersionHistory;
+    private List<FlowVersionDto> _versions = new();
     private bool _webhookCopied;
     private List<string> _validationErrors = new();
     private List<DateTime> _cronPreviewOccurrences = new();
@@ -639,6 +702,110 @@
         _webhookCopied = false;
         _showFlowSettings = true;
         await RefreshCronPreview();
+    }
+
+    private void OpenFlowTests()
+    {
+        if (FlowState.Value.CurrentFlow?.Id is Guid flowId && flowId != Guid.Empty)
+        {
+            NavigationManager.NavigateTo($"flow-tests/{flowId}");
+        }
+    }
+
+    private void OpenFlowLogs()
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null || flow.Id == Guid.Empty)
+        {
+            return;
+        }
+
+        NavigationManager.NavigateTo($"/logs?flowId={flow.Id}");
+    }
+
+    private async Task PublishFlowAsync()
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null || flow.Id == Guid.Empty)
+        {
+            return;
+        }
+
+        var response = await Http.PostAsJsonAsync(
+            $"api/integrationflow/{flow.Id}/publish",
+            new FlowVersionActionDto { ChangeNote = "Published from Flow Designer" });
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _validationErrors = new List<string> { "The draft could not be published. Review the flow and try again." };
+            return;
+        }
+
+        var published = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+        if (published != null)
+        {
+            Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = published });
+            await OpenVersionHistoryAsync();
+        }
+    }
+
+    private async Task OpenVersionHistoryAsync()
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null || flow.Id == Guid.Empty)
+        {
+            return;
+        }
+
+        var versions = await Http.GetFromJsonAsync<List<FlowVersionDto>>(
+            $"api/integrationflow/{flow.Id}/versions");
+
+        if (versions != null)
+        {
+            _versions = versions;
+        }
+
+        _showVersionHistory = true;
+    }
+
+    private void CloseVersionHistory()
+    {
+        _showVersionHistory = false;
+    }
+
+    private async Task RollbackFlowAsync(int versionNumber)
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null || flow.Id == Guid.Empty)
+        {
+            return;
+        }
+
+        var confirmed = await JSRuntime.InvokeAsync<bool>(
+            "confirm", $"Rollback {flow.Name} to version {versionNumber}? This will immediately activate that version.");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        var response = await Http.PostAsJsonAsync(
+            $"api/integrationflow/{flow.Id}/rollback/{versionNumber}",
+            new FlowVersionActionDto { ChangeNote = $"Rollback to version {versionNumber}" });
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _validationErrors = new List<string> { "The selected version could not be restored." };
+            return;
+        }
+
+        var rolledBack = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+        if (rolledBack != null)
+        {
+            Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = rolledBack });
+            await Task.Yield();
+            LoadDiagramFromCurrentFlow();
+            await OpenVersionHistoryAsync();
+        }
     }
 
     private void CloseFlowSettings()

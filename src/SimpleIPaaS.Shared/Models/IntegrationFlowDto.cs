@@ -18,6 +18,8 @@ public class IntegrationFlowDto
     public string WebhookSecret { get; set; } = string.Empty;
     public DateTime? RunAt { get; set; }
     public bool AllowPostReplay { get; set; }
+    public int? PublishedVersion { get; set; }
+    public DateTime? LastPublishedAt { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -81,4 +83,18 @@ public class IntegrationEdgeDto
     public string TargetPortId { get; set; } = string.Empty;
     public string Condition { get; set; } = string.Empty;
     public int Order { get; set; }
+}
+
+public class FlowVersionDto
+{
+    public int VersionNumber { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public string ChangeNote { get; set; } = string.Empty;
+    public int? RolledBackFromVersion { get; set; }
+    public bool IsCurrent { get; set; }
+}
+
+public class FlowVersionActionDto
+{
+    public string ChangeNote { get; set; } = string.Empty;
 }

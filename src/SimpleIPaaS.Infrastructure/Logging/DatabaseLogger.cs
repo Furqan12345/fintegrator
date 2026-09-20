@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using SimpleIPaaS.Domain.Entities;
 
@@ -15,91 +16,77 @@ internal sealed class DatabaseLogger : ILogger
         _category = category;
     }
 
-    public IDisposable BeginScope<TState>(TState state) where TState : notnull =>
-        _provider.ScopeProvider?.Push(state) ?? NullScope.Instance;
+    public IDisposable BeginScope<TState>(TState state) where TState : notnull => _provider.ScopeProvider?.Push(state) ?? NullScope.Instance;
+    public bool IsEnabled(LogLevel logLevel) => _provider.Options.Enabled && logLevel != LogLevel.None && logLevel >= _provider.Options.MinimumLevel;
 
-    public bool IsEnabled(LogLevel logLevel) =>
-        _provider.Options.Enabled && logLevel != LogLevel.None && logLevel >= _provider.Options.MinimumLevel;
-
-    public void Log<TState>(
-        LogLevel logLevel,
-        EventId eventId,
-        TState state,
-        Exception? exception,
-        Func<TState, Exception?, string> formatter)
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
     {
-        if (!IsEnabled(logLevel))
-        {
-            return;
-        }
-
-        // A logging sink must never throw back into the caller.
+        if (!IsEnabled(logLevel)) return;
         try
         {
-            // Scopes first (outermost to innermost), then the message state, so the most
-            // specific value for a property wins.
-            var correlation = new CorrelationBox();
+            var correlation = new LogCorrelation();
             _provider.ScopeProvider?.ForEachScope(static (scope, box) => box.Harvest(scope), correlation);
+            correlation.HarvestActivity(Activity.Current);
             correlation.Harvest(state);
-
+            var outcome = correlation.Outcome ?? (logLevel >= LogLevel.Error ? "Failed" : logLevel >= LogLevel.Warning ? "Warning" : "Succeeded");
             var entry = new AppLogEntry
             {
+                EventId = Guid.NewGuid(),
+                EventVersion = 1,
                 Timestamp = DateTime.UtcNow,
                 Level = logLevel.ToString(),
                 Source = _provider.Source,
-                Category = _category,
-                Message = Truncate(formatter(state, exception), _provider.Options.MaxMessageLength),
-                Exception = exception == null
-                    ? null
-                    : Truncate(exception.ToString(), _provider.Options.MaxExceptionLength),
-                TenantId = correlation.Value.TenantId,
-                FlowExecutionId = correlation.Value.FlowExecutionId,
-                FlowId = correlation.Value.FlowId,
-                NodeName = correlation.Value.NodeName
-            };
+                Service = _provider.Source,
+                HostInstance = _provider.InstanceId,
+                EnvironmentName = _provider.Options.EnvironmentName,
 
+                Category = _category,
+                Component = correlation.Component ?? _category,
+                EventName = correlation.EventName ?? eventId.Name ?? "log",
+                Operation = correlation.Operation ?? string.Empty,
+                Outcome = outcome,
+                DurationMs = correlation.DurationMs,
+                TraceId = correlation.TraceId,
+                SpanId = correlation.SpanId,
+                ParentSpanId = correlation.ParentSpanId,
+                ApplicationVersion = correlation.ApplicationVersion ?? _provider.Options.ApplicationVersion,
+                Message = Truncate(ObservabilitySanitizer.Text(formatter(state, exception)), _provider.Options.MaxMessageLength),
+                Exception = exception == null ? null : Truncate(ObservabilitySanitizer.Text(exception.ToString()), _provider.Options.MaxExceptionLength),
+                TenantId = correlation.TenantId,
+                FlowExecutionId = correlation.FlowExecutionId,
+                FlowId = correlation.FlowId,
+                FlowName = correlation.FlowName,
+                IntegrationId = correlation.IntegrationId,
+                IntegrationName = correlation.IntegrationName,
+                ConnectionId = correlation.ConnectionId,
+                CardId = correlation.CardId,
+                CardType = correlation.CardType,
+                StepExecutionId = correlation.StepExecutionId,
+                Invocation = correlation.Invocation,
+                LoopPath = correlation.LoopPath,
+                RetryAttempt = correlation.RetryAttempt,
+                IsTest = correlation.IsTest,
+                TestCaseId = correlation.TestCaseId,
+                TestRunId = correlation.TestRunId,
+                NodeName = correlation.NodeName,
+                PropertiesJson = correlation.ToPropertiesJson()
+            };
             _provider.Writer.TryEnqueue(entry);
         }
         catch (Exception)
         {
-            // Swallow: losing a log line is always preferable to breaking the caller.
         }
     }
 
-    private static string Truncate(string? value, int maxLength)
+    private static string Truncate(string value, int maxLength)
     {
-        if (string.IsNullOrEmpty(value))
-        {
-            return string.Empty;
-        }
-
-        if (maxLength <= 0 || value.Length <= maxLength)
-        {
-            return value;
-        }
-
-        return value.Substring(0, maxLength) + "… [truncated]";
-    }
-
-    // Mutable holder so ForEachScope's static (non-capturing) callback can accumulate into
-    // the same LogCorrelation across every scope level.
-    private sealed class CorrelationBox
-    {
-        public LogCorrelation Value;
-
-        public void Harvest(object? state) => Value.Harvest(state);
+        if (maxLength <= 0 || value.Length <= maxLength) return value;
+        return value[..maxLength] + "… [truncated]";
     }
 
     private sealed class NullScope : IDisposable
     {
         public static readonly NullScope Instance = new();
-
-        private NullScope()
-        {
-        }
-
-        public void Dispose()
-        {
-        }
+        public void Dispose() { }
     }
 }

@@ -151,9 +151,26 @@ public class FlowValidatorTests
     }
 
     [Fact]
-    public void Validate_AcceptsFlowWithNoNodes()
+    public void Validate_RejectsFlowWithNoNodes()
     {
-        Assert.Empty(FlowValidator.Validate(new IntegrationFlowDto()));
+        var errors = FlowValidator.Validate(new IntegrationFlowDto());
+
+        Assert.Single(errors);
+        Assert.Equal("A flow must contain at least one node.", errors[0]);
+    }
+
+    [Fact]
+    public void Validate_RejectsUnknownStepType()
+    {
+        var flow = new IntegrationFlowDto
+        {
+            Nodes = { new IntegrationStepDto { Id = Guid.NewGuid(), NodeName = "Unknown", StepType = "NotARealStep" } }
+        };
+
+        var errors = FlowValidator.Validate(flow);
+
+        Assert.Single(errors);
+        Assert.Contains("unknown step type", errors[0], StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

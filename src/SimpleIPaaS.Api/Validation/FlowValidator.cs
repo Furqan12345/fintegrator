@@ -7,6 +7,19 @@ public static class FlowValidator
     public static List<string> Validate(IntegrationFlowDto flow)
     {
         var errors = new List<string>();
+        if (flow.Nodes.Count == 0)
+        {
+            errors.Add("A flow must contain at least one node.");
+            return errors;
+        }
+
+        foreach (var node in flow.Nodes)
+        {
+            if (!Enum.TryParse<SimpleIPaaS.Domain.StepType>(node.StepType, true, out _))
+            {
+                errors.Add($"Node '{node.NodeName}' has an unknown step type '{node.StepType}'.");
+            }
+        }
 
         var duplicateNames = flow.Nodes
             .Where(n => !string.IsNullOrWhiteSpace(n.NodeName))

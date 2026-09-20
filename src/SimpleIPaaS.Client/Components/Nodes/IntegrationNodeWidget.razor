@@ -1,9 +1,10 @@
-@using Blazor.Diagrams.Components.Renderers;
+@using Blazor.Diagrams.Components.Renderers
+@using Microsoft.AspNetCore.Components.Web
 @using SimpleIPaaS.Client.Shared
 @using SimpleIPaaS.Client.Components
 @using SimpleIPaaS.Client.Components.Nodes
 
-<div class="custom-node @Node.StepConfig.StepType?.ToLower()">
+<div class="custom-node @Node.StepConfig.StepType?.ToLower() @(Node.IsTestMode ? "is-test-node" : string.Empty) @(Node.IsMocked ? "is-mocked" : string.Empty)" @onclick="HandleClick" @onclick:stopPropagation="true">
     @if (Node.StepConfig.StepType == "HttpAction")
     {
         <HttpActionCard Step="Node.StepConfig" />
@@ -40,14 +41,37 @@
     {
         <ForEachCard Step="Node.StepConfig" />
     }
+    else
+    {
+        <div class="test-card-fallback">
+            <span>@(string.IsNullOrWhiteSpace(Node.StepConfig.StepType) ? "Custom card" : Node.StepConfig.StepType)</span>
+            <strong>@Node.StepConfig.NodeName</strong>
+            <small>Uses production configuration</small>
+        </div>
+    }
+
+    @if (Node.IsTestMode)
+    {
+        <button type="button"
+                class="test-node-status @(Node.TestStatus.ToLowerInvariant().Replace(" ", "-"))"
+                title="Configure this card for the current test scenario"
+                @onclick="HandleClick"
+                @onclick:stopPropagation="true"
+                @onpointerdown:stopPropagation="true">
+            <span class="test-node-status-dot"></span>
+            <span>@Node.TestStatus</span>
+            @if (Node.IsMocked) { <span class="test-node-mocked">Supplied</span> }
+            <span class="test-node-configure">Configure test</span>
+        </button>
+    }
 
     @foreach (var port in Node.Ports)
     {
-        <!-- Render ports for connections -->
         <PortRenderer Port="port" />
     }
 </div>
 
 @code {
     [Parameter] public IntegrationNodeModel Node { get; set; } = null!;
+    private Task HandleClick() => Node.TestClick?.Invoke(Node) ?? Task.CompletedTask;
 }

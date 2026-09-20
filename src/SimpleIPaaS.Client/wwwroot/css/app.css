@@ -3195,6 +3195,24 @@ textarea.api-packet-body {
     flex-wrap: wrap;
 }
 
+.version-history-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+}
+
+.version-history-row + .version-history-row {
+    margin-top: var(--space-2);
+}
+
+.version-history-row .field-hint {
+    display: block;
+}
 /* Toasts */
 .toast-host {
     position: fixed;
@@ -3419,3 +3437,282 @@ textarea.api-packet-body {
     .step-header, .step-body { padding-left: var(--space-4); padding-right: var(--space-4); }
     .transaction-card-header, .transaction-card-meta, .transaction-io-grid { padding-left: var(--space-4); padding-right: var(--space-4); }
 }
+
+/* Flow test workspace — focused product surface */
+.flow-tests-page {
+    min-height: 100%;
+    padding-bottom: var(--space-9);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--primary-light) 35%, var(--bg-app)) 0, var(--bg-app) 360px);
+}
+
+.flow-tests-hero {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 34px 40px 28px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-6);
+}
+
+.flow-tests-hero-copy { min-width: 0; }
+.flow-tests-breadcrumb { display: flex; align-items: center; gap: 8px; margin-bottom: 22px; color: var(--text-faint); font-size: .78rem; }
+.flow-tests-breadcrumb button { border: 0; padding: 0; background: transparent; color: var(--primary-contrast); font: inherit; cursor: pointer; }
+.flow-tests-breadcrumb button:hover { text-decoration: underline; }
+.flow-tests-title-row { display: flex; align-items: flex-start; gap: 16px; }
+.flow-tests-title-icon { width: 46px; height: 46px; display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; color: #fff; background: var(--gradient-primary); box-shadow: var(--shadow-primary); flex: 0 0 auto; }
+.flow-tests-kicker { display: block; margin-bottom: 4px; color: var(--primary-contrast); font-size: .64rem; font-weight: 760; letter-spacing: .13em; text-transform: uppercase; }
+.flow-tests-title-row h1 { margin: 0; font-size: clamp(1.8rem, 2.6vw, 2.35rem); line-height: 1.08; letter-spacing: -.045em; }
+.flow-tests-title-row p { margin: 8px 0 0; color: var(--text-secondary); font-size: .92rem; }
+.flow-tests-flow-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin: 22px 0 0 62px; color: var(--text-secondary); font-size: .78rem; }
+.flow-tests-flow-label { color: var(--text-faint); font-size: .65rem; font-weight: 760; letter-spacing: .09em; text-transform: uppercase; }
+.flow-tests-flow-name { max-width: 680px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 620; }
+.flow-tests-draft-badge { padding: 3px 9px; border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); border-radius: var(--radius-pill); background: var(--warning-soft); color: var(--warning); font-size: .68rem; font-weight: 700; }
+.flow-tests-hero-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.flow-tests-hero-actions .btn, .flow-test-editor-actions .btn { min-height: 38px; }
+.flow-tests-page .flip-horizontal { transform: scaleX(-1); }
+
+.flow-test-notice { max-width: 1400px; margin: 0 auto var(--space-5); padding: 11px 14px; display: flex; align-items: center; gap: 9px; border: 1px solid color-mix(in srgb, var(--info) 26%, transparent); border-radius: 11px; background: var(--info-soft); color: var(--info); font-size: .8rem; }
+.flow-tests-workspace { max-width: 1480px; margin: 0 auto; padding: 0 40px; display: grid; grid-template-columns: 292px minmax(0, 1fr); align-items: start; gap: 20px; }
+
+.flow-test-suite { position: sticky; top: 20px; overflow: hidden; }
+.flow-test-suite-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 20px 13px; }
+.flow-test-suite-head h2 { margin: 0; font-size: 1.45rem; letter-spacing: -.035em; }
+.flow-test-suite-head h2 span { color: var(--text-muted); font-size: .8rem; font-weight: 520; letter-spacing: 0; }
+.icon-button { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-card); color: var(--text-muted); cursor: pointer; }
+.icon-button:hover { color: var(--primary-contrast); border-color: var(--primary); background: var(--primary-light); }
+.flow-test-suite-stat { display: flex; align-items: center; gap: 7px; margin: 0 20px 15px; padding: 9px 10px; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--bg-inset); color: var(--text-muted); font-size: .7rem; }
+.suite-stat-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.suite-stat-divider { width: 1px; height: 14px; margin: 0 2px; background: var(--border-color); }
+.flow-test-case-list { border-top: 1px solid var(--border-subtle); }
+.flow-test-case { width: 100%; display: grid; grid-template-columns: 30px minmax(0, 1fr) 7px; align-items: center; gap: 10px; padding: 14px 18px; border: 0; border-bottom: 1px solid var(--border-subtle); background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background var(--dur-fast) ease, padding var(--dur-fast) ease; }
+.flow-test-case:hover { background: var(--bg-subtle); }
+.flow-test-case.is-selected { padding-left: 15px; background: var(--primary-light); box-shadow: inset 3px 0 var(--primary); }
+.flow-test-case-icon { width: 29px; height: 29px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; }
+.flow-test-case-icon.is-passed { background: var(--success-soft); color: var(--success); }
+.flow-test-case-icon.is-pending { background: var(--bg-subtle); color: var(--text-faint); }
+.flow-test-case-copy { min-width: 0; }
+.flow-test-case-copy strong { display: block; overflow: hidden; color: var(--text-primary); font-size: .8rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.flow-test-case-copy small { display: block; margin-top: 3px; overflow: hidden; color: var(--text-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.flow-test-case-indicator { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.flow-test-case-indicator.is-enabled { background: var(--success); }
+.flow-test-case-indicator.is-disabled { background: var(--text-faint); }
+.flow-test-empty { padding: 25px 20px 28px; text-align: center; }
+.flow-test-empty-icon { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 11px; border-radius: 11px; background: var(--primary-light); color: var(--primary-contrast); }
+.flow-test-empty strong { display: block; font-size: .86rem; }
+.flow-test-empty p { margin: 5px auto 15px; color: var(--text-muted); font-size: .75rem; line-height: 1.45; }
+.flow-test-suite-foot { display: flex; align-items: flex-start; gap: 8px; padding: 14px 18px; color: var(--text-faint); font-size: .68rem; line-height: 1.45; }
+.flow-test-suite-foot .icon { margin-top: 1px; flex: 0 0 auto; }
+
+.flow-test-editor { min-width: 0; overflow: hidden; }
+.flow-test-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 25px 30px 22px; border-bottom: 1px solid var(--border-color); background: linear-gradient(180deg, var(--bg-card), color-mix(in srgb, var(--bg-card-header) 66%, var(--bg-card))); }
+.flow-test-editor-heading { min-width: 0; }
+.flow-test-editor-heading h2 { margin: 0; overflow: hidden; font-size: 1.38rem; letter-spacing: -.035em; text-overflow: ellipsis; white-space: nowrap; }
+.flow-test-editor-heading p { margin: 6px 0 0; color: var(--text-muted); font-size: .8rem; }
+.flow-test-editor-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.flow-test-editor-body { display: flex; flex-direction: column; gap: 14px; padding: 24px 30px 30px; }
+.flow-test-basics, .flow-test-fixture-card, .flow-test-collapsible, .flow-test-history { border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-card); }
+.flow-test-basics { padding: 20px; }
+.flow-test-section-heading { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 18px; }
+.flow-test-section-heading.compact { margin-bottom: 14px; }
+.flow-test-section-heading.no-number { margin-bottom: 0; }
+.flow-test-section-heading h3 { margin: 0; font-size: .92rem; letter-spacing: -.015em; }
+.flow-test-section-heading p { margin: 3px 0 0; color: var(--text-muted); font-size: .74rem; }
+.flow-test-section-number { width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 8px; background: var(--primary-light); color: var(--primary-contrast); font-size: .64rem; font-weight: 760; letter-spacing: .03em; }
+.flow-test-section-number .icon { width: 14px; height: 14px; }
+.flow-test-basics-grid { display: grid; grid-template-columns: minmax(0, .72fr) minmax(0, 1.28fr); gap: 16px; }
+.flow-test-basics .form-group { margin-bottom: 12px; }
+.flow-test-basics .form-group > label { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; text-transform: none; letter-spacing: 0; font-size: .75rem; color: var(--text-secondary); }
+.optional-label { color: var(--text-faint); font-size: .67rem; font-weight: 500; }
+.flow-test-options { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 3px; }
+.flow-test-option { display: flex; align-items: flex-start; gap: 9px; min-width: 205px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--bg-inset); cursor: pointer; }
+.flow-test-option:hover { border-color: var(--border-strong); }
+.flow-test-option input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--primary); }
+.flow-test-option strong, .flow-test-option small { display: block; }
+.flow-test-option strong { font-size: .76rem; font-weight: 650; }
+.flow-test-option small { margin-top: 2px; color: var(--text-muted); font-size: .68rem; }
+.flow-test-fixture-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.flow-test-fixture-card { min-width: 0; padding: 20px; }
+.flow-test-type-badge { margin-left: auto; padding: 3px 7px; border: 1px solid var(--border-color); border-radius: 5px; color: var(--text-faint); font-family: var(--font-mono); font-size: .6rem; font-weight: 700; letter-spacing: .08em; }
+.flow-test-code { width: 100%; min-height: 0 !important; padding: 14px !important; border-color: transparent !important; border-radius: 10px !important; background: var(--surface-code) !important; color: var(--surface-code-text) !important; box-shadow: none !important; line-height: 1.55 !important; }
+.flow-test-code:focus { border-color: var(--primary) !important; box-shadow: 0 0 0 3px var(--primary-glow) !important; }
+.flow-test-code::placeholder { color: #7d8798; }
+.flow-test-fixture-card .field-hint, .flow-test-collapsible-body .field-hint { margin-top: 8px; }
+.flow-test-collapsible { overflow: hidden; }
+.flow-test-collapsible summary { display: flex; align-items: center; gap: 11px; padding: 16px 19px; cursor: pointer; list-style: none; }
+.flow-test-collapsible summary::-webkit-details-marker { display: none; }
+.flow-test-collapsible summary:hover { background: var(--bg-inset); }
+.flow-test-summary-copy { min-width: 0; flex: 1; }
+.flow-test-summary-copy strong, .flow-test-summary-copy small { display: block; }
+.flow-test-summary-copy strong { font-size: .82rem; font-weight: 650; }
+.flow-test-summary-copy small { margin-top: 3px; color: var(--text-muted); font-size: .72rem; }
+.flow-test-summary-meta { color: var(--text-faint); font-size: .7rem; white-space: nowrap; }
+.flow-test-chevron { color: var(--text-muted); transition: transform var(--dur-fast) ease; }
+.flow-test-collapsible[open] .flow-test-chevron { transform: rotate(180deg); }
+.flow-test-collapsible-body { padding: 0 19px 18px; }
+
+.flow-test-history { overflow: hidden; }
+.flow-test-history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 19px; border-bottom: 1px solid var(--border-subtle); }
+.flow-test-history-head .flow-test-section-heading { align-items: center; }
+.flow-test-history-empty { padding: 19px; color: var(--text-muted); font-size: .75rem; }
+.flow-test-run-row { display: grid; grid-template-columns: 110px 150px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 13px 19px; border-bottom: 1px solid var(--border-subtle); font-size: .74rem; }
+.flow-test-run-row:last-child { border-bottom: 0; }
+.flow-test-run-status { display: inline-flex; align-items: center; gap: 5px; font-weight: 700; }
+.flow-test-run-status.is-success { color: var(--success); }
+.flow-test-run-status.is-failed { color: var(--danger); }
+.flow-test-run-status.is-pending { color: var(--warning); }
+.flow-test-run-date { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.flow-test-run-error { overflow: hidden; color: var(--danger); text-overflow: ellipsis; white-space: nowrap; }
+.flow-test-run-link { display: inline-flex; align-items: center; gap: 5px; color: var(--primary-contrast); font-weight: 650; text-decoration: none; white-space: nowrap; }
+.flow-test-run-link:hover { text-decoration: underline; }
+
+@media (max-width: 1100px) {
+    .flow-tests-hero { padding-left: 24px; padding-right: 24px; }
+    .flow-tests-workspace { padding-left: 24px; padding-right: 24px; grid-template-columns: 250px minmax(0, 1fr); }
+    .flow-test-editor-head, .flow-test-editor-body { padding-left: 22px; padding-right: 22px; }
+}
+@media (max-width: 820px) {
+    .flow-tests-hero { align-items: flex-start; flex-direction: column; padding-top: 26px; }
+    .flow-tests-hero-actions { width: 100%; }
+    .flow-tests-hero-actions .btn { flex: 1; }
+    .flow-tests-workspace { grid-template-columns: 1fr; }
+    .flow-test-suite { position: static; }
+    .flow-test-case-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .flow-test-suite-foot { display: none; }
+    .flow-test-fixture-grid, .flow-test-basics-grid { grid-template-columns: 1fr; }
+    .flow-test-run-row { grid-template-columns: 1fr 1fr; }
+    .flow-test-run-error { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+    .flow-tests-hero, .flow-tests-workspace { padding-left: 14px; padding-right: 14px; }
+    .flow-tests-title-row h1 { font-size: 1.7rem; }
+    .flow-tests-flow-meta { margin-left: 0; }
+    .flow-tests-flow-name { max-width: 100%; }
+    .flow-test-editor-head { flex-direction: column; }
+    .flow-test-editor-actions { width: 100%; flex-wrap: wrap; }
+    .flow-test-editor-actions .btn { flex: 1; }
+    .flow-test-case-list { grid-template-columns: 1fr; }
+    .flow-test-editor-body { padding: 16px; }
+    .flow-test-basics, .flow-test-fixture-card { padding: 16px; }
+    .flow-test-summary-meta { display: none; }
+}
+/* Friendly flow-test builders */
+.flow-test-http-help { margin-bottom: 14px; padding: 12px 13px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--bg-inset); }
+.flow-test-http-help-title { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: .73rem; font-weight: 650; }
+.flow-test-node-map { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.flow-test-node-map-row { display: grid; grid-template-columns: 7px minmax(90px, .7fr) auto minmax(170px, 1fr); align-items: center; gap: 8px; min-width: 0; padding: 7px 8px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); font-size: .7rem; }
+.flow-test-node-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-cyan); }
+.flow-test-node-map-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-test-node-type { color: var(--text-muted); font-size: .66rem; }
+.flow-test-node-map-row code { overflow: hidden; color: var(--text-faint); font-family: var(--font-mono); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+
+.flow-test-assertion-intro { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; padding: 12px 13px; border: 1px solid color-mix(in srgb, var(--success) 20%, transparent); border-radius: 10px; background: var(--success-soft); }
+.flow-test-assertion-intro-icon { display: inline-flex; color: var(--success); }
+.flow-test-assertion-intro strong { display: block; color: var(--text-primary); font-size: .76rem; }
+.flow-test-assertion-intro p { margin: 2px 0 0; color: var(--text-secondary); font-size: .72rem; line-height: 1.45; }
+.flow-test-assertion-rule { display: flex; align-items: flex-start; gap: 10px; padding: 13px; margin-bottom: 9px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-inset); }
+.flow-test-assertion-index { width: 23px; height: 23px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 7px; background: var(--bg-card); color: var(--text-muted); font-size: .66rem; font-weight: 700; }
+.flow-test-assertion-fields { display: grid; grid-template-columns: minmax(125px, .9fr) minmax(150px, 1.2fr) minmax(135px, .9fr) minmax(150px, 1fr); align-items: end; gap: 10px; min-width: 0; flex: 1; }
+.flow-test-assertion-field { min-width: 0; }
+.flow-test-assertion-field label { display: block; margin: 0 0 5px; color: var(--text-muted); font-size: .65rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.flow-test-assertion-field .form-control { width: 100%; min-width: 0; }
+.flow-test-assertion-remove { width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; margin-top: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-faint); font-size: 1.15rem; line-height: 1; cursor: pointer; }
+.flow-test-assertion-remove:hover { background: var(--danger-soft); color: var(--danger); }
+.flow-test-fixed-target { height: 35px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-subtle); color: var(--text-secondary); font-size: .77rem; }
+.flow-test-add-assertion { margin-top: 3px; }
+.flow-test-assertion-help { margin-top: 12px; color: var(--text-muted); font-size: .71rem; line-height: 1.55; }
+.flow-test-assertion-help code { padding: 2px 5px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-subtle); color: var(--text-secondary); font-family: var(--font-mono); font-size: .67rem; }
+.flow-test-assertion-empty { margin-bottom: 11px; padding: 14px; border: 1px dashed var(--border-strong); border-radius: 9px; color: var(--text-muted); font-size: .74rem; text-align: center; }
+@media (max-width: 1120px) { .flow-test-assertion-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .assertion-expected { grid-column: span 2; } }
+@media (max-width: 820px) { .flow-test-node-map-row { grid-template-columns: 7px minmax(0, 1fr) auto; } .flow-test-node-map-row code { grid-column: 2 / -1; } .flow-test-assertion-fields { grid-template-columns: 1fr; } .assertion-expected { grid-column: auto; } }
+.flow-test-http-help p { margin: 4px 0 0 21px; color: var(--text-muted); font-size: .7rem; line-height: 1.45; }
+.flow-test-http-fixture { margin-bottom: 10px; padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-inset); }
+.flow-test-http-fixture-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.flow-test-http-fixture-title { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: .74rem; }
+.flow-test-http-fixture-title strong { color: var(--text-secondary); }
+.flow-test-http-fixture-title > span:last-child { overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.flow-test-http-fixture .flow-test-assertion-remove { margin-top: 0; }
+.flow-test-http-fixture-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(100px, .4fr); gap: 10px; }
+.flow-test-http-body-field { margin-top: 10px; }
+.flow-test-http-body-field label { display: block; margin-bottom: 5px; color: var(--text-muted); font-size: .65rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+/* Assertion rows must fit the editor card, not the viewport. Node assertions have five controls. */
+.flow-test-assertion-rule { min-width: 0; overflow: hidden; }
+.flow-test-assertion-fields { width: 100%; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); }
+.flow-test-assertion-field { min-width: 0; overflow: hidden; }
+.flow-test-assertion-field .form-control { min-width: 0; max-width: 100%; }
+.flow-test-assertion-field label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-test-assertion-fields .assertion-expected { grid-column: auto; }
+/* Assertion guide */
+.flow-test-assertion-intro { display: flex; align-items: flex-start; gap: 10px; }
+.flow-test-assertion-intro-copy { min-width: 0; flex: 1; }
+.flow-test-help-button { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto; padding: 7px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); color: var(--accent); font-size: .7rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.flow-test-help-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.flow-doc-page { min-height: 100%; background: var(--bg-page); }
+.flow-doc-hero { position: relative; max-width: 1120px; margin: 0 auto; padding: 34px 42px 30px; border-bottom: 1px solid var(--border-color); }
+.flow-doc-breadcrumb { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; color: var(--text-muted); font-size: .7rem; }
+.flow-doc-breadcrumb a { color: var(--accent); text-decoration: none; }
+.flow-doc-breadcrumb a:hover { text-decoration: underline; }
+.flow-doc-title-row { display: flex; align-items: flex-start; gap: 15px; max-width: 770px; }
+.flow-doc-title-icon { width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 13px; background: var(--accent-soft); color: var(--accent); }
+.flow-doc-title-row h1 { margin: 4px 0 8px; color: var(--text-primary); font-size: clamp(1.65rem, 3vw, 2.3rem); letter-spacing: -.035em; }
+.flow-doc-title-row p { max-width: 680px; margin: 0; color: var(--text-secondary); font-size: .88rem; line-height: 1.6; }
+.flow-doc-actions { position: absolute; top: 77px; right: 42px; }
+.flow-doc-content { max-width: 980px; margin: 0 auto; padding: 28px 42px 58px; }
+.flow-doc-callout { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; padding: 17px 19px; border: 1px solid #b8e5d6; border-radius: 12px; background: #eaf8f3; color: var(--text-primary); }
+.flow-doc-callout-icon { display: inline-flex; flex: 0 0 auto; margin-top: 1px; color: var(--success); }
+.flow-doc-callout strong { display: block; font-size: .82rem; }
+.flow-doc-callout p { margin: 4px 0 0; color: var(--text-secondary); font-size: .77rem; line-height: 1.55; }
+.flow-doc-card { margin-bottom: 17px; padding: 23px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-card); box-shadow: 0 4px 16px rgba(31, 49, 75, .035); }
+.flow-doc-card-heading { display: flex; align-items: flex-start; gap: 13px; margin-bottom: 19px; }
+.flow-doc-step { width: 31px; height: 31px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: .68rem; font-weight: 800; }
+.flow-doc-card h2 { margin: 1px 0 4px; color: var(--text-primary); font-size: 1.03rem; letter-spacing: -.015em; }
+.flow-doc-card-heading p { margin: 0; color: var(--text-muted); font-size: .76rem; line-height: 1.45; }
+.flow-doc-rule-diagram { display: grid; grid-template-columns: 1fr auto 1fr auto 1.15fr auto 1fr; align-items: center; gap: 10px; }
+.flow-doc-rule-step { min-height: 86px; padding: 13px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-inset); }
+.flow-doc-rule-step span, .flow-doc-mini-label { display: block; margin-bottom: 7px; color: var(--accent); font-size: .59rem; font-weight: 800; letter-spacing: .1em; }
+.flow-doc-rule-step strong { display: block; color: var(--text-primary); font-size: .77rem; }
+.flow-doc-rule-step small { display: block; margin-top: 5px; color: var(--text-muted); font-size: .66rem; line-height: 1.4; }
+.flow-doc-arrow { color: var(--border-strong); font-size: 1.1rem; }
+.flow-doc-grid { display: grid; gap: 12px; }
+.flow-doc-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.flow-doc-mini-card { padding: 16px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-inset); }
+.flow-doc-mini-card h3 { margin: 0 0 6px; color: var(--text-primary); font-size: .86rem; }
+.flow-doc-mini-card p { min-height: 38px; margin: 0 0 12px; color: var(--text-secondary); font-size: .74rem; line-height: 1.5; }
+.flow-doc-mini-card > small { display: block; margin-top: 10px; color: var(--text-muted); font-size: .67rem; line-height: 1.45; }
+.flow-doc-example-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 9px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); font-size: .7rem; }
+.flow-doc-example-line span { color: var(--text-primary); font-weight: 700; }
+.flow-doc-example-line b, .flow-doc-example b { color: var(--accent); font-size: .65rem; }
+.flow-doc-example-line strong { color: var(--success); }
+.flow-doc-table-wrap { overflow-x: auto; }
+.flow-doc-table { width: 100%; border-collapse: collapse; font-size: .74rem; }
+.flow-doc-table th { padding: 0 12px 10px; color: var(--text-muted); font-size: .63rem; letter-spacing: .07em; text-align: left; text-transform: uppercase; }
+.flow-doc-table td { padding: 13px 12px; border-top: 1px solid var(--border-color); color: var(--text-secondary); line-height: 1.45; vertical-align: top; }
+.flow-doc-table td:first-child { width: 23%; color: var(--text-primary); }
+.flow-doc-table code, .flow-doc-scenario code { padding: 3px 6px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-inset); color: var(--text-primary); font-family: var(--font-mono); font-size: .68rem; }
+.flow-doc-operator-list { display: grid; gap: 11px; }
+.flow-doc-operator { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 14px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-inset); }
+.flow-doc-operator-symbol { width: 31px; height: 31px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--bg-card); color: var(--accent); font-size: 1rem; font-weight: 800; }
+.flow-doc-operator h3 { margin: 0 0 4px; color: var(--text-primary); font-size: .8rem; }
+.flow-doc-operator p { margin: 0 0 9px; color: var(--text-secondary); font-size: .72rem; line-height: 1.5; }
+.flow-doc-example { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); color: var(--text-muted); font-size: .68rem; }
+.flow-doc-example code { color: var(--text-primary); font-family: var(--font-mono); }
+.flow-doc-operator-pair { margin-top: 1px; }
+.flow-doc-operator-pair .flow-doc-example { display: grid; grid-template-columns: auto 1fr; }
+.flow-doc-operator-pair .flow-doc-example span { color: var(--accent); font-weight: 700; }
+.flow-doc-operator-pair .flow-doc-example code { justify-self: end; }
+.flow-doc-operator-pair .flow-doc-example small { grid-column: 1 / -1; color: var(--text-muted); font-size: .67rem; line-height: 1.4; }
+.flow-doc-scenario-list { display: grid; gap: 9px; }
+.flow-doc-scenario { display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-inset); }
+.flow-doc-scenario > span { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 6px; background: var(--bg-card); color: var(--accent); font-size: .66rem; font-weight: 800; }
+.flow-doc-scenario strong { color: var(--text-primary); font-size: .76rem; }
+.flow-doc-scenario p { margin: 4px 0 0; color: var(--text-muted); font-size: .7rem; line-height: 1.45; }
+.flow-doc-scenario em { color: var(--text-secondary); font-style: normal; font-weight: 700; }
+.flow-doc-scenario b { color: var(--accent); font-size: .66rem; }
+.flow-doc-mistakes { background: linear-gradient(180deg, var(--bg-card), var(--bg-inset)); }
+.flow-doc-checklist { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.flow-doc-checklist li { position: relative; padding-left: 25px; color: var(--text-secondary); font-size: .74rem; line-height: 1.52; }
+.flow-doc-checklist li::before { content: '✓'; position: absolute; left: 0; top: 0; width: 17px; height: 17px; border-radius: 50%; background: var(--success-soft); color: var(--success); font-size: .66rem; font-weight: 800; text-align: center; }
+.flow-doc-checklist strong { color: var(--text-primary); }
+.flow-doc-end { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 3px; color: var(--text-muted); font-size: .74rem; }
+@media (max-width: 920px) { .flow-doc-actions { position: static; margin-top: 20px; } .flow-doc-rule-diagram { grid-template-columns: repeat(2, minmax(0, 1fr)); } .flow-doc-arrow { display: none; } }
+@media (max-width: 640px) { .flow-doc-hero, .flow-doc-content { padding-right: 18px; padding-left: 18px; } .flow-doc-card { padding: 17px; } .flow-doc-grid-two, .flow-doc-rule-diagram { grid-template-columns: 1fr; } .flow-test-help-button { margin-left: 32px; } .flow-doc-end { align-items: flex-start; flex-direction: column; } .flow-doc-table { min-width: 620px; } }

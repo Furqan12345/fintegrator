@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain;
@@ -70,7 +71,8 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         existing.Name = flow.Name;
         existing.Description = flow.Description;
         existing.IntegrationId = flow.IntegrationId;
-        existing.Status = flow.Status;
+        // Editing an active flow creates a draft; only PublishAsync can make it runnable again.
+        existing.Status = FlowStatus.Draft;
         if (existing.CronExpression != flow.CronExpression || existing.TriggerType != flow.TriggerType || existing.RunAt != flow.RunAt)
         {
             existing.NextRunAt = null;
@@ -126,6 +128,277 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         return true;
     }
 
+    public async Task<IReadOnlyList<FlowVersion>> GetVersionsAsync(Guid flowId)
+    {
+        return await _context.FlowVersions
+            .AsNoTracking()
+            .Where(version => version.FlowId == flowId)
+            .OrderByDescending(version => version.VersionNumber)
+            .ToListAsync();
+    }
+
+    public async Task<FlowVersion?> PublishAsync(Guid flowId, string? changeNote = null)
+    {
+        var flow = await LoadMutableFlowAsync(flowId);
+        if (flow == null)
+        {
+            return null;
+        }
+
+        var versionNumber = await NextVersionNumberAsync(flowId);
+        var now = DateTime.UtcNow;
+        flow.Status = FlowStatus.Active;
+        flow.PublishedVersion = versionNumber;
+        flow.LastPublishedAt = now;
+        flow.UpdatedAt = now;
+        SyncOneTimeSchedule(flow);
+
+        var version = new FlowVersion
+        {
+            FlowId = flow.Id,
+            TenantId = flow.TenantId,
+            VersionNumber = versionNumber,
+            CreatedAt = now,
+            ChangeNote = NormalizeChangeNote(changeNote),
+            SnapshotJson = SerializeSnapshot(flow)
+        };
+
+        _context.FlowVersions.Add(version);
+        await _context.SaveChangesAsync();
+        return version;
+    }
+
+    public async Task<IntegrationFlow?> RollbackAsync(Guid flowId, int versionNumber, string? changeNote = null)
+    {
+        if (versionNumber < 1)
+        {
+            return null;
+        }
+
+        var flow = await LoadMutableFlowAsync(flowId);
+        var target = await _context.FlowVersions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(version => version.FlowId == flowId && version.VersionNumber == versionNumber);
+
+        if (flow == null || target == null)
+        {
+            return null;
+        }
+
+        FlowSnapshot snapshot;
+        try
+        {
+            snapshot = JsonSerializer.Deserialize<FlowSnapshot>(target.SnapshotJson, JsonOptions)
+                ?? throw new JsonException("The stored flow version is empty.");
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        ApplySnapshot(flow, snapshot);
+        var newVersionNumber = await NextVersionNumberAsync(flowId);
+        var now = DateTime.UtcNow;
+        flow.Status = FlowStatus.Active;
+        flow.PublishedVersion = newVersionNumber;
+        flow.LastPublishedAt = now;
+        flow.UpdatedAt = now;
+        SyncOneTimeSchedule(flow);
+
+        _context.FlowVersions.Add(new FlowVersion
+        {
+            FlowId = flow.Id,
+            TenantId = flow.TenantId,
+            VersionNumber = newVersionNumber,
+            CreatedAt = now,
+            ChangeNote = string.IsNullOrWhiteSpace(changeNote)
+                ? $"Rollback to version {versionNumber}"
+                : NormalizeChangeNote(changeNote),
+            RolledBackFromVersion = versionNumber,
+            SnapshotJson = SerializeSnapshot(flow)
+        });
+
+        await _context.SaveChangesAsync();
+        return flow;
+    }
+
+    private async Task<IntegrationFlow?> LoadMutableFlowAsync(Guid flowId)
+    {
+        return await _context.IntegrationFlows
+            .IgnoreQueryFilters()
+            .Include(flow => flow.Nodes)
+            .Include(flow => flow.Edges)
+            .FirstOrDefaultAsync(flow => flow.Id == flowId && flow.TenantId == _tenantContext.TenantId);
+    }
+
+    private async Task<int> NextVersionNumberAsync(Guid flowId)
+    {
+        return (await _context.FlowVersions
+            .IgnoreQueryFilters()
+            .Where(version => version.FlowId == flowId && version.TenantId == _tenantContext.TenantId)
+            .Select(version => (int?)version.VersionNumber)
+            .MaxAsync() ?? 0) + 1;
+    }
+
+    private static string NormalizeChangeNote(string? changeNote)
+    {
+        return string.IsNullOrWhiteSpace(changeNote) ? "Published from draft" : changeNote.Trim();
+    }
+
+    private static string SerializeSnapshot(IntegrationFlow flow)
+    {
+        var snapshot = new FlowSnapshot(
+            flow.Name,
+            flow.Description,
+            flow.IntegrationId,
+            flow.PersistedStateJson,
+            flow.TriggerType,
+            flow.CronExpression,
+            flow.WebhookSecret,
+            flow.RunAt,
+            flow.AllowPostReplay,
+            flow.Nodes.Select(CloneNode).ToList(),
+            flow.Edges.Select(CloneEdge).ToList());
+
+        return JsonSerializer.Serialize(snapshot, JsonOptions);
+    }
+
+    private void ApplySnapshot(IntegrationFlow flow, FlowSnapshot snapshot)
+    {
+        flow.Name = snapshot.Name;
+        flow.Description = snapshot.Description;
+        flow.IntegrationId = snapshot.IntegrationId;
+        flow.PersistedStateJson = string.IsNullOrWhiteSpace(snapshot.PersistedStateJson) ? "{}" : snapshot.PersistedStateJson;
+        flow.TriggerType = snapshot.TriggerType;
+        flow.CronExpression = snapshot.CronExpression;
+        flow.WebhookSecret = snapshot.WebhookSecret;
+        flow.RunAt = snapshot.RunAt;
+        flow.AllowPostReplay = snapshot.AllowPostReplay;
+
+        var incomingNodeIds = snapshot.Nodes.Select(node => node.Id).ToHashSet();
+        var incomingEdgeIds = snapshot.Edges.Select(edge => edge.Id).ToHashSet();
+        var existingNodes = flow.Nodes.ToDictionary(node => node.Id);
+        var existingEdges = flow.Edges.ToDictionary(edge => edge.Id);
+
+        // The caller's DbContext tracks these entities; update matching rows and
+        // delete only rows absent from the restored snapshot.
+        // Child entities are re-stamped below to the current flow and tenant.
+        foreach (var node in flow.Nodes.Where(node => !incomingNodeIds.Contains(node.Id)).ToList())
+        {
+            _context.IntegrationSteps.Remove(node);
+        }
+
+        foreach (var edge in flow.Edges.Where(edge => !incomingEdgeIds.Contains(edge.Id)).ToList())
+        {
+            _context.IntegrationEdges.Remove(edge);
+        }
+
+        foreach (var node in snapshot.Nodes)
+        {
+            node.FlowId = flow.Id;
+            node.TenantId = flow.TenantId;
+            if (existingNodes.TryGetValue(node.Id, out var storedNode))
+            {
+                ApplyNodeExact(storedNode, node);
+            }
+            else
+            {
+                flow.Nodes.Add(node);
+            }
+        }
+
+        foreach (var edge in snapshot.Edges)
+        {
+            edge.FlowId = flow.Id;
+            edge.TenantId = flow.TenantId;
+            if (existingEdges.TryGetValue(edge.Id, out var storedEdge))
+            {
+                ApplyEdge(storedEdge, edge);
+            }
+            else
+            {
+                flow.Edges.Add(edge);
+            }
+        }
+    }
+
+    private static IntegrationStep CloneNode(IntegrationStep source) => new()
+    {
+        Id = source.Id,
+        TenantId = source.TenantId,
+        FlowId = source.FlowId,
+        StepType = source.StepType,
+        PositionX = source.PositionX,
+        PositionY = source.PositionY,
+        EndpointUrl = source.EndpointUrl,
+        HttpMethod = source.HttpMethod,
+        UrlMode = source.UrlMode,
+        AuthType = source.AuthType,
+        AuthToken = source.AuthToken,
+        AuthUsername = source.AuthUsername,
+        AuthPassword = source.AuthPassword,
+        AuthConfigJson = source.AuthConfigJson,
+        ConnectionId = source.ConnectionId,
+        MappingCode = source.MappingCode,
+        StepConfig = source.StepConfig,
+        NodeName = source.NodeName,
+        UrlCode = source.UrlCode,
+        PreFlightCode = source.PreFlightCode,
+        PostFlightCode = source.PostFlightCode
+    };
+
+    private static IntegrationEdge CloneEdge(IntegrationEdge source) => new()
+    {
+        Id = source.Id,
+        TenantId = source.TenantId,
+        FlowId = source.FlowId,
+        SourceNodeId = source.SourceNodeId,
+        TargetNodeId = source.TargetNodeId,
+        SourcePortId = source.SourcePortId,
+        TargetPortId = source.TargetPortId,
+        Condition = source.Condition,
+        Order = source.Order
+    };
+
+    private static void ApplyNodeExact(IntegrationStep target, IntegrationStep source)
+    {
+        target.StepType = source.StepType;
+        target.NodeName = source.NodeName;
+        target.PositionX = source.PositionX;
+        target.PositionY = source.PositionY;
+        target.EndpointUrl = source.EndpointUrl;
+        target.HttpMethod = source.HttpMethod;
+        target.UrlMode = source.UrlMode;
+        target.AuthType = source.AuthType;
+        target.AuthToken = source.AuthToken;
+        target.AuthUsername = source.AuthUsername;
+        target.AuthPassword = source.AuthPassword;
+        target.AuthConfigJson = source.AuthConfigJson;
+        target.ConnectionId = source.ConnectionId;
+        target.MappingCode = source.MappingCode;
+        target.UrlCode = source.UrlCode;
+        target.PreFlightCode = source.PreFlightCode;
+        target.PostFlightCode = source.PostFlightCode;
+        target.StepConfig = source.StepConfig;
+    }
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    private sealed record FlowSnapshot(
+        string Name,
+        string Description,
+        Guid? IntegrationId,
+        string PersistedStateJson,
+        TriggerType TriggerType,
+        string CronExpression,
+        string WebhookSecret,
+        DateTime? RunAt,
+        bool AllowPostReplay,
+        List<IntegrationStep> Nodes,
+        List<IntegrationEdge> Edges);
     public async Task<bool> UpdateWebhookSecretAsync(Guid flowId, string webhookSecret)
     {
         var flow = await _context.IntegrationFlows
@@ -202,7 +475,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         return await _context.IntegrationFlows
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .FirstOrDefaultAsync(f => f.Id == id);
+            .FirstOrDefaultAsync(f => f.Id == id && f.Status == FlowStatus.Active);
     }
 
     public async Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAcrossTenantsAsync()

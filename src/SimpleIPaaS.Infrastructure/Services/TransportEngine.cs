@@ -7,8 +7,11 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Polly;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 
@@ -21,17 +24,20 @@ public class TransportEngine : ITransportEngine
     private readonly IAuthenticationHandlerFactory _authFactory;
     private readonly IEncryptionService _encryptionService;
     private readonly ResiliencePipeline<HttpResponseMessage> _resiliencePipeline;
+    private readonly ILogger<TransportEngine> _logger;
 
     public TransportEngine(
         IHttpClientFactory httpClientFactory, 
         IConnectionRepository connectionRepository,
         IAuthenticationHandlerFactory authFactory,
-        IEncryptionService encryptionService)
+        IEncryptionService encryptionService,
+        ILogger<TransportEngine> logger)
     {
         _httpClientFactory = httpClientFactory;
         _connectionRepository = connectionRepository;
         _authFactory = authFactory;
         _encryptionService = encryptionService;
+        _logger = logger;
 
         _resiliencePipeline = new ResiliencePipelineBuilder<HttpResponseMessage>()
             .AddRetry(new Polly.Retry.RetryStrategyOptions<HttpResponseMessage>
@@ -48,13 +54,50 @@ public class TransportEngine : ITransportEngine
             .Build();
     }
 
-    public async Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default)
+    public async Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default, FlowTestContext? testContext = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         var client = _httpClientFactory.CreateClient();
+        var operationStartedAt = Stopwatch.GetTimestamp();
+        _logger.LogInformation(new EventId(1500, "dependency.http.started"), "HTTP card {CardId} started {HttpMethod} {Endpoint} (connection {ConnectionId})", step.Id, step.HttpMethod, SafeEndpoint(step.EndpointUrl), connectionId);
 
         var url = step.EndpointUrl;
+
+        if (testContext != null && !testContext.HasHttpFixture(step.Id))
+            throw new InvalidOperationException($"HTTP card '{step.Id}' has no response fixture. Add a response in Test mode before running the scenario.");
+
+        // Test fixtures short-circuit before connection lookup, secret decryption, authentication,
+        // retries, and network I/O. The normal packet shape is still returned for debug logs.
+        if (testContext?.TryTakeHttpResponse(step.Id, out var earlyFixtureResponse) == true)
+        {
+            var fixturePacketDetails = ApiPacketDetails.FromStepConfig(step.StepConfig);
+            var fixtureUrl = AppendQueryParams(url, fixturePacketDetails.QueryParams);
+            var fixturePayload = string.IsNullOrWhiteSpace(payload) ? fixturePacketDetails.RequestBody : payload;
+            var fixtureStartedAt = DateTime.UtcNow;
+            var fixtureCompletedAt = DateTime.UtcNow;
+            var fixtureRequestHeaders = fixturePacketDetails.Headers.ToDictionary(pair => pair.Key, pair => new[] { pair.Value }, StringComparer.OrdinalIgnoreCase);
+            _logger.LogInformation(new EventId(1502, "dependency.http.fixture"), "HTTP card {CardId} used a test fixture with status {StatusCode} (connection {ConnectionId})", step.Id, earlyFixtureResponse.StatusCode, connectionId);
+            var fixtureAttempt = new TransportAttempt(
+                earlyFixtureResponse.StatusCode,
+                earlyFixtureResponse.Response,
+                earlyFixtureResponse.Headers,
+                fixtureUrl,
+                step.HttpMethod,
+                fixtureRequestHeaders,
+                fixturePayload ?? string.Empty,
+                fixtureStartedAt,
+                fixtureCompletedAt);
+            return new TransportResponse(earlyFixtureResponse.StatusCode, earlyFixtureResponse.Response, earlyFixtureResponse.Headers, fixtureUrl)
+            {
+                HttpMethod = step.HttpMethod,
+                RequestHeaders = fixtureRequestHeaders,
+                RequestBody = fixturePayload ?? string.Empty,
+                StartedAt = fixtureStartedAt,
+                CompletedAt = fixtureCompletedAt,
+                Attempts = new[] { fixtureAttempt }
+            };
+        }
         AuthType authType = step.AuthType;
         string configJson = string.Empty;
         Guid? resolvedConnectionId = null;
@@ -134,6 +177,33 @@ public class TransportEngine : ITransportEngine
 
         payload = string.IsNullOrWhiteSpace(payload) ? packetDetails.RequestBody : payload;
 
+        if (testContext?.TryTakeHttpResponse(step.Id, out var fixtureResponse) == true)
+        {
+            var startedAt = DateTime.UtcNow;
+            var completedAt = DateTime.UtcNow;
+            var requestHeaders = packetDetails.Headers.ToDictionary(pair => pair.Key, pair => new[] { pair.Value }, StringComparer.OrdinalIgnoreCase);
+            _logger.LogInformation(new EventId(1502, "dependency.http.fixture"), "HTTP card {CardId} used a test fixture with status {StatusCode} (connection {ConnectionId})", step.Id, fixtureResponse.StatusCode, resolvedConnectionId);
+            var fixtureAttempt = new TransportAttempt(
+                fixtureResponse.StatusCode,
+                fixtureResponse.Response,
+                fixtureResponse.Headers,
+                url,
+                step.HttpMethod,
+                requestHeaders,
+                payload ?? string.Empty,
+                startedAt,
+                completedAt);
+            return new TransportResponse(fixtureResponse.StatusCode, fixtureResponse.Response, fixtureResponse.Headers, url)
+            {
+                HttpMethod = step.HttpMethod,
+                RequestHeaders = requestHeaders,
+                RequestBody = payload ?? string.Empty,
+                StartedAt = startedAt,
+                CompletedAt = completedAt,
+                Attempts = new[] { fixtureAttempt }
+            };
+        }
+
         HttpRequestMessage BuildRequest()
         {
             var message = new HttpRequestMessage(new HttpMethod(step.HttpMethod), url);
@@ -165,11 +235,14 @@ public class TransportEngine : ITransportEngine
 
         TransportAttempt? lastAttempt = null;
 
+        var attemptNumber = 0;
+
         async Task<HttpResponseMessage> SendAsync()
         {
             return await _resiliencePipeline.ExecuteAsync(async attemptToken =>
             {
                 using var request = BuildRequest();
+                var retryAttempt = attemptNumber++;
                 await authHandler.AuthenticateAsync(request, authContext);
                 var startedAt = DateTime.UtcNow;
                 var requestBody = request.Content == null ? string.Empty : await request.Content.ReadAsStringAsync(attemptToken);
@@ -177,6 +250,7 @@ public class TransportEngine : ITransportEngine
                 var response = await client.SendAsync(request, attemptToken);
                 var completedAt = DateTime.UtcNow;
                 var responseHeaders = SnapshotHeaders(response);
+                _logger.LogInformation(new EventId(1501, "dependency.http.attempt"), "HTTP attempt for card {CardId} returned {StatusCode} in {DurationMs}ms ({ResponseBytes} bytes, retry {RetryAttempt}, connection {ConnectionId})", step.Id, (int)response.StatusCode, (long)(completedAt - startedAt).TotalMilliseconds, response.Content.Headers.ContentLength ?? 0, retryAttempt, resolvedConnectionId);
                 lastAttempt = new TransportAttempt(
                     (int)response.StatusCode,
                     await response.Content.ReadAsStringAsync(attemptToken),
@@ -218,6 +292,7 @@ public class TransportEngine : ITransportEngine
             payload ?? string.Empty,
             DateTime.UtcNow,
             DateTime.UtcNow);
+        _logger.LogInformation(new EventId(1503, "dependency.http.completed"), "HTTP card {CardId} completed with {StatusCode} in {DurationMs}ms (connection {ConnectionId})", step.Id, (int)response.StatusCode, (long)Stopwatch.GetElapsedTime(operationStartedAt).TotalMilliseconds, resolvedConnectionId);
         return new TransportResponse((int)response.StatusCode, content, headers, url)
         {
             HttpMethod = attempt.HttpMethod,
@@ -338,6 +413,21 @@ public class TransportEngine : ITransportEngine
         return builder.Uri.ToString();
     }
 
+    private static string SafeEndpoint(string? endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return uri.GetLeftPart(UriPartial.Path);
+        }
+
+        var queryIndex = endpoint.IndexOf('?', StringComparison.Ordinal);
+        return queryIndex >= 0 ? endpoint[..queryIndex] : endpoint;
+    }
     private sealed class ApiPacketDetails
     {
         public IReadOnlyDictionary<string, string> Headers { get; init; } = new Dictionary<string, string>();

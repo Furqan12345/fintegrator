@@ -184,6 +184,9 @@ public class ExecutionController : ControllerBase
             RecoveredAt = e.RecoveredAt,
             ErrorMessage = e.ErrorMessage,
             TriggerSource = e.TriggerSource,
+            IsTest = e.IsTest,
+            TestCaseId = e.TestCaseId,
+            TestRunId = e.TestRunId,
             TotalRecords = e.TotalRecords,
             SuccessRecords = e.SuccessRecords,
             FailedRecords = e.FailedRecords

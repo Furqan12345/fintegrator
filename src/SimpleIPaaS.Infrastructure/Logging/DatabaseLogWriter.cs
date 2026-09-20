@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.Persistence;
@@ -30,6 +31,9 @@ public sealed class DatabaseLogWriter : IDisposable
     private DateTime _lastPruneUtc = DateTime.MinValue;
     private long _dropped;
     private long _written;
+    private long _writeFailures;
+    private long _lastSuccessfulWriteTicks;
+    private long _lastFailureReportTicks;
     private bool _disposed;
 
     public DatabaseLogWriter(DatabaseLoggerOptions options, string connectionString)
@@ -57,6 +61,10 @@ public sealed class DatabaseLogWriter : IDisposable
 
     // Entries successfully persisted (diagnostics/tests).
     public long WrittenCount => Interlocked.Read(ref _written);
+    public long WriteFailures => Interlocked.Read(ref _writeFailures);
+    public int QueueDepth => _channel.Reader.CanCount ? _channel.Reader.Count : 0;
+    public DateTime? LastSuccessfulWriteUtc
+        => Interlocked.Read(ref _lastSuccessfulWriteTicks) is var ticks && ticks > 0 ? new DateTime(ticks, DateTimeKind.Utc) : null;
 
     public bool TryEnqueue(AppLogEntry entry)
     {
@@ -162,12 +170,15 @@ public sealed class DatabaseLogWriter : IDisposable
                 EnsureSchema(connection);
                 WriteBatch(connection, batch);
                 Interlocked.Add(ref _written, batch.Count);
+                Interlocked.Exchange(ref _lastSuccessfulWriteTicks, DateTime.UtcNow.Ticks);
                 wroteAnything = true;
                 TryPrune(connection);
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                Interlocked.Increment(ref _writeFailures);
                 Interlocked.Add(ref _dropped, batch.Count);
+                ReportSinkFailure(exception, batch.Count);
             }
         }
 
@@ -205,42 +216,121 @@ public sealed class DatabaseLogWriter : IDisposable
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO AppLogEntries
-                (Timestamp, Level, Source, Category, Message, Exception, TenantId, FlowExecutionId, FlowId, NodeName)
+                (EventId, EventVersion, Timestamp, Level, Source, Service, HostInstance, EnvironmentName, ApplicationVersion, Category, Component, EventName, Operation, Outcome, DurationMs, TraceId, SpanId, ParentSpanId, Message, Exception, TenantId, FlowExecutionId, FlowId, FlowName, IntegrationId, IntegrationName, ConnectionId, CardId, CardType, StepExecutionId, Invocation, LoopPath, RetryAttempt, IsTest, TestCaseId, TestRunId, NodeName, PropertiesJson)
             VALUES
-                ($timestamp, $level, $source, $category, $message, $exception, $tenantId, $flowExecutionId, $flowId, $nodeName);
+                ($eventId, $eventVersion, $timestamp, $level, $source, $service, $hostInstance, $environmentName, $applicationVersion, $category, $component, $eventName, $operation, $outcome, $durationMs, $traceId, $spanId, $parentSpanId, $message, $exception, $tenantId, $flowExecutionId, $flowId, $flowName, $integrationId, $integrationName, $connectionId, $cardId, $cardType, $stepExecutionId, $invocation, $loopPath, $retryAttempt, $isTest, $testCaseId, $testRunId, $nodeName, $propertiesJson);
             """;
 
         // DateTime/Guid parameters are serialised by Microsoft.Data.Sqlite using exactly the
         // same text formats EF Core uses, so the LogRepository reads them back correctly.
+        var eventId = command.Parameters.Add("$eventId", SqliteType.Text);
+        var eventVersion = command.Parameters.Add("$eventVersion", SqliteType.Integer);
         var timestamp = command.Parameters.Add("$timestamp", SqliteType.Text);
         var level = command.Parameters.Add("$level", SqliteType.Text);
         var source = command.Parameters.Add("$source", SqliteType.Text);
+        var service = command.Parameters.Add("$service", SqliteType.Text);
+        var hostInstance = command.Parameters.Add("$hostInstance", SqliteType.Text);
+        var environmentName = command.Parameters.Add("$environmentName", SqliteType.Text);
+        var applicationVersion = command.Parameters.Add("$applicationVersion", SqliteType.Text);
         var category = command.Parameters.Add("$category", SqliteType.Text);
+        var component = command.Parameters.Add("$component", SqliteType.Text);
+        var eventName = command.Parameters.Add("$eventName", SqliteType.Text);
+        var operation = command.Parameters.Add("$operation", SqliteType.Text);
+        var outcome = command.Parameters.Add("$outcome", SqliteType.Text);
+        var durationMs = command.Parameters.Add("$durationMs", SqliteType.Integer);
+        var traceId = command.Parameters.Add("$traceId", SqliteType.Text);
+        var spanId = command.Parameters.Add("$spanId", SqliteType.Text);
+        var parentSpanId = command.Parameters.Add("$parentSpanId", SqliteType.Text);
         var message = command.Parameters.Add("$message", SqliteType.Text);
         var exception = command.Parameters.Add("$exception", SqliteType.Text);
         var tenantId = command.Parameters.Add("$tenantId", SqliteType.Text);
         var flowExecutionId = command.Parameters.Add("$flowExecutionId", SqliteType.Text);
         var flowId = command.Parameters.Add("$flowId", SqliteType.Text);
+        var flowName = command.Parameters.Add("$flowName", SqliteType.Text);
+        var integrationId = command.Parameters.Add("$integrationId", SqliteType.Text);
+        var integrationName = command.Parameters.Add("$integrationName", SqliteType.Text);
+        var connectionId = command.Parameters.Add("$connectionId", SqliteType.Text);
+        var cardId = command.Parameters.Add("$cardId", SqliteType.Text);
+        var cardType = command.Parameters.Add("$cardType", SqliteType.Text);
+        var stepExecutionId = command.Parameters.Add("$stepExecutionId", SqliteType.Text);
+        var invocation = command.Parameters.Add("$invocation", SqliteType.Integer);
+        var loopPath = command.Parameters.Add("$loopPath", SqliteType.Text);
+        var retryAttempt = command.Parameters.Add("$retryAttempt", SqliteType.Integer);
+        var isTest = command.Parameters.Add("$isTest", SqliteType.Integer);
+        var testCaseId = command.Parameters.Add("$testCaseId", SqliteType.Text);
+        var testRunId = command.Parameters.Add("$testRunId", SqliteType.Text);
         var nodeName = command.Parameters.Add("$nodeName", SqliteType.Text);
+        var propertiesJson = command.Parameters.Add("$propertiesJson", SqliteType.Text);
 
         foreach (var entry in batch)
         {
+            eventId.Value = entry.EventId;
+            eventVersion.Value = entry.EventVersion;
             timestamp.Value = entry.Timestamp;
             level.Value = entry.Level;
             source.Value = entry.Source;
+            service.Value = entry.Service;
+            hostInstance.Value = entry.HostInstance;
+            environmentName.Value = entry.EnvironmentName;
+            applicationVersion.Value = entry.ApplicationVersion;
             category.Value = entry.Category;
+            component.Value = entry.Component;
+            eventName.Value = entry.EventName;
+            operation.Value = entry.Operation;
+            outcome.Value = entry.Outcome;
+            durationMs.Value = (object?)entry.DurationMs ?? DBNull.Value;
+            traceId.Value = (object?)entry.TraceId ?? DBNull.Value;
+            spanId.Value = (object?)entry.SpanId ?? DBNull.Value;
+            parentSpanId.Value = (object?)entry.ParentSpanId ?? DBNull.Value;
             message.Value = entry.Message;
             exception.Value = (object?)entry.Exception ?? DBNull.Value;
             tenantId.Value = (object?)entry.TenantId ?? DBNull.Value;
             flowExecutionId.Value = (object?)entry.FlowExecutionId ?? DBNull.Value;
             flowId.Value = (object?)entry.FlowId ?? DBNull.Value;
+            flowName.Value = (object?)entry.FlowName ?? DBNull.Value;
+            integrationId.Value = (object?)entry.IntegrationId ?? DBNull.Value;
+            integrationName.Value = (object?)entry.IntegrationName ?? DBNull.Value;
+            connectionId.Value = (object?)entry.ConnectionId ?? DBNull.Value;
+            cardId.Value = (object?)entry.CardId ?? DBNull.Value;
+            cardType.Value = (object?)entry.CardType ?? DBNull.Value;
+            stepExecutionId.Value = (object?)entry.StepExecutionId ?? DBNull.Value;
+            invocation.Value = (object?)entry.Invocation ?? DBNull.Value;
+            loopPath.Value = (object?)entry.LoopPath ?? DBNull.Value;
+            retryAttempt.Value = (object?)entry.RetryAttempt ?? DBNull.Value;
+            isTest.Value = (object?)entry.IsTest ?? DBNull.Value;
+            testCaseId.Value = (object?)entry.TestCaseId ?? DBNull.Value;
+            testRunId.Value = (object?)entry.TestRunId ?? DBNull.Value;
             nodeName.Value = (object?)entry.NodeName ?? DBNull.Value;
+            propertiesJson.Value = entry.PropertiesJson;
             command.ExecuteNonQuery();
         }
 
         transaction.Commit();
     }
 
+    private void ReportSinkFailure(Exception exception, int batchCount)
+    {
+        var nowTicks = DateTime.UtcNow.Ticks;
+        var lastTicks = Interlocked.Read(ref _lastFailureReportTicks);
+        if (lastTicks > 0 && nowTicks - lastTicks < TimeSpan.FromSeconds(30).Ticks)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _lastFailureReportTicks, nowTicks, lastTicks) != lastTicks)
+        {
+            return;
+        }
+
+        try
+        {
+            Console.Error.WriteLine($"SimpleIPaaS observability sink failure; dropped batch={batchCount}, exception={exception.GetType().Name}");
+        }
+        catch
+        {
+            // The fallback sink must never affect execution or recursively log its own failure.
+        }
+    }
     private void TryPrune()
     {
         if (!IsPruneDue())
@@ -282,10 +372,18 @@ public sealed class DatabaseLogWriter : IDisposable
 
         if (options.RetentionHours > 0)
         {
-            using var byAge = connection.CreateCommand();
-            byAge.CommandText = "DELETE FROM AppLogEntries WHERE Timestamp < $cutoff;";
-            byAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-options.RetentionHours));
-            removed += byAge.ExecuteNonQuery();
+            using var detailAge = connection.CreateCommand();
+            detailAge.CommandText = "DELETE FROM AppLogEntries WHERE Timestamp < $cutoff AND Level NOT IN ('Warning', 'Error', 'Critical');";
+            detailAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-options.RetentionHours));
+            removed += detailAge.ExecuteNonQuery();
+        }
+
+        if (options.WarningRetentionHours > 0)
+        {
+            using var warningAge = connection.CreateCommand();
+            warningAge.CommandText = "DELETE FROM AppLogEntries WHERE Timestamp < $cutoff AND Level IN ('Warning', 'Error', 'Critical');";
+            warningAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-options.WarningRetentionHours));
+            removed += warningAge.ExecuteNonQuery();
         }
 
         if (options.MaxRows > 0)

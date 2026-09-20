@@ -109,6 +109,36 @@ public class LogRepository : ILogRepository
             .ToListAsync(cancellationToken);
     }
 
+    public async Task<LogFacets> GetFacetsAsync(LogQuery query, CancellationToken cancellationToken = default)
+    {
+        var filtered = Apply(_context.AppLogEntries.AsNoTracking(), query);
+        var services = await filtered.Where(item => item.Service != "").Select(item => item.Service).Distinct().OrderBy(item => item).Take(100).ToListAsync(cancellationToken);
+        var components = await filtered.Where(item => item.Component != "").Select(item => item.Component).Distinct().OrderBy(item => item).Take(200).ToListAsync(cancellationToken);
+        var events = await filtered.Where(item => item.EventName != "").Select(item => item.EventName).Distinct().OrderBy(item => item).Take(300).ToListAsync(cancellationToken);
+        var outcomes = await filtered.Where(item => item.Outcome != "").Select(item => item.Outcome).Distinct().OrderBy(item => item).Take(50).ToListAsync(cancellationToken);
+        var cardTypes = await filtered.Where(item => item.CardType != null && item.CardType != "").Select(item => item.CardType!).Distinct().OrderBy(item => item).Take(100).ToListAsync(cancellationToken);
+        return new LogFacets(services, components, events, outcomes, cardTypes);
+    }
+
+    public async Task<IReadOnlyList<AppLogEntry>> GetExecutionTimelineAsync(Guid executionId, int limit, CancellationToken cancellationToken = default)
+    {
+        limit = limit < 1 ? 500 : Math.Min(limit, 5000);
+        return await _context.AppLogEntries.AsNoTracking()
+            .Where(entry => entry.FlowExecutionId == executionId)
+            .OrderBy(entry => entry.Timestamp)
+            .ThenBy(entry => entry.Id)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<TelemetryHealthSnapshot> GetTelemetryHealthAsync(CancellationToken cancellationToken = default)
+    {
+        var latest = await _context.AppLogEntries.AsNoTracking().OrderByDescending(entry => entry.Id).Select(entry => (DateTime?)entry.Timestamp).FirstOrDefaultAsync(cancellationToken);
+        var total = await _context.AppLogEntries.AsNoTracking().LongCountAsync(cancellationToken);
+        var recentCutoff = DateTime.UtcNow.AddMinutes(-15);
+        var errors = await _context.AppLogEntries.AsNoTracking().LongCountAsync(entry => entry.Timestamp >= recentCutoff && (entry.Level == "Error" || entry.Level == "Critical"), cancellationToken);
+        return new TelemetryHealthSnapshot(latest, total, errors);
+    }
     public async Task<int> DeleteAsync(DateTime? olderThanUtc, CancellationToken cancellationToken = default)
     {
         var target = _context.AppLogEntries.AsQueryable();
@@ -136,10 +166,29 @@ public class LogRepository : ILogRepository
             source = source.Where(entry => allowedLevels.Contains(entry.Level));
         }
 
+        if (!string.IsNullOrWhiteSpace(query.Service)) source = source.Where(entry => entry.Service == query.Service.Trim());
+        if (!string.IsNullOrWhiteSpace(query.Component)) source = source.Where(entry => entry.Component == query.Component.Trim());
+        if (!string.IsNullOrWhiteSpace(query.EventName)) source = source.Where(entry => entry.EventName == query.EventName.Trim());
+        if (!string.IsNullOrWhiteSpace(query.Operation)) source = source.Where(entry => entry.Operation == query.Operation.Trim());
+        if (!string.IsNullOrWhiteSpace(query.Outcome)) source = source.Where(entry => entry.Outcome == query.Outcome.Trim());
+        if (query.CardId.HasValue) source = source.Where(entry => entry.CardId == query.CardId.Value);
+        if (query.StepExecutionId.HasValue) source = source.Where(entry => entry.StepExecutionId == query.StepExecutionId.Value);
+        if (!string.IsNullOrWhiteSpace(query.TraceId)) source = source.Where(entry => entry.TraceId == query.TraceId);
+        if (query.Invocation.HasValue) source = source.Where(entry => entry.Invocation == query.Invocation.Value);
+        if (query.RetryAttempt.HasValue) source = source.Where(entry => entry.RetryAttempt == query.RetryAttempt.Value);
+        if (query.IsTest.HasValue) source = source.Where(entry => entry.IsTest == query.IsTest.Value);
+        if (query.TestCaseId.HasValue) source = source.Where(entry => entry.TestCaseId == query.TestCaseId.Value);
+        if (query.TestRunId.HasValue) source = source.Where(entry => entry.TestRunId == query.TestRunId.Value);
+
         if (!string.IsNullOrWhiteSpace(query.Source))
         {
             var wanted = query.Source.Trim();
             source = source.Where(entry => entry.Source == wanted);
+        }
+
+        if (query.IntegrationId.HasValue)
+        {
+            source = source.Where(entry => entry.IntegrationId == query.IntegrationId.Value);
         }
 
         if (query.FlowExecutionId.HasValue)
@@ -147,9 +196,19 @@ public class LogRepository : ILogRepository
             source = source.Where(entry => entry.FlowExecutionId == query.FlowExecutionId.Value);
         }
 
+        if (query.FlowId.HasValue)
+        {
+            source = source.Where(entry => entry.FlowId == query.FlowId.Value);
+        }
+
         if (query.SinceUtc.HasValue)
         {
             source = source.Where(entry => entry.Timestamp >= query.SinceUtc.Value);
+        }
+
+        if (query.UntilUtc.HasValue)
+        {
+            source = source.Where(entry => entry.Timestamp < query.UntilUtc.Value);
         }
 
         if (!string.IsNullOrWhiteSpace(query.Search))
@@ -160,6 +219,11 @@ public class LogRepository : ILogRepository
                 EF.Functions.Like(entry.Message, pattern, LikeEscape)
                 || EF.Functions.Like(entry.Category, pattern, LikeEscape)
                 || (entry.NodeName != null && EF.Functions.Like(entry.NodeName, pattern, LikeEscape))
+                || (entry.FlowName != null && EF.Functions.Like(entry.FlowName, pattern, LikeEscape))
+                || (entry.IntegrationName != null && EF.Functions.Like(entry.IntegrationName, pattern, LikeEscape))
+                || EF.Functions.Like(entry.EventName, pattern, LikeEscape)
+                || EF.Functions.Like(entry.Component, pattern, LikeEscape)
+                || EF.Functions.Like(entry.Operation, pattern, LikeEscape)
                 || (entry.Exception != null && EF.Functions.Like(entry.Exception, pattern, LikeEscape)));
         }
 

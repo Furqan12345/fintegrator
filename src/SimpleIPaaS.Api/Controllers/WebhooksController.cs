@@ -50,7 +50,15 @@ public class WebhooksController : ControllerBase
         _tenantContext.SetTenantId(flow.TenantId);
         var executionId = await _flowRunService.EnqueueAsync(flow.Id, flow.TenantId, "Webhook", payload, HttpContext.RequestAborted);
 
-        _logger.LogInformation("Webhook trigger enqueued execution {ExecutionId} for flow {FlowId}", executionId, flowId);
+        using (_logger.BeginScope(new Dictionary<string, object>
+        {
+            ["TenantId"] = flow.TenantId,
+            ["FlowId"] = flow.Id,
+            ["FlowExecutionId"] = executionId
+        }))
+        {
+            _logger.LogInformation("Webhook trigger enqueued execution {ExecutionId} for flow {FlowId}", executionId, flowId);
+        }
 
         return Accepted(new { success = true, executionId, status = ExecutionStatus.Queued.ToString() });
     }

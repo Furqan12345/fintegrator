@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using SimpleIPaaS.Api.Mappings;
 using SimpleIPaaS.Api.Validation;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
@@ -74,7 +75,7 @@ public class SampleIntegrationTests
 
         public Task<TransportResponse> DispatchAsync(
             IntegrationStep step, string? payload, Guid? connectionId = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, FlowTestContext? testContext = null)
         {
             RequestedUrls.Add(step.EndpointUrl);
             RequestPayloads.Add(payload ?? string.Empty);

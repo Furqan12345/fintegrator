@@ -1,0 +1,153 @@
+@page "/docs/flow-test-assertions"
+@using Microsoft.AspNetCore.Components
+@inject NavigationManager NavigationManager
+
+<PageTitle>Assertion guide · SimpleIPaaS</PageTitle>
+
+<div class="page-scroll flow-doc-page">
+    <header class="flow-doc-hero">
+        <div class="flow-doc-breadcrumb">
+            <a href="/">Dashboard</a><span>/</span><span>Documentation</span><span>/</span><span>Assertions</span>
+        </div>
+        <div class="flow-doc-title-row">
+            <span class="flow-doc-title-icon"><AppIcon Name="check-circle" Class="icon icon-md" /></span>
+            <div>
+                <div class="flow-tests-kicker">Flow test documentation</div>
+                <h1>How assertions work</h1>
+                <p>Assertions are the expectations your flow must satisfy after it runs. Use them to turn a scenario into a reliable, repeatable test.</p>
+            </div>
+        </div>
+        <div class="flow-doc-actions">
+            @if (FlowId.HasValue)
+            {
+                <a class="btn btn-outline" href="@($"/flow-tests/{FlowId}")">Back to test</a>
+            }
+            else
+            {
+                <a class="btn btn-outline" href="/">Back to dashboard</a>
+            }
+        </div>
+    </header>
+
+    <main class="flow-doc-content">
+        <section class="flow-doc-callout">
+            <span class="flow-doc-callout-icon"><AppIcon Name="info" Class="icon icon-sm" /></span>
+            <div>
+                <strong>Think of each assertion as one sentence.</strong>
+                <p>For example: “The <em>FilterNewSKUs</em> node’s response payload contains <em>SKU-001</em>.” A test passes only when every sentence is true.</p>
+            </div>
+        </section>
+
+        <section class="flow-doc-card">
+            <div class="flow-doc-card-heading">
+                <span class="flow-doc-step">01</span>
+                <div><h2>Build a rule from left to right</h2><p>Choose what to check, where to look, what condition to apply, and the value you expect.</p></div>
+            </div>
+            <div class="flow-doc-rule-diagram">
+                <div class="flow-doc-rule-step"><span>CHECK</span><strong>What result?</strong><small>Flow status or a flow node</small></div>
+                <span class="flow-doc-arrow">→</span>
+                <div class="flow-doc-rule-step"><span>TARGET</span><strong>Where?</strong><small>Entire flow or named node</small></div>
+                <span class="flow-doc-arrow">→</span>
+                <div class="flow-doc-rule-step"><span>CONDITION</span><strong>How should it compare?</strong><small>equals, contains, or another operator</small></div>
+                <span class="flow-doc-arrow">→</span>
+                <div class="flow-doc-rule-step"><span>EXPECTED VALUE</span><strong>What should be true?</strong><small>Success, an ID, or a text fragment</small></div>
+            </div>
+        </section>
+
+        <section class="flow-doc-card">
+            <div class="flow-doc-card-heading">
+                <span class="flow-doc-step">02</span>
+                <div><h2>Choose what to check</h2><p>There are two starting points. The second one lets you inspect the result of one specific card.</p></div>
+            </div>
+            <div class="flow-doc-grid flow-doc-grid-two">
+                <article class="flow-doc-mini-card">
+                    <div class="flow-doc-mini-label">CHECK</div>
+                    <h3>Flow status</h3>
+                    <p>Checks the overall outcome of the complete run.</p>
+                    <div class="flow-doc-example-line"><span>Flow status</span><b>equals</b><strong>Success</strong></div>
+                    <small>Use this as the basic “did the flow finish successfully?” check.</small>
+                </article>
+                <article class="flow-doc-mini-card">
+                    <div class="flow-doc-mini-label">CHECK</div>
+                    <h3>A flow node</h3>
+                    <p>Checks something recorded by one card in the flow.</p>
+                    <div class="flow-doc-example-line"><span>FilterNewSKUs</span><b>contains</b><strong>SKU-001</strong></div>
+                    <small>The node dropdown shows friendly card names. You do not need to enter a technical node ID.</small>
+                </article>
+            </div>
+        </section>
+
+        <section class="flow-doc-card">
+            <div class="flow-doc-card-heading">
+                <span class="flow-doc-step">03</span>
+                <div><h2>What can I inspect on a node?</h2><p>After a node runs, the engine records these values for the test to inspect.</p></div>
+            </div>
+            <div class="flow-doc-table-wrap">
+                <table class="flow-doc-table">
+                    <thead><tr><th>Inspect</th><th>What it means</th><th>Example expected value</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Status</strong></td><td>Whether that node completed, failed, or was skipped.</td><td><code>Success</code></td></tr>
+                        <tr><td><strong>Response payload</strong></td><td>The data produced by the node, such as an HTTP response or transformed object.</td><td><code>ORDER-100</code></td></tr>
+                        <tr><td><strong>Error message</strong></td><td>The error text recorded by the node. This is useful for negative-path tests.</td><td><code>timeout</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="flow-doc-card">
+            <div class="flow-doc-card-heading">
+                <span class="flow-doc-step">04</span>
+                <div><h2>Choose a condition</h2><p>The condition controls how the recorded value is compared with your expected value.</p></div>
+            </div>
+            <div class="flow-doc-operator-list">
+                <div class="flow-doc-operator"><span class="flow-doc-operator-symbol">=</span><div><h3>equals</h3><p>The complete value must match. For valid JSON, formatting differences such as whitespace do not matter.</p><div class="flow-doc-example"><span>Response payload</span><b>equals</b><code>{ &quot;ok&quot;: true }</code></div></div></div>
+                <div class="flow-doc-operator"><span class="flow-doc-operator-symbol">⊃</span><div><h3>contains</h3><p>The recorded text must include the expected text somewhere inside it. Use this when you only care about one ID or field.</p><div class="flow-doc-example"><span>Response payload</span><b>contains</b><code>SKU-001</code></div></div></div>
+                <div class="flow-doc-operator"><span class="flow-doc-operator-symbol">≠</span><div><h3>does not contain</h3><p>The recorded text must not include the expected text. This is ideal for proving that a filtered-out item is absent.</p><div class="flow-doc-example"><span>Response payload</span><b>does not contain</b><code>SKU-002</code></div></div></div>
+                <div class="flow-doc-grid flow-doc-grid-two flow-doc-operator-pair">
+                    <div class="flow-doc-example"><span>starts with</span><code>ORD-</code><small>Useful for prefixes such as generated order IDs.</small></div>
+                    <div class="flow-doc-example"><span>ends with</span><code>.csv</code><small>Useful for file names, extensions, or suffixes.</small></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="flow-doc-card">
+            <div class="flow-doc-card-heading">
+                <span class="flow-doc-step">05</span>
+                <div><h2>Examples you can copy mentally</h2><p>These are common rules for an Amazon-style order integration.</p></div>
+            </div>
+            <div class="flow-doc-scenario-list">
+                <div class="flow-doc-scenario"><span>1</span><div><strong>Confirm the run succeeded</strong><p><em>Flow status</em> · <b>equals</b> · <code>Success</code></p></div></div>
+                <div class="flow-doc-scenario"><span>2</span><div><strong>Confirm an order was returned</strong><p><em>FetchOrders</em> → <em>Response payload</em> · <b>contains</b> · <code>ORDER-100</code></p></div></div>
+                <div class="flow-doc-scenario"><span>3</span><div><strong>Confirm a duplicate SKU was filtered</strong><p><em>FilterNewSKUs</em> → <em>Response payload</em> · <b>does not contain</b> · <code>SKU-002</code></p></div></div>
+                <div class="flow-doc-scenario"><span>4</span><div><strong>Confirm a failure path is the expected one</strong><p><em>SendToERP</em> → <em>Error message</em> · <b>contains</b> · <code>validation</code></p></div></div>
+            </div>
+        </section>
+
+        <section class="flow-doc-card flow-doc-mistakes">
+            <div class="flow-doc-card-heading">
+                <span class="flow-doc-step">06</span>
+                <div><h2>Common mistakes</h2><p>A quick checklist when a rule does not behave as expected.</p></div>
+            </div>
+            <ul class="flow-doc-checklist">
+                <li><strong>All rules are required.</strong> Rules are combined with “and”; one failed rule fails the test.</li>
+                <li><strong>Use the node name shown in the dropdown.</strong> Technical IDs are internal and are resolved automatically from the selected card.</li>
+                <li><strong>Use contains for one part of a large JSON response.</strong> Use equals only when you intend to compare the full value.</li>
+                <li><strong>Read the operator in the failure message.</strong> “Does not contain” means the expected text must be absent, even if the response itself looks correct.</li>
+                <li><strong>Expected values are text.</strong> Enter the exact status spelling or the exact fragment you want to find.</li>
+            </ul>
+        </section>
+
+        <div class="flow-doc-end">
+            <span>Ready to write a rule?</span>
+            @if (FlowId.HasValue)
+            {
+                <a class="btn btn-primary" href="@($"/flow-tests/{FlowId}")">Return to assertion editor <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
+            }
+        </div>
+    </main>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "flowId")]
+    public Guid? FlowId { get; set; }
+}

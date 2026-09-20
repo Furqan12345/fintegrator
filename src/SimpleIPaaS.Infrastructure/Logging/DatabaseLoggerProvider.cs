@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
 namespace SimpleIPaaS.Infrastructure.Logging;
@@ -42,6 +43,7 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
     {
         Options = options;
         Source = source;
+        InstanceId = $"{Environment.MachineName}:{Environment.ProcessId}";
         Writer = writer;
         _excludedPrefixes = AlwaysExcludedCategoryPrefixes
             .Concat(options.ExcludedCategoryPrefixes ?? Array.Empty<string>())
@@ -53,7 +55,11 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
 
     internal string Source { get; }
 
+    internal string InstanceId { get; }
+
     internal DatabaseLogWriter Writer { get; }
+
+    public DatabaseLogHealth GetHealth() => new(InstanceId, Writer.QueueDepth, Writer.DroppedCount, Writer.WriteFailures, Writer.WrittenCount, Writer.LastSuccessfulWriteUtc);
 
     internal IExternalScopeProvider? ScopeProvider { get; private set; }
 
@@ -116,3 +122,5 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
         }
     }
 }
+
+public sealed record DatabaseLogHealth(string InstanceId, int QueueDepth, long DroppedEvents, long WriteFailures, long WrittenEvents, DateTime? LastSuccessfulWriteUtc);
