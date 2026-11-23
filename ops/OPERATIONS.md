@@ -5,13 +5,13 @@
 - /health/live confirms that the API process is responding. It does not require the database.
 - /health checks API database reachability and is suitable for the API container healthcheck.
 - /health/ready checks the database and confirms that the standalone Engine has written a recent heartbeat.
-- /metrics returns Prometheus text metrics. It requires the normal X-Api-Key header.
+- /metrics returns Prometheus text metrics. It requires `X-Metrics-Key` matching `Metrics:ApiKey` (the legacy `X-Api-Key` header is accepted only for this endpoint, using the same configured value). Set the key to at least 32 random characters in production.
 
 The API and Engine must use the same SQLite file. If /health is healthy but /health/ready is unhealthy, inspect the Engine container first.
 
 ## Metrics and alerts
 
-Import ops/prometheus/simpleipaas-alerts.yml into the Prometheus alerting rules configuration. Configure Prometheus to scrape the API /metrics endpoint with an API key header. The rules cover:
+Import ops/prometheus/simpleipaas-alerts.yml into the Prometheus alerting rules configuration. Configure Prometheus to scrape the API /metrics endpoint with `X-Metrics-Key: <Metrics:ApiKey>`. The rules cover:
 
 - Engine heartbeat loss.
 - API 5xx responses.
@@ -27,6 +27,20 @@ For a consistent backup, stop both application processes before copying the data
     .\ops\backup.ps1 -VolumeName simpleipaas_ipaas-data -BackupDirectory .\backups
 
 Use docker volume ls to confirm the actual volume name if Docker Compose prefixed it with the project name. Keep backups outside the application volume and encrypt them at rest. Test restoring a backup regularly.
+
+## Tenancy-removal upgrade
+
+Fusetor is single-deployment: one deployment serves one customer. Upgrading a database created before the tenancy removal runs `DatabaseSchemaInitializer.RemoveTenancy` at startup. It drops the `TenantId` columns and their indexes and is safe to run from both hosts at the same time.
+
+- **SQLite:** a `VACUUM INTO` backup named `ipaas.db.bak-pre-remove-tenancy-<yyyyMMdd-HHmmss>` is written beside the database before anything changes. If the backup cannot be created, the migration is skipped and the error is logged; the new version will not start cleanly until the schema is migrated.
+- **SQL Server:** no automatic backup is taken. Take a full database backup before starting the new version.
+- **Safety check:** if any table contains more than one distinct `TenantId`, the migration refuses to run and logs an error naming the table. It will not merge tenant data. Resolve the data first, then restart.
+
+## Elasticsearch cross-reference ids after the tenancy removal
+
+Cross-reference documents written before the tenancy removal used a document id derived from tenant + list + key. The current code derives the id from list + key, and the dedup check is a multi-get by that id, so old documents are invisible and already-seen keys would be counted as new.
+
+Elasticsearch storage has not shipped. Before enabling it on an upgraded deployment, start with an empty cross-reference index (or delete the old `fusetor-cross-references-*` indices and the `fusetor-cross-references-write` alias). If the storage prefix was changed from the default, use `<prefix>-cross-references-*` instead. Do not delete the log or packet-log indices for this reason; their document ids did not change.
 
 ## SQLite restore
 

@@ -1,6 +1,8 @@
 # Build outputs
 bin/
 obj/
+.build-*/
+.runtime-logs/
 [Dd]ebug/
 [Rr]elease/
 x64/
@@ -31,6 +33,8 @@ coverage/
 
 # Logs and diagnostics
 *.log
+mock-elasticsearch-requests.jsonl
+mock-elasticsearch-state.json
 *.err
 logs/
 Log/
@@ -69,3 +73,5 @@ Desktop.ini
 # Local database backups
 *.db.bak*
 ipaas.db.bak-*
+!ops/azure/.env.example
+tools/FintegratorStorage/mock-elasticsearch/es-requests.jsonl

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "serverName": { "type": "string" },
+    "outboundIps": { "type": "array" }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Sql/servers/firewallRules",
+      "apiVersion": "2021-11-01",
+      "name": "[format('{0}/webapp-{1}', parameters('serverName'), copyIndex())]",
+      "copy": { "name": "webappFirewallRules", "count": "[length(parameters('outboundIps'))]" },
+      "properties": {
+        "startIpAddress": "[parameters('outboundIps')[copyIndex()]]",
+        "endIpAddress": "[parameters('outboundIps')[copyIndex()]]"
+      }
+    }
+  ]
+}

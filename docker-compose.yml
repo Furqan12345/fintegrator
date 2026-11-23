@@ -2,30 +2,34 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: simpleipaas-api:latest
-    ports:
-      - "8080:8080"
+      target: app
+    image: simpleipaas-app:latest
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Data Source=/data/ipaas.db"
-      Encryption__Key: "${IPAAS_ENCRYPTION_KEY:?set IPAAS_ENCRYPTION_KEY to a 32-byte value}"
-      Cors__AllowedOrigins__0: "${IPAAS_CLIENT_ORIGIN:-http://localhost:5001}"
+      Encryption__Key: "${IPAAS_ENCRYPTION_KEY:?set IPAAS_ENCRYPTION_KEY}"
+      Auth__Jwt__SigningKey: "${IPAAS_JWT_SIGNING_KEY:?set IPAAS_JWT_SIGNING_KEY}"
+      App__PublicBaseUrl: "${IPAAS_PUBLIC_BASE_URL:?set IPAAS_PUBLIC_BASE_URL}"
+      Email__Smtp__Host: "${IPAAS_SMTP_HOST:-}"
+      Email__Smtp__Port: "${IPAAS_SMTP_PORT:-587}"
+      Email__Smtp__UseSsl: "${IPAAS_SMTP_USE_SSL:-true}"
+      Email__Smtp__Username: "${IPAAS_SMTP_USERNAME:-}"
+      Email__Smtp__Password: "${IPAAS_SMTP_PASSWORD:-}"
+      Email__Smtp__FromAddress: "${IPAAS_SMTP_FROM:-no-reply@fusetor.com}"
+      Outbound__AllowPrivateNetworks: "${IPAAS_ALLOW_PRIVATE_OUTBOUND:-false}"
+      Metrics__ApiKey: "${IPAAS_METRICS_KEY:-}"
       Operations__EngineHeartbeatTimeoutSeconds: "${IPAAS_ENGINE_HEARTBEAT_TIMEOUT_SECONDS:-90}"
     volumes:
       - ipaas-data:/data
     restart: unless-stopped
 
-  # Standalone execution tier. Runs every flow: claims Queued FlowExecutions written
-  # by the API, owns cron/one-time scheduling and dead-letter replay. Communicates
-  # with the API exclusively through the shared database file.
   engine:
-    image: simpleipaas-api:latest
-    entrypoint: ["dotnet", "SimpleIPaaS.Engine.dll"]
+    image: simpleipaas-app:latest
+    entrypoint: ["dotnet", "/app/engine/SimpleIPaaS.Engine.dll"]
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Data Source=/data/ipaas.db"
-      Encryption__Key: "${IPAAS_ENCRYPTION_KEY:?set IPAAS_ENCRYPTION_KEY to a 32-byte value}"
+      Encryption__Key: "${IPAAS_ENCRYPTION_KEY:?set IPAAS_ENCRYPTION_KEY}"
       Execution__MaxConcurrency: "4"
       Execution__MaxFlowDurationSeconds: "600"
       Execution__PollIntervalSeconds: "2"
@@ -38,6 +42,25 @@ services:
       - api
     restart: unless-stopped
 
+  web:
+    build:
+      context: .
+      target: web
+    image: simpleipaas-web:latest
+    environment:
+      IPAAS_DOMAIN: "${IPAAS_DOMAIN:?set IPAAS_DOMAIN}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   ipaas-data:
-
+    name: simpleipaas-data
+  caddy-data:
+  caddy-config:

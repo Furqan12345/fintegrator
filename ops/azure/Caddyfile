@@ -1,0 +1,29 @@
+{$IPAAS_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'"
+    }
+
+    # Webhooks authenticate with the per-flow secret, not a browser session.
+    @webhooks path /api/webhooks/*
+    handle @webhooks {
+        reverse_proxy api:8080
+    }
+
+    # The app now performs its own authentication and authorization.
+    @backend path /api/* /health /health/* /metrics
+    handle @backend {
+        reverse_proxy api:8080
+    }
+
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}

@@ -36,9 +36,11 @@ One platform, four capabilities:
 > *Speaker notes:* These are the two features that most directly reduce operational toil. Dedup removes the "did we already process this?" class of bug entirely; recovery history means an auditor can always reconstruct what went wrong and when it was fixed.
 
 ### Slide 4 · Architecture at a Glance
-Blazor WebAssembly client → ASP.NET Core API (API-key auth, tenant-isolated) → shared SQLite database → standalone **execution engine** (DAG runner, Polly resilience, Roslyn transformations, cron/DLQ/cancellation workers). The API only triggers/schedules by writing to the shared database; the engine does all the running and writes results back.
+Blazor WebAssembly client → ASP.NET Core API (account auth, single-deployment) → shared SQLite database → standalone **execution engine** (DAG runner, Polly resilience, Roslyn transformations, cron/DLQ/cancellation workers). The API only triggers/schedules by writing to the shared database; the engine does all the running and writes results back.
 
-> *Speaker notes:* Keep to one minute. Land three points: (1) every query is tenant-filtered at the ORM level, (2) credentials are encrypted with a key held outside the codebase, (3) execution is asynchronous and per-flow serialized, so a slow endpoint never blocks the platform. Refer deep-divers to `architecture/solution-architecture.md`.
+> *Speaker notes:* Keep to one minute. Land three points: (1) one deployment serves one customer and every row belongs to that deployment, (2) credentials are encrypted with a key held outside the codebase, (3) execution is asynchronous and per-flow serialized, so a slow endpoint never blocks the platform. Refer deep-divers to `architecture/solution-architecture.md`.
+
+> *Upgrade note:* this release removes the old multi-tenant layer. SQLite upgrades create `ipaas.db.bak-pre-remove-tenancy-<timestamp>` automatically; SQL Server deployments must be backed up before upgrading.
 
 ### Slide 5 · Transformations Without Deployments
 C# transformation scripts at four extension points per node — dynamic URL, pre-flight request shaping, post-flight response mapping, branch predicates — with named-node state so any step can reference any prior step's output.
@@ -46,7 +48,7 @@ C# transformation scripts at four extension points per node — dynamic URL, pre
 > *Speaker notes:* This is the differentiator versus rigid field-mapping tools. Demo a script referencing two upstream nodes by name. Mention the guardrails: per-script timeout and structured error capture.
 
 ### Slide 6 · Enterprise Controls
-- Platform access by hashed API keys; tenant derived from the key, never from the caller
+- Platform access by app-owned accounts, signed JWTs and TOTP 2FA; the caller can never assert a different data scope
 - Connection secrets AES-GCM encrypted; never returned by any API
 - Webhook triggers authenticated by per-flow secrets
 - Health endpoint, structured logs, full request/response audit per step
@@ -84,19 +86,19 @@ Delivered platform + documentation set (architecture, design, project plan). Pro
 | API contract | Endpoint-by-endpoint verification of client Fluxor effects against controller routes (list, detail, run, executions, steps, dead letters, webhooks) | Verified consistent |
 | Execution engine | Manual flows exercising all five node types, branch true/false paths, cumulative state, cancellation, and failure → dead-letter → retry path | Verified |
 | Outbound authentication | Each auth scheme exercised against a token-echo test endpoint (grant request shape, header decoration, token cache expiry, refresh rotation) | Verified |
-| Security controls | Negative tests: missing/invalid API key → 401; cross-tenant id probing → 404; secrets absent from every API response; script timeout enforced | Verified |
+| Security controls | Negative tests: missing/invalid credentials → 401; cross-deployment id probing → 404; secrets absent from every API response; script timeout enforced | Verified |
 | Static review | Multi-pass agent-assisted review across engine, security, and frontend, findings driven to closure via the verification loop (Part 6 prompts) | Complete |
-| Automated tests | 74 tests across scripting semantics, flow validation, DAG execution, encryption, authentication handlers, and tenant isolation | All passing |
+| Automated tests | 630 tests across scripting semantics, flow validation, DAG execution, encryption, authentication handlers, and data isolation | All passing |
 | Continuous integration | Restore → build → test → container image build on every push and pull request | Configured |
 
-The automated suite is deliberately concentrated on the behaviours whose failure would be silent in production — script-failure semantics, tenant query isolation, credential encryption round-trips, and the authentication handler matrix. Writing it surfaced three genuine defects that manual review had missed (an unenforced script timeout, a query-parameter authentication path that threw on every call, and a duplicate-node-id crash returning 500 instead of 400); all three were fixed and are now covered by regression tests.
+The automated suite is deliberately concentrated on the behaviours whose failure would be silent in production — script-failure semantics, data isolation, credential encryption round-trips, and the authentication handler matrix. Writing it surfaced three genuine defects that manual review had missed (an unenforced script timeout, a query-parameter authentication path that threw on every call, and a duplicate-node-id crash returning 500 instead of 400); all three were fixed and are now covered by regression tests.
 
 ---
 
 ## Part 4 — Known Limitations
 
 1. **Single-node deployment.** SQLite + in-process queue target one API instance; horizontal scale-out requires the PostgreSQL/distributed-lock roadmap item.
-2. **In-process script execution.** Transformation scripts run inside the API process with timeout guards. The trust model assumes authenticated tenant users are trusted script authors; hostile-author isolation (out-of-process sandbox) is a roadmap item.
+2. **In-process script execution.** Transformation scripts run inside the API process with timeout guards. The trust model assumes authenticated users are trusted script authors; hostile-author isolation (out-of-process sandbox) is a roadmap item.
 3. **OAuth2 authorization-code flow is operator-assisted.** Initial code exchange happens out-of-band; the platform then manages refresh automatically. Interactive PKCE flow is on the roadmap.
 4. **HTTP-family connectors only.** Queues, databases, and file transfer (SFTP) are not yet native node types.
 5. **No response pagination in HTTP actions.** Large collection endpoints must be windowed by the flow author (the domain model already reserves pagination styles for the roadmap item).
@@ -118,7 +120,7 @@ The automated suite is deliberately concentrated on the behaviours whose failure
 | Mid | Pagination-aware HTTP actions (link-header, cursor, page/offset) | First-class large-dataset sync |
 | Mid | Flow versioning with draft/publish and rollback | Safe iteration on production flows |
 | Far | Connector marketplace (queues, DBs, SFTP, SaaS-specific) | Faster time-to-integration |
-| Far | OpenTelemetry traces/metrics, per-tenant rate limits, usage analytics | Enterprise observability & governance |
+| Far | OpenTelemetry traces/metrics, per-deployment rate limits, usage analytics | Enterprise observability & governance |
 
 ---
 
@@ -128,11 +130,11 @@ AI agents were used as accelerators under engineering supervision; every change 
 
 1. **Gap analysis (assessment phase):**
    - "Assess the backend execution engine and API of this iPaaS for what is missing or wrong for production: flow execution, retries, idempotency, DLQ, concurrency, cancellation, trigger mechanisms, connectors, and whether frontend-expected endpoints exist."
-   - "Assess security and multi-tenancy: authentication on the API, tenant isolation and spoofability, credential storage, the Roslyn scripting engine as an RCE surface, CORS/HTTPS/input validation."
+   - "Assess security and deployment boundaries: authentication on the API, data isolation and spoofability, credential storage, the Roslyn scripting engine as an RCE surface, CORS/HTTPS/input validation."
    - "Assess the frontend and operational readiness: screens, designer UX gaps, observability, migrations, tests, deployment configuration, and recurring errors in the server logs."
 2. **Specification-driven implementation:**
    - "Read architecture/solution-architecture.md §9 and implement every outbound authentication type for HTTP action cards — real OAuth2 client-credentials grant, refresh-token rotation, auth-code continuation, custom headers — with token caching, then update the Connection Wizard to expose them all."
-   - "Implement §6.2/§10 platform security: hashed API-key authentication with tenant resolution from the key, removal of client-asserted tenancy, configuration-sourced encryption key, secret redaction on all reads, input validation, CORS allow-list, health checks, and script timeouts."
+   - "Implement §6.2/§10 platform security: app-owned account authentication, removal of client-asserted data scope, configuration-sourced encryption key, secret redaction on all reads, input validation, CORS allow-list, health checks, and script timeouts."
    - "Implement §7/§8: queued asynchronous execution with per-flow serialization and cancellation, the cron trigger scheduler, and the webhook trigger endpoint with constant-time secret comparison."
    - "Implement dead-letter management endpoints and console, flow deletion, designer-side flow validation, and trigger configuration UI."
 3. **Verification loop:**

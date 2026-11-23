@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "planName": { "type": "string" },
+    "location": { "type": "string" }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-03-01",
+      "name": "[parameters('planName')]",
+      "location": "[parameters('location')]",
+      "sku": { "name": "B1", "tier": "Basic", "size": "B1", "family": "B", "capacity": 1 },
+      "kind": "app",
+      "properties": { "reserved": false, "perSiteScaling": false }
+    }
+  ]
+}

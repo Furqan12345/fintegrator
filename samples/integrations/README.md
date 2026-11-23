@@ -52,7 +52,7 @@ NightlySync ──► FetchOrders ──► PerOrderItems (ForEach)
    - Region (normally `us-east-1`) and service (`execute-api`)
    - Optional STS role ARN, role session name, external ID, STS region/endpoint, and duration. When a role ARN is configured, the base IAM credentials are used only to call STS; temporary role credentials are kept in memory.
 2. Import the sample through the Flow Designer or API.
-3. Open the imported flow and select the Amazon connection on both `FetchOrders` and `FetchLineItems`; the sample intentionally leaves `connectionId` empty because each tenant has a different connection ID.
+3. Open the imported flow and select the Amazon connection on both `FetchOrders` and `FetchLineItems`; the sample intentionally leaves `connectionId` empty because each deployment has a different connection ID.
 4. Configure `ProcessNewItems` with your own downstream connection/endpoint. The sample placeholder endpoint is not runnable as-is.
 5. Set the flow to **Active**, then run it manually first. The cron schedule is `0 6 * * *` UTC.
 

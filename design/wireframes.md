@@ -12,7 +12,7 @@
 2. **Show the run, not the log.** Monitoring surfaces executions as timelines with payloads inline, never raw log text.
 3. **Progressive disclosure.** Node cards show name + type at rest; configuration (scripts, auth) opens in a side panel only on selection.
 4. **No dead ends on failure.** Every failed step links to its dead-letter entry with retry/discard actions in place.
-5. **Tenant-silent UI.** Tenancy is resolved by the platform API key; the UI never asks the user to pick or type a tenant.
+5. **Single-deployment UI.** One deployment = one customer; the UI never asks for a workspace.
 
 ### Visual language
 
