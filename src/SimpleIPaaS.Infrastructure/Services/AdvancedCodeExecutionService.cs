@@ -27,7 +27,7 @@ public class AdvancedScriptGlobals
 public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
 {
     private const int MaxCompiledScripts = 512;
-    private static readonly ConcurrentDictionary<string, object> CompiledScripts = new();
+    private static readonly ScriptRunnerCache<object> CompiledScripts = new(MaxCompiledScripts);
     private static readonly ConcurrentDictionary<string, byte> ValidatedHelpers = new();
 
     private readonly TimeSpan _timeout;
@@ -38,7 +38,13 @@ public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
             int.TryParse(configuration["Scripting:TimeoutSeconds"], out var seconds) && seconds > 0 ? seconds : 10);
     }
 
-    private static ScriptOptions BuildOptions()
+    // ScriptOptions is immutable and its references are expensive to build (every AddReferences call re-reads
+    // assembly metadata), so one shared instance serves every compile instead of one per script.
+    private static readonly ScriptOptions SharedOptions = CreateOptions();
+
+    private static ScriptOptions BuildOptions() => SharedOptions;
+
+    private static ScriptOptions CreateOptions()
     {
         return ScriptOptions.Default
             .AddReferences(
@@ -57,12 +63,7 @@ public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
     private static ScriptRunner<TResult> GetRunner<TResult>(string csharpCode)
     {
         var cacheKey = ScriptCacheKey.Compute(csharpCode, typeof(AdvancedScriptGlobals), typeof(TResult));
-        if (CompiledScripts.Count >= MaxCompiledScripts)
-        {
-            CompiledScripts.Clear();
-        }
-
-        return (ScriptRunner<TResult>)CompiledScripts.GetOrAdd(cacheKey, _ =>
+        return (ScriptRunner<TResult>)CompiledScripts.GetOrAdd(cacheKey, () =>
             CSharpScript.Create<TResult>(csharpCode, BuildOptions(), typeof(AdvancedScriptGlobals)).CreateDelegate());
     }
 

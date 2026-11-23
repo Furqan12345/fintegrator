@@ -791,7 +791,7 @@
         try
         {
             _flows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
-            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations?lite=true") ?? new List<IntegrationDto>();
         }
         catch (Exception)
         {

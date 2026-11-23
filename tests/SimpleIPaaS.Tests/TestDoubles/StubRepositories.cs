@@ -693,6 +693,8 @@ public sealed class StubIntegrationCatalogRepository : IIntegrationCatalogReposi
     public Task<IEnumerable<Integration>> GetAllAsync() =>
         Task.FromResult<IEnumerable<Integration>>(_integrations.ToList());
 
+    public Task<IEnumerable<Integration>> GetAllSummariesAsync() => GetAllAsync();
+
     public Task AddAsync(Integration integration)
     {
         _integrations.Add(integration);

@@ -16,7 +16,8 @@ public class ScriptGlobals
 
 public class CodeExecutionService : ICodeExecutionService
 {
-    private static readonly ConcurrentDictionary<string, ScriptRunner<string>> CompiledScripts = new();
+    private const int MaxCompiledScripts = 512;
+    private static readonly ScriptRunnerCache<ScriptRunner<string>> CompiledScripts = new(MaxCompiledScripts);
 
     private readonly TimeSpan _timeout;
 
@@ -26,7 +27,12 @@ public class CodeExecutionService : ICodeExecutionService
             int.TryParse(configuration["Scripting:TimeoutSeconds"], out var seconds) && seconds > 0 ? seconds : 10);
     }
 
-    private static ScriptOptions BuildOptions()
+    // One shared, immutable options instance (see AdvancedCodeExecutionService).
+    private static readonly ScriptOptions SharedOptions = CreateOptions();
+
+    private static ScriptOptions BuildOptions() => SharedOptions;
+
+    private static ScriptOptions CreateOptions()
     {
         return ScriptOptions.Default
             .AddReferences(
@@ -45,7 +51,7 @@ public class CodeExecutionService : ICodeExecutionService
     private static ScriptRunner<string> GetRunner(string csharpCode)
     {
         var cacheKey = ScriptCacheKey.Compute(csharpCode, typeof(ScriptGlobals), typeof(string));
-        return CompiledScripts.GetOrAdd(cacheKey, _ =>
+        return CompiledScripts.GetOrAdd(cacheKey, () =>
             CSharpScript.Create<string>(csharpCode, BuildOptions(), typeof(ScriptGlobals)).CreateDelegate());
     }
 

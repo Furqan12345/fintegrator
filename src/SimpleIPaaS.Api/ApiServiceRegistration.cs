@@ -28,7 +28,12 @@ public static class ApiServiceRegistration
         services.AddHttpClient();
         services.Configure<OutboundOptions>(configuration.GetSection("Outbound"));
         services.AddSingleton<OutboundUrlPolicy>();
-        services.AddHttpClient("Outbound", client => client.Timeout = TimeSpan.FromSeconds(30))
+        services.AddHttpClient("Outbound", (provider, client) =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(30);
+                client.MaxResponseContentBufferSize = provider
+                    .GetRequiredService<Microsoft.Extensions.Options.IOptions<OutboundOptions>>().Value.MaxResponseBytes;
+            })
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 AllowAutoRedirect = false,
@@ -42,6 +47,7 @@ public static class ApiServiceRegistration
         services.AddScoped<AiBuildSettingsProvider>();
         services.AddScoped<AiFlowBuilderService>();
         services.AddHostedService<Workers.AiBuildJobWorker>();
+        services.AddHostedService<SimpleIPaaS.Infrastructure.Services.ScriptWarmupService>();
         services.AddHostedService<Workers.AiChatWorker>();
 
         // Configure EF Core SQLite — both this API and SimpleIPaaS.Engine must land on the

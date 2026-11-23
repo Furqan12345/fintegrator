@@ -480,7 +480,7 @@
         _loadError = null;
         try
         {
-            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations?lite=true") ?? new List<IntegrationDto>();
 
             var allFlows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
             _standaloneFlows = allFlows.Where(flow => flow.IntegrationId == null).OrderByDescending(flow => flow.UpdatedAt).ToList();

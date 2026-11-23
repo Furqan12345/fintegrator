@@ -98,10 +98,44 @@ public class ExecutionRepository : IExecutionRepository
             executions = executions.Where(e => e.StartedAt < query.UntilUtc.Value);
         }
 
+        // A list row never needs the run's trigger payload, test definition, fan-out item or the initial
+        // flow/persisted state - those are the large JSON columns (a webhook body can be megabytes) and a page
+        // of 50-200 rows used to drag every one of them out of the database and through the change tracker.
+        // They are left unset here; GetFlowExecutionAsync still returns the full row for the detail views.
         return await executions
             .OrderByDescending(e => e.StartedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
+            .Select(e => new FlowExecution
+            {
+                Id = e.Id,
+                FlowId = e.FlowId,
+                FlowName = e.FlowName,
+                IntegrationId = e.IntegrationId,
+                IntegrationName = e.IntegrationName,
+                TraceParent = e.TraceParent,
+                Status = e.Status,
+                StartedAt = e.StartedAt,
+                QueuedAt = e.QueuedAt,
+                CompletedAt = e.CompletedAt,
+                RecoveredAt = e.RecoveredAt,
+                ErrorMessage = e.ErrorMessage,
+                TriggerSource = e.TriggerSource,
+                IsTest = e.IsTest,
+                TestCaseId = e.TestCaseId,
+                TestRunId = e.TestRunId,
+                ParentExecutionId = e.ParentExecutionId,
+                FanOutNodeId = e.FanOutNodeId,
+                FanOutNodeName = e.FanOutNodeName,
+                FanOutItemIndex = e.FanOutItemIndex,
+                FanOutItemCount = e.FanOutItemCount,
+                TotalRecords = e.TotalRecords,
+                SuccessRecords = e.SuccessRecords,
+                FailedRecords = e.FailedRecords,
+                Identifier = e.Identifier,
+                Message = e.Message
+            })
+            .AsNoTracking()
             .ToListAsync();
     }
 

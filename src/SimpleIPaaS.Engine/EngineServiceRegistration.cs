@@ -47,7 +47,12 @@ public static class EngineServiceRegistration
         services.AddHttpClient();
         services.Configure<OutboundOptions>(configuration.GetSection("Outbound"));
         services.AddSingleton<OutboundUrlPolicy>();
-        services.AddHttpClient("Outbound", client => client.Timeout = TimeSpan.FromSeconds(30))
+        services.AddHttpClient("Outbound", (provider, client) =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(30);
+                client.MaxResponseContentBufferSize = provider
+                    .GetRequiredService<Microsoft.Extensions.Options.IOptions<OutboundOptions>>().Value.MaxResponseBytes;
+            })
             .ConfigurePrimaryHttpMessageHandler(() => new System.Net.Http.SocketsHttpHandler
             {
                 AllowAutoRedirect = false,
@@ -92,6 +97,7 @@ public static class EngineServiceRegistration
         services.AddScoped<FlowRunService>();
 
         services.AddHostedService<Workers.EngineHeartbeatWorker>();
+        services.AddHostedService<SimpleIPaaS.Infrastructure.Services.ScriptWarmupService>();
 
         // Retention across both backends; identical registration to the API (idempotent passes).
         services.AddHostedService(provider => new StorageRetentionWorker(

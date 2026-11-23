@@ -288,7 +288,9 @@ public class TransportEngine : ITransportEngine
                 response = await SendAsync();
             }
 
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            // The attempt already decoded this exact body. Decoding the buffered bytes a second time doubled the
+            // memory of every response (a 20 MB body held two 40 MB strings until the step finished).
+            var content = lastAttempt?.Response ?? await response.Content.ReadAsStringAsync(cancellationToken);
             var headers = response.Headers
                 .Concat(response.Content.Headers)
                 .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)

@@ -8,6 +8,13 @@ using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Infrastructure.Logging;
 using SimpleIPaaS.Infrastructure.Persistence;
+using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Services;
+using SimpleIPaaS.Infrastructure.Services;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.CodeAnalysis.CSharp.Scripting;
+using Microsoft.CodeAnalysis.Scripting;
 
 var label = args.Length > 0 ? args[0] : "run";
 var dbPath = args.Length > 1 ? args[1] : Path.Combine(Path.GetTempPath(), "fusetor-bench.db");
@@ -231,6 +238,83 @@ using (var ctx = NewContext())
     Console.WriteLine($"{"concurrent_claims_per_second",-34} {rate,9:N0} claims/s (claimed {claimed})");
 }
 
+// 9. End-to-end flow runs through the real FlowExecutor (3 mapping cards with scripts, real repositories, real DB).
+{
+    var e2eFlowId = Guid.NewGuid();
+    using (var ctx = NewContext())
+    {
+        var flow = new IntegrationFlow { Id = e2eFlowId, Name = "E2E", Status = FlowStatus.Active, TriggerType = TriggerType.Manual };
+        var nodes = Enumerable.Range(1, 3).Select(n => new IntegrationStep
+        {
+            Id = Guid.NewGuid(), FlowId = e2eFlowId, StepType = StepType.Mapping, NodeName = "Map" + n,
+            MappingCode = "var doc = JObject.Parse(FlowStateJson); return new JObject { [\"step\"] = " + n + ", [\"keys\"] = doc.Count }.ToString(Formatting.None);"
+        }).ToList();
+        foreach (var node in nodes) flow.Nodes.Add(node);
+        for (var i = 0; i < nodes.Count - 1; i++)
+            flow.Edges.Add(new IntegrationEdge { FlowId = e2eFlowId, SourceNodeId = nodes[i].Id, TargetNodeId = nodes[i + 1].Id });
+        ctx.IntegrationFlows.Add(flow);
+        await ctx.SaveChangesAsync();
+    }
+
+    async Task<ExecutionStatus> RunOne()
+    {
+        var execId = Guid.NewGuid();
+        using var ctx = NewContext();
+        ctx.FlowExecutions.Add(new FlowExecution { Id = execId, FlowId = e2eFlowId, FlowName = "E2E", TriggerSource = "Test", Status = ExecutionStatus.InProgress });
+        await ctx.SaveChangesAsync();
+        var executor = new FlowExecutor(
+            new IntegrationRepository(ctx), new NoTransport(), new AdvancedCodeExecutionService(new ConfigurationBuilder().Build()),
+            new ExecutionRepository(ctx), new CrossReferenceRepository(ctx), new NoEmail(), NullLogger<FlowExecutor>.Instance);
+        var result = await executor.ExecuteFlowAsync(e2eFlowId, execId, "{\"order\":1}", CancellationToken.None);
+        return result.Status;
+    }
+
+    var first = await RunOne();
+    Console.WriteLine($"e2e first run status: {first}");
+    for (var i = 0; i < 3; i++) await RunOne();
+    var sw = Stopwatch.StartNew();
+    for (var i = 0; i < 150; i++) await RunOne();
+    var seq = 150 / sw.Elapsed.TotalSeconds;
+    sw.Restart();
+    await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(async () => { for (var i = 0; i < 75; i++) await RunOne(); })));
+    var par = 300 / sw.Elapsed.TotalSeconds;
+    results["e2e_flow_runs_per_second_sequential"] = new { rate = Math.Round(seq, 1) };
+    results["e2e_flow_runs_per_second_4_parallel"] = new { rate = Math.Round(par, 1) };
+    Console.WriteLine($"{"e2e_3_card_flow_sequential",-34} {seq,9:N1} runs/s ({1000 / seq:N1} ms/run)");
+    Console.WriteLine($"{"e2e_3_card_flow_4_parallel",-34} {par,9:N1} runs/s");
+}
+
+// 8. Script compilation: fresh ScriptOptions per compile (the old code) vs one shared instance (the new code).
+{
+    ScriptOptions Fresh() => ScriptOptions.Default
+        .AddReferences(typeof(object).Assembly, typeof(System.Linq.Enumerable).Assembly, typeof(System.Collections.Generic.List<>).Assembly,
+            typeof(System.Text.Json.JsonDocument).Assembly, typeof(System.Text.Json.Nodes.JsonNode).Assembly, typeof(Newtonsoft.Json.JsonConvert).Assembly)
+        .AddImports("System", "System.Linq", "System.Collections.Generic", "System.Text.Json", "Newtonsoft.Json", "Newtonsoft.Json.Linq");
+    var shared = Fresh();
+    var coldWatch = Stopwatch.StartNew();
+    CSharpScript.Create<string>("return \"cold\";", shared).CreateDelegate();
+    results["script_first_compile_cold_ms"] = Math.Round(coldWatch.Elapsed.TotalMilliseconds);
+    Console.WriteLine($"{"script_first_compile_cold",-30} {coldWatch.Elapsed.TotalMilliseconds,8:N0} ms (first Roslyn compile in the process)");
+    for (var i = 0; i < 6; i++) CSharpScript.Create<string>($"return \"warm{i}\";", shared).CreateDelegate();   // JIT warm-up
+    var round = 0;
+    foreach (var mode in new[] { "fresh_options", "shared_options", "fresh_options", "shared_options" })
+    {
+        round++;
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var managedBefore = GC.GetTotalMemory(true);
+        var wsBefore = Process.GetCurrentProcess().WorkingSet64;
+        var sw = Stopwatch.StartNew();
+        for (var i = 0; i < 60; i++)
+            CSharpScript.Create<string>($"var a = {i}; return \"v\" + a + \"{mode}{round}\";", mode == "fresh_options" ? Fresh() : shared).CreateDelegate();
+        var ms = sw.Elapsed.TotalMilliseconds / 60;
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var managed = (GC.GetTotalMemory(true) - managedBefore) / 1048576.0;
+        var ws = (Process.GetCurrentProcess().WorkingSet64 - wsBefore) / 1048576.0;
+        results["script_compile_" + mode + round] = new { msPerCompile = Math.Round(ms, 1), retainedManagedMb = Math.Round(managed, 1), workingSetGrowthMb = Math.Round(ws, 1) };
+        Console.WriteLine($"{"script_compile_" + mode,-30} #{round} {ms,8:N1} ms/compile   retained managed +{managed:N1} MB   working set +{ws:N1} MB (60 scripts)");
+    }
+}
+
 using (var ctx = NewContext())
 {
     var conn = ctx.Database.GetDbConnection(); conn.Open();
@@ -252,4 +336,16 @@ static class BenchDb
 {
     public static DbContextOptions<IPaaSContext> Options(string dbPath) =>
         new DbContextOptionsBuilder<IPaaSContext>().UseTunedSqlite("Data Source=" + dbPath).Options;
+}
+
+sealed class NoTransport : ITransportEngine
+{
+    public Task<TransportResponse> DispatchAsync(IntegrationStep step, string? payload, Guid? connectionId = null, CancellationToken cancellationToken = default, SimpleIPaaS.Application.Models.FlowTestContext? testContext = null)
+        => throw new NotSupportedException("the benchmark flow has no HTTP card");
+}
+
+sealed class NoEmail : IEmailSender
+{
+    public Task SendAsync(string to, string subject, string htmlBody, string textBody, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task SendAsync(EmailMessage message, CancellationToken cancellationToken = default) => Task.CompletedTask;
 }

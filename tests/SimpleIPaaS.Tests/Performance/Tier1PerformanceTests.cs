@@ -230,6 +230,51 @@ public sealed class Tier1PerformanceTests : IDisposable
         Assert.Equal(manualId, Assert.Single(onlyManual).Id);
     }
 
+    [Fact]
+    public async Task ExecutionList_DoesNotLoadTheLargePayloadColumns_ButTheDetailRowStillHasThem()
+    {
+        NewDatabase(out var options);
+        var big = new string('p', 200_000);
+        Guid id;
+        using (var context = new IPaaSContext(options))
+        {
+            var flow = new IntegrationFlow { Name = "List flow" };
+            context.IntegrationFlows.Add(flow);
+            var run = new FlowExecution
+            {
+                FlowId = flow.Id, FlowName = flow.Name, IntegrationName = "Int", TriggerSource = "Webhook",
+                Status = ExecutionStatus.Failed, ErrorMessage = "boom", Identifier = "ORD-1", Message = "msg",
+                TotalRecords = 3, SuccessRecords = 2, FailedRecords = 1,
+                TriggerPayloadJson = big, InitialFlowStateJson = big, InitialPersistedStateJson = big,
+                FanOutItemJson = big, TestDefinitionJson = big, StartStepIdsJson = "[]"
+            };
+            id = run.Id;
+            context.FlowExecutions.Add(run);
+            await context.SaveChangesAsync();
+        }
+
+        using var read = new IPaaSContext(options);
+        var repository = new ExecutionRepository(read);
+        var listed = Assert.Single(await repository.GetFlowExecutionsAsync(new ExecutionQuery { IncludeTestRuns = true }));
+
+        Assert.Equal(id, listed.Id);
+        Assert.Equal("List flow", listed.FlowName);
+        Assert.Equal(ExecutionStatus.Failed, listed.Status);
+        Assert.Equal("boom", listed.ErrorMessage);
+        Assert.Equal("ORD-1", listed.Identifier);
+        Assert.Equal(2, listed.SuccessRecords);
+        Assert.Null(listed.TriggerPayloadJson);
+        Assert.Null(listed.InitialFlowStateJson);
+        Assert.Null(listed.InitialPersistedStateJson);
+        Assert.Null(listed.FanOutItemJson);
+        Assert.Null(listed.TestDefinitionJson);
+        Assert.Empty(read.ChangeTracker.Entries());   // nothing tracked for a read-only list
+
+        var detail = await repository.GetFlowExecutionAsync(id);
+        Assert.Equal(big, detail!.TriggerPayloadJson);
+        Assert.Equal(big, detail.InitialFlowStateJson);
+    }
+
     // ---- log facets cache ----
 
     [Fact]

@@ -10,6 +10,11 @@ public class OutboundOptions
     // this false and explicitly allow only the hosts they need.
     public bool AllowPrivateNetworks { get; set; }
     public string[] AllowedHosts { get; set; } = Array.Empty<string>();
+
+    // Largest response body an HTTP card will buffer. A partner endpoint that suddenly returns hundreds of
+    // megabytes used to be read completely into memory (twice); now the call fails with a clear transport
+    // error instead of exhausting the Engine's RAM. "Outbound:MaxResponseBytes", default 64 MB.
+    public long MaxResponseBytes { get; set; } = 64L * 1024 * 1024;
 }
 
 public class OutboundRequestBlockedException : Exception

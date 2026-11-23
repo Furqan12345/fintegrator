@@ -486,7 +486,7 @@
 
     private async Task RefreshIntegrationsAsync()
     {
-        var integrations = await SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations", Dispatcher, "integrations");
+        var integrations = await SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations?lite=true", Dispatcher, "integrations");
         if (integrations != null)
         {
             _integrations = integrations

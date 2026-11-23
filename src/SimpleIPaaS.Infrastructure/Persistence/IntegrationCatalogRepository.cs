@@ -38,6 +38,56 @@ public class IntegrationCatalogRepository : IIntegrationCatalogRepository
             .ToListAsync();
     }
 
+    public async Task<IEnumerable<Integration>> GetAllSummariesAsync()
+    {
+        // Seven list pages only count a flow's steps and look for a Schedule step, yet the full query pulled every
+        // script and edge of every flow (about 440 KB of JSON for four integrations). This projects just what a
+        // list shows.
+        return await _context.Integrations
+            .AsNoTracking()
+            .OrderBy(integration => integration.Name)
+            .Select(integration => new Integration
+            {
+                Id = integration.Id,
+                Name = integration.Name,
+                Description = integration.Description,
+                CreatedAt = integration.CreatedAt,
+                UpdatedAt = integration.UpdatedAt,
+                Flows = integration.Flows
+                    .OrderByDescending(flow => flow.UpdatedAt)
+                    .Select(flow => new IntegrationFlow
+                    {
+                        Id = flow.Id,
+                        IntegrationId = flow.IntegrationId,
+                        Name = flow.Name,
+                        Description = flow.Description,
+                        Status = flow.Status,
+                        TriggerType = flow.TriggerType,
+                        CronExpression = flow.CronExpression,
+                        RunAt = flow.RunAt,
+                        NextRunAt = flow.NextRunAt,
+                        AllowPostReplay = flow.AllowPostReplay,
+                        DefaultDeadLetterResyncStepId = flow.DefaultDeadLetterResyncStepId,
+                        PublishedVersion = flow.PublishedVersion,
+                        LastPublishedAt = flow.LastPublishedAt,
+                        CreatedAt = flow.CreatedAt,
+                        UpdatedAt = flow.UpdatedAt,
+                        Nodes = flow.Nodes
+                            .Where(node => !node.IsArchived)
+                            .Select(node => new IntegrationStep
+                            {
+                                Id = node.Id,
+                                FlowId = node.FlowId,
+                                StepType = node.StepType,
+                                NodeName = node.NodeName
+                            })
+                            .ToList()
+                    })
+                    .ToList()
+            })
+            .ToListAsync();
+    }
+
     public async Task AddAsync(Integration integration)
     {
         _context.Integrations.Add(integration);

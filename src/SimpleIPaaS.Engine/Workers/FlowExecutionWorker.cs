@@ -49,99 +49,124 @@ public class FlowExecutionWorker : BackgroundService
             "FlowExecutionWorker starting with {MaxConcurrency} workers, polling the database every {PollSeconds}s",
             concurrency, pollInterval.TotalSeconds);
 
-        var workers = Enumerable.Range(0, concurrency)
-            .Select(_ => RunLoopAsync(pollInterval, stoppingToken))
-            .ToArray();
-
-        await Task.WhenAll(workers);
-    }
-
-    private async Task RunLoopAsync(TimeSpan pollInterval, CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
+        // One poller instead of one polling loop per worker. The poller only asks the database for work when a
+        // worker slot is free, so an idle Engine runs one claim query per interval (it used to run MaxConcurrency
+        // of them), and a burst is still drained immediately: after a successful claim the poller loops straight
+        // back for the next row without waiting for the interval. Concurrency is capped by the slot semaphore.
+        var slots = new SemaphoreSlim(concurrency, concurrency);
+        var running = new ConcurrentDictionary<Task, byte>();
+        try
         {
-            QueuedExecutionClaim? claim = null;
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                using var scope = _serviceProvider.CreateScope();
-                claim = await scope.ServiceProvider.GetRequiredService<IExecutionRepository>()
-                    .TryClaimNextQueuedExecutionAsync();
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (SqliteException ex)
-            {
-                // Write contention with the API process under WAL is transient by design.
-                _logger.LogDebug(ex, "SQLite busy while claiming the next queued execution");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error claiming the next queued execution");
-            }
+                await slots.WaitAsync(stoppingToken);
 
-            if (claim == null)
-            {
+                QueuedExecutionClaim? claim = null;
                 try
                 {
-                    await Task.Delay(pollInterval, stoppingToken);
+                    using var scope = _serviceProvider.CreateScope();
+                    claim = await scope.ServiceProvider.GetRequiredService<IExecutionRepository>()
+                        .TryClaimNextQueuedExecutionAsync();
                 }
                 catch (OperationCanceledException)
                 {
-                    return;
+                    slots.Release();
+                    break;
+                }
+                catch (SqliteException ex)
+                {
+                    // Write contention with the API process under WAL is transient by design.
+                    _logger.LogDebug(ex, "SQLite busy while claiming the next queued execution");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error claiming the next queued execution");
                 }
 
-                continue;
-            }
+                if (claim == null)
+                {
+                    slots.Release();
+                    try
+                    {
+                        await Task.Delay(pollInterval, stoppingToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
 
-            // Everything logged inside this scope carries the correlation ids, so the
-            // database log sink can populate its ExecutionId/FlowId columns and the Debug
-            // Logs console can filter a whole run by execution.
-            using var executionActivity = new Activity("flow.execution");
-            executionActivity.SetIdFormat(ActivityIdFormat.W3C);
-            if (!string.IsNullOrWhiteSpace(claim.TraceParent)) executionActivity.SetParentId(claim.TraceParent);
-            executionActivity.Start();
+                    continue;
+                }
 
-            using var correlationScope = _logger.BeginScope(new Dictionary<string, object?>
-            {
-                ["ExecutionId"] = claim.ExecutionId,
-                ["FlowId"] = claim.FlowId,
-                ["FlowName"] = claim.FlowName,
-                ["IntegrationId"] = claim.IntegrationId ?? Guid.Empty,
-                ["IntegrationName"] = claim.IntegrationName,
-                ["IsTest"] = claim.IsTest,
-                ["TestCaseId"] = claim.TestCaseId,
-                ["TestRunId"] = claim.TestRunId
-            });
+                var task = RunClaimAsync(claim, stoppingToken);
+                running[task] = 0;
+                _ = task.ContinueWith(finished =>
+                {
+                    running.TryRemove(finished, out _);
+                    slots.Release();
+                }, TaskScheduler.Default);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutting down
+        }
 
-            var claimedAt = Stopwatch.GetTimestamp();
-            _logger.LogInformation(new EventId(1200, "flow.execution.claimed"),
-                "Claimed queued execution {ExecutionId} for flow {FlowId} (trigger {TriggerSource}, queue wait {QueueWaitMs}ms)",
-                claim.ExecutionId, claim.FlowId, string.IsNullOrWhiteSpace(claim.TriggerSource) ? "Manual" : claim.TriggerSource, claim.QueuedAt.HasValue ? (long)Math.Max(0, (DateTime.UtcNow - claim.QueuedAt.Value).TotalMilliseconds) : 0);
+        await Task.WhenAll(running.Keys.ToArray());
+    }
 
-            try
-            {
-                await ExecuteRequestAsync(claim, stoppingToken);
-                _logger.LogInformation(
-                    "Released execution {ExecutionId} for flow {FlowId} after {DurationMs}ms",
-                    claim.ExecutionId, claim.FlowId, (long)Stopwatch.GetElapsedTime(claimedAt).TotalMilliseconds);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogWarning(
-                    "Execution {ExecutionId} abandoned after {DurationMs}ms because the Engine is shutting down",
-                    claim.ExecutionId, (long)Stopwatch.GetElapsedTime(claimedAt).TotalMilliseconds);
-                return;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unhandled error running execution {ExecutionId}", claim.ExecutionId);
-            }
-            finally
-            {
-                _cancellationRegistry.Remove(claim.ExecutionId);
-            }
+    // Runs one claimed execution to completion. Never throws: every failure is logged here so a bad run cannot
+    // take the poller down.
+    private async Task RunClaimAsync(QueuedExecutionClaim claim, CancellationToken stoppingToken)
+    {
+        await Task.Yield();
+
+        // Everything logged inside this scope carries the correlation ids, so the
+        // database log sink can populate its ExecutionId/FlowId columns and the Debug
+        // Logs console can filter a whole run by execution.
+        using var executionActivity = new Activity("flow.execution");
+        executionActivity.SetIdFormat(ActivityIdFormat.W3C);
+        if (!string.IsNullOrWhiteSpace(claim.TraceParent)) executionActivity.SetParentId(claim.TraceParent);
+        executionActivity.Start();
+
+        using var correlationScope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["ExecutionId"] = claim.ExecutionId,
+            ["FlowId"] = claim.FlowId,
+            ["FlowName"] = claim.FlowName,
+            ["IntegrationId"] = claim.IntegrationId ?? Guid.Empty,
+            ["IntegrationName"] = claim.IntegrationName,
+            ["IsTest"] = claim.IsTest,
+            ["TestCaseId"] = claim.TestCaseId,
+            ["TestRunId"] = claim.TestRunId
+        });
+
+        var claimedAt = Stopwatch.GetTimestamp();
+        _logger.LogInformation(new EventId(1200, "flow.execution.claimed"),
+            "Claimed queued execution {ExecutionId} for flow {FlowId} (trigger {TriggerSource}, queue wait {QueueWaitMs}ms)",
+            claim.ExecutionId, claim.FlowId, string.IsNullOrWhiteSpace(claim.TriggerSource) ? "Manual" : claim.TriggerSource, claim.QueuedAt.HasValue ? (long)Math.Max(0, (DateTime.UtcNow - claim.QueuedAt.Value).TotalMilliseconds) : 0);
+
+        try
+        {
+            await ExecuteRequestAsync(claim, stoppingToken);
+            _logger.LogInformation(
+                "Released execution {ExecutionId} for flow {FlowId} after {DurationMs}ms",
+                claim.ExecutionId, claim.FlowId, (long)Stopwatch.GetElapsedTime(claimedAt).TotalMilliseconds);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "Execution {ExecutionId} abandoned after {DurationMs}ms because the Engine is shutting down",
+                claim.ExecutionId, (long)Stopwatch.GetElapsedTime(claimedAt).TotalMilliseconds);
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unhandled error running execution {ExecutionId}", claim.ExecutionId);
+        }
+        finally
+        {
+            _cancellationRegistry.Remove(claim.ExecutionId);
         }
     }
 

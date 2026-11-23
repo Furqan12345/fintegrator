@@ -324,7 +324,7 @@
     protected override async Task OnInitializedAsync()
     {
         await base.OnInitializedAsync();
-        _integrations = await SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations", Dispatcher, "integrations") ?? new();
+        _integrations = await SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations?lite=true", Dispatcher, "integrations") ?? new();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)

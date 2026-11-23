@@ -24,9 +24,12 @@ public class IntegrationController : ControllerBase
     }
 
     [HttpGet("")]
-    public async Task<IActionResult> GetAll()
+    public async Task<IActionResult> GetAll([FromQuery] bool lite = false)
     {
-        var integrations = await _integrationRepository.GetAllAsync();
+        // lite=true is the list-page view: no scripts, step configuration or edges (see GetAllSummariesAsync).
+        var integrations = lite
+            ? await _integrationRepository.GetAllSummariesAsync()
+            : await _integrationRepository.GetAllAsync();
         return Ok(integrations.Select(integration => integration.ToDto()));
     }
 

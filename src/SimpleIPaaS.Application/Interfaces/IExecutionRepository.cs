@@ -115,6 +115,8 @@ public record DeadLetterPageFilter(
 public interface IExecutionRepository
 {
     Task<FlowExecution?> GetFlowExecutionAsync(Guid id);
+    // List projection: the large JSON columns (trigger payload, test definition, fan-out item, initial states)
+    // are not loaded. Use GetFlowExecutionAsync for the full row.
     Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(ExecutionQuery query);
 
     Task AddFlowExecutionAsync(FlowExecution execution);
