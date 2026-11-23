@@ -51,13 +51,17 @@ run the same command.
   a power loss can drop the last transactions but cannot corrupt the file), `temp_store=MEMORY`, a bounded page cache and
   WAL size limit. Applied through an EF connection interceptor and to the log writer.
 - **Garbage collector**: the Web SDK defaults the API to Server GC (a heap and a thread per core). Both hosts now use
-  workstation concurrent GC (`ServerGarbageCollection=false`). Idle working set did not change measurably (about
-  110-125 MB either way); the benefit is on a multi-core host under load and in container memory limits.
+  workstation concurrent GC (`ServerGarbageCollection=false`). Idle memory did not change measurably (API about
+  38 MB private / 125 MB working set either way); the benefit is on a multi-core host under load and in container
+  memory limits. Judge memory by private bytes: the working set also counts shared, mapped assemblies.
 - **Engine polling**: one poller gated by a free-slot semaphore instead of one polling loop per worker. An idle Engine
   runs one claim query per interval instead of `MaxConcurrency`; bursts still drain immediately.
 - **Scripts**: LRU-bounded compiled-script caches (the old cache wiped itself completely at 512 entries, the other grew
-  without limit), one shared `ScriptOptions`, and `ScriptWarmupService`, which compiles one script of each shape in the
-  background after start (the first Roslyn compile in a process costs 0.4 to 1.3 s).
+  without limit), one shared `ScriptOptions`, and `ScriptWarmupService` in the **Engine only**, which compiles one script
+  of each shape in the background after start (the first Roslyn compile in a process costs 0.4 to 1.3 s, and the Engine
+  would pay it on its first flow run anyway). It was first registered in the API too and measured: the API's private
+  memory went from 38 MB to 55 MB settled and peaked near 190 MB while compiling, for a benefit only Debug/Test runs
+  see, so the API does not run it.
 - **Memory**: HTTP response bodies are decoded once (they were decoded twice) and capped at `Outbound:MaxResponseBytes`
   (default 64 MB); the run list does not load the large JSON columns and does not track entities.
 - **API**: Brotli/gzip for JSON, the publish-time `.br`/`.gz` files are served for Blazor assets, EF SQL and HttpClient

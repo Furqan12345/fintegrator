@@ -47,7 +47,6 @@ public static class ApiServiceRegistration
         services.AddScoped<AiBuildSettingsProvider>();
         services.AddScoped<AiFlowBuilderService>();
         services.AddHostedService<Workers.AiBuildJobWorker>();
-        services.AddHostedService<SimpleIPaaS.Infrastructure.Services.ScriptWarmupService>();
         services.AddHostedService<Workers.AiChatWorker>();
 
         // Configure EF Core SQLite — both this API and SimpleIPaaS.Engine must land on the
