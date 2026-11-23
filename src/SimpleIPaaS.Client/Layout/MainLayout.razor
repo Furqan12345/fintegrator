@@ -111,7 +111,7 @@
                     </button>
                 }
                 <span class="topbar-status @HealthCssClass" title="@HealthDetail" role="status" aria-live="polite">
-                    <span class="status-dot"></span>@HealthLabel
+                    <span class="status-dot"></span><span class="topbar-status-label">@HealthLabel</span>
                 </span>
                 <button type="button" class="topbar-icon-btn" title="@ThemeToggleLabel" aria-label="@ThemeToggleLabel"
                         aria-pressed="@(_isDarkTheme ? "true" : "false")" @onclick="ToggleThemeAsync">
@@ -321,7 +321,14 @@
     private static string HeadingFor(string relativePath)
     {
         var path = relativePath.Split('?')[0].Split('#')[0].Trim('/');
-        var segment = path.Split('/')[0].ToLowerInvariant();
+        var parts = path.Split('/');
+        var segment = parts[0].ToLowerInvariant();
+
+        // Admin pages share one first segment, so they are told apart by the second.
+        if (segment == "admin")
+        {
+            return parts.Length > 1 && parts[1].ToLowerInvariant() == "users" ? "Users" : "AI Build Budgets";
+        }
 
         return segment switch
         {
@@ -332,8 +339,7 @@
             "connection-wizard" => "Connection Setup",
             "ai-providers" => "AI Providers",
             "ai-provider-wizard" => "AI Provider Setup",
-            "admin/ai-settings" => "AI Settings",
-            "flow" or "flow-designer" => "Flow Designer",
+            "flow" or "flow-designer" or "flow-tests" => "Flow Designer",
             "activity" or "activity-log" => "Transactions",
             "transaction-history" => "Transaction History",
             "packet-logs" => "Packet Logs",

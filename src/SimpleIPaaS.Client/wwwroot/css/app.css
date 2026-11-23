@@ -1,4 +1,5 @@
-﻿/* ============================================================
+@charset "UTF-8";
+/* ============================================================
    SimpleIPaaS â€” Design System
    ------------------------------------------------------------
    1.  Design tokens (light)
@@ -248,6 +249,13 @@ h1, h2, h3, h4, h5 {
     outline: 2px solid var(--primary);
     outline-offset: 2px;
     border-radius: var(--radius-xs);
+}
+
+/* Blazor's FocusOnNavigate moves focus to the page heading (tabindex="-1") for screen readers. It is not an
+   interactive control, so it should not draw a focus box around the title on every navigation. */
+h1[tabindex="-1"]:focus,
+h1[tabindex="-1"]:focus-visible {
+    outline: none;
 }
 
 ::selection {
@@ -526,6 +534,15 @@ h1, h2, h3, h4, h5 {
     font-weight: 620;
     color: var(--text-secondary);
     white-space: nowrap;
+}
+
+/* On a phone the page title was squeezed to "Dash…" by the health label, theme toggle and account controls.
+   The dot (and the tooltip) still carry the health state; the words go. */
+@media (max-width: 640px) {
+    .topbar-status-label { display: none; }
+    .topbar-status { padding: 6px; }
+    .app-topbar { padding: 0 var(--space-3); gap: var(--space-2); }
+    .topbar-left { flex: 1 1 auto; gap: var(--space-2); }
 }
 
 .status-dot {
@@ -2325,6 +2342,36 @@ html[data-theme="dark"] .filter-date { color-scheme: dark; }
 /* â”€â”€ 8. Feature surfaces â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 /* Diagram Canvas */
+.designer-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    pointer-events: none;
+}
+
+.designer-loading-spinner {
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: designer-spin 0.8s linear infinite;
+}
+
+@keyframes designer-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .designer-loading-spinner { animation: none; }
+}
+
 .diagram-container {
     width: 100%;
     height: 100%;
@@ -3410,8 +3457,8 @@ body.col-resizing * {
     list-style: none;
 }
 
-.packet-section > summary::before { content: 'â–¸'; opacity: 0.7; }
-.packet-section[open] > summary::before { content: 'â–¾'; opacity: 0.7; }
+.packet-section > summary::before { content: '\25B8'; opacity: 0.7; }
+.packet-section[open] > summary::before { content: '\25BE'; opacity: 0.7; }
 .packet-section > summary::-webkit-details-marker { display: none; }
 .packet-section > summary:hover { color: var(--text-primary); }
 
@@ -3631,12 +3678,12 @@ body.col-resizing * {
 }
 
 .step-accordion > summary::before {
-    content: 'â–¸ ';
+    content: '\25B8 ';
     opacity: 0.7;
 }
 
 .step-accordion[open] > summary::before {
-    content: 'â–¾ ';
+    content: '\25BE ';
     opacity: 0.7;
 }
 

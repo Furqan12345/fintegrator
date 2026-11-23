@@ -423,3 +423,21 @@
         grid-template-columns: 52px minmax(0, 1fr);
     }
 }
+
+/* Phone width: the three-column workspace left the chat about 80px wide (words broke one per line and the
+   input was a sliver). Stack it: a short sessions list above a full-width chat. */
+@media (max-width: 760px) {
+    .ai-builder,
+    .ai-builder.sessions-collapsed,
+    .ai-builder.preview-collapsed,
+    .ai-builder.sessions-collapsed.preview-collapsed {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        height: auto;
+        min-height: calc(100vh - var(--topbar-height) - var(--space-8));
+    }
+
+    .ai-builder-sessions { max-height: 220px; }
+    .ai-builder-sessions.is-collapsed { max-height: 52px; overflow: hidden; }
+    .ai-builder-chat { min-height: 70vh; }
+}

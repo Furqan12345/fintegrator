@@ -57,6 +57,20 @@ public sealed class PrecompressedContentTypeProvider : IContentTypeProvider
             subpath = subpath[..^3];
         }
 
-        return _inner.TryGetContentType(subpath, out contentType!);
+        if (!_inner.TryGetContentType(subpath, out contentType!))
+        {
+            return false;
+        }
+
+        // Text assets are UTF-8 but were served without a charset, so browsers decoded CSS as Windows-1252 and every
+        // non-ASCII glyph (the packet-section arrows, the checklist ticks) rendered as mojibake.
+        if (contentType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+            || contentType.Equals("application/javascript", StringComparison.OrdinalIgnoreCase)
+            || contentType.Equals("application/json", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType += "; charset=utf-8";
+        }
+
+        return true;
     }
 }

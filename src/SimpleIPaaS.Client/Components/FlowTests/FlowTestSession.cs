@@ -86,7 +86,7 @@ public sealed class FlowTestSession : IAsyncDisposable
         await LoadScenariosAsync();
         await LoadStatusAsync();
         if (Scenarios.Count > 0) LoadScenario(Scenarios[0]);
-        else NewScenario();
+        else NewScenario(markDirty: false);
         Notify();
     }
 
@@ -109,7 +109,9 @@ public sealed class FlowTestSession : IAsyncDisposable
         }
     }
 
-    public void NewScenario()
+    // The blank scenario that opens by itself for a flow with no scenarios is only a starting point, not an edit.
+    // Marking it dirty made leaving test mode ask "Discard unsaved changes?" when nothing had been touched.
+    public void NewScenario(bool markDirty = true)
     {
         SelectedTest = null;
         SelectedId = Guid.Empty;
@@ -139,7 +141,7 @@ public sealed class FlowTestSession : IAsyncDisposable
         Warnings.Clear();
         Error = null;
         Message = "New scenario. Configure cards, then save.";
-        IsDirty = true;
+        IsDirty = markDirty;
         SelectedCardId = null;
         ResultsOpen = false;
         Notify();

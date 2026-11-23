@@ -70,7 +70,7 @@
         </button>
 
         <div class="toolbar-content">
-            <input class="toolbar-input flow-name-input" type="text" @bind="FlowName" readonly="@_testMode" placeholder="Flow Name" />
+            <input class="toolbar-input flow-name-input" type="text" @bind="FlowName" readonly="@(_testMode || IsOpeningFlow)" placeholder="@(IsOpeningFlow ? "Loading flow…" : "Flow Name")" />
             @if (_testMode && _testSession != null)
             {
                 <TestModeToolbar Session="_testSession"
@@ -165,7 +165,7 @@
                 </button>
             }
             <button class="btn btn-primary" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
-                @(FlowState.Value.IsLoading ? "Saving…" : "Save")
+                @SaveButtonLabel
             </button>
             <button class="btn btn-success" @onclick="RunFlow" disabled="@(FlowState.Value.IsLoading || FlowState.Value.CurrentFlow == null)">
                 <AppIcon Name="play" Class="icon icon-xs" /> Run
@@ -228,6 +228,14 @@
                 }
             </ul>
             <button class="btn btn-sm btn-outline" @onclick="() => _validationErrors.Clear()">Dismiss</button>
+        </div>
+    }
+
+    @if (IsOpeningFlow)
+    {
+        <div class="designer-loading" role="status" aria-live="polite">
+            <span class="designer-loading-spinner" aria-hidden="true"></span>
+            Loading flow…
         </div>
     }
 
@@ -585,6 +593,11 @@
 
     private BlazorDiagram Diagram { get; set; } = null!;
     private string FlowName { get; set; } = "New Flow";
+
+    // True from navigation until an existing flow has arrived. The toolbar used to show the "New Flow" placeholder
+    // name and a "Saving…" button during this time, which read as if the designer were overwriting something.
+    private bool IsOpeningFlow => FlowId.HasValue && !_isLoaded;
+    private string SaveButtonLabel => !FlowState.Value.IsLoading ? "Save" : (IsOpeningFlow ? "Loading…" : "Saving…");
     private bool _isLoaded;
     private bool _showMapperModal;
     private IntegrationStepDto? _editingStep;
@@ -693,6 +706,7 @@
     private DateTime? _lastStatusFlowUpdated;
     private bool _statusRefreshBusy;
     private bool _fitTestAfterRender;
+    private bool _fitOnOpenAfterRender;
     private bool? _scenarioPanelUserChoice;
     private int _testCanvasWidth;
     private int _testCanvasHeight;
@@ -786,6 +800,7 @@
         _expectedFlowId = FlowId;
         if (FlowId.HasValue)
         {
+            FlowName = string.Empty;
             Dispatcher.Dispatch(new LoadFlowAction { Id = FlowId.Value });
         }
         else if (!DeadLetterIdQuery.HasValue)
@@ -852,6 +867,9 @@
             LoadDiagramFromCurrentFlow();
             _lastSavedDraftJson = FlowDraftSignature.Create(currentFlow);
             _isLoaded = true;
+            // Cards sit at their saved coordinates, which are often off-screen or under the toolbar at 100% zoom.
+            // Frame the flow once when it opens (test mode frames itself).
+            if (!string.Equals(ModeQuery, "test", StringComparison.OrdinalIgnoreCase)) _fitOnOpenAfterRender = true;
             StateHasChanged();
         }
 
@@ -867,6 +885,12 @@
         {
             _fitTestAfterRender = false;
             await FitToScreenAsync();
+        }
+
+        if (_fitOnOpenAfterRender && !_testMode && _isLoaded && Diagram.Nodes.Count > 0)
+        {
+            _fitOnOpenAfterRender = false;
+            await FitCoreAsync(openView: true);
         }
 
         if (_testRestoreView is { } restoreView && _testMode)
@@ -2751,7 +2775,14 @@
     /// wide graphs and leaves them off-centre, so the content box is measured here and the zoom and
     /// pan are set directly: centred when there is slack, padded when there is not.
     /// </summary>
-    private async Task FitToScreenAsync()
+    private Task FitToScreenAsync() => FitCoreAsync(openView: false);
+
+    // The view a flow opens with: never larger than 100% (the Fit button may go to 125%) and never smaller than
+    // 50%, so a very large flow opens readable at its top-left instead of as an unreadable thumbnail.
+    private const double OpenMinZoom = 0.5d;
+    private const double OpenMaxZoom = 1.0d;
+
+    private async Task FitCoreAsync(bool openView)
     {
         var nodes = Diagram.Nodes.ToList();
         if (nodes.Count == 0)
@@ -2791,7 +2822,7 @@
 
         var zoom = Math.Min(availableWidth / contentWidth, availableHeight / contentHeight);
         if (!double.IsFinite(zoom) || zoom <= 0) return;
-        zoom = Math.Min(zoom, MaxFitZoom);
+        zoom = openView ? Math.Clamp(zoom, OpenMinZoom, OpenMaxZoom) : Math.Min(zoom, MaxFitZoom);
 
         Diagram.SetZoom(zoom);
         Diagram.SetPan(

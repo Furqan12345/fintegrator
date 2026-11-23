@@ -393,9 +393,9 @@ public sealed class Tier1PerformanceTests : IDisposable
         Assert.True(provider.TryGetContentType("/_framework/app.wasm.br", out var wasm));
         Assert.Equal("application/wasm", wasm);
         Assert.True(provider.TryGetContentType("/site.css.gz", out var css));
-        Assert.Equal("text/css", css);
+        Assert.Equal("text/css; charset=utf-8", css);   // UTF-8 stated, or browsers decode CSS glyphs as Windows-1252
         Assert.True(provider.TryGetContentType("/index.html", out var html));
-        Assert.Equal("text/html", html);
+        Assert.Equal("text/html; charset=utf-8", html);
     }
 
     // ---- page visibility ----
