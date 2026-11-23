@@ -1,0 +1,269 @@
+@page "/ai-providers"
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+
+<PageTitle>AI Providers — fusetor.com</PageTitle>
+
+<div class="page-scroll">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="sparkline" Class="icon icon-xs" /> AI configuration</p>
+            <h2>AI Providers <span class="header-count">@_providers.Count</span></h2>
+            <p class="subtitle">Save provider endpoints and encrypted API keys once, then select a provider when building a flow with AI.</p>
+        </div>
+        <div class="header-right">
+            <div class="inline-actions">
+                <button class="btn btn-outline" @onclick="OpenBuildBudgets">
+                    <AppIcon Name="settings" Class="icon icon-sm" /> Build budgets
+                </button>
+                <button class="btn btn-primary" @onclick="CreateProvider">
+                    <AppIcon Name="plus" Class="icon icon-sm" /> New provider
+                </button>
+            </div>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="validation-banner" role="alert">@_error</div>
+    }
+
+    <div class="connections-grid">
+        @if (_loading && !_providers.Any())
+        {
+            <div class="loading-state">Loading AI providers…</div>
+        }
+        else if (!_providers.Any())
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="sparkline" Class="icon icon-lg" /></span>
+                <h3>No AI providers saved</h3>
+                <p>Add an OpenAI-compatible or Azure OpenAI endpoint. The API key is encrypted in the application database and is never returned to the browser.</p>
+                <button class="btn btn-primary btn-lg" @onclick="CreateProvider"><AppIcon Name="plus" Class="icon icon-sm" /> Add an AI provider</button>
+            </div>
+        }
+        else
+        {
+            @foreach (var provider in _providers)
+            {
+                <article class="connection-card ai-provider-card">
+                    <div class="card-header">
+                        <div class="card-headline">
+                            <span class="card-avatar tone-violet">@Monogram(provider.Name)</span>
+                            <div class="card-headline-text">
+                                <h3 class="card-title">@provider.Name</h3>
+                                <p class="card-subtitle">@provider.ProviderType</p>
+                            </div>
+                        </div>
+                        @if (provider.IsDefault)
+                        {
+                            <span class="status-badge success">Default</span>
+                        }
+                    </div>
+                    <div class="integration-card-body">
+                        <p class="card-desc">@provider.Model</p>
+                        <p class="card-desc mono ai-provider-endpoint" title="API root (normalized on save)">@provider.Endpoint</p>
+                        <p class="card-desc">Requests: <span class="mono">@RequestUrl(provider)</span></p>
+                        <div class="card-meta">
+                            <span class="chip">@provider.ApiMode</span>
+                            @if (provider.EnableWebSearch && AiApiModes.IsResponses(provider.ApiMode))
+                            {
+                                <span class="chip">WEB SEARCH</span>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(provider.ReasoningEffort) && AiApiModes.IsResponses(provider.ApiMode))
+                            {
+                                <span class="chip">Reasoning: @provider.ReasoningEffort</span>
+                            }
+                            <span class="chip">@(provider.HasApiKey ? "API key saved" : "API key missing")</span>
+                            <span class="chip">Updated @(provider.UpdatedAt?.ToLocalTime().ToString("MMM d, yyyy") ?? "recently")</span>
+                        </div>
+                        @if (_testResults.TryGetValue(provider.Id, out var testResult))
+                        {
+                            <div class="connection-test-result @(testResult.Success ? "is-success" : "is-failed")">
+                                <span class="status-badge @(testResult.Success ? "success" : "failed")">@(testResult.Success ? "Connected" : "Failed")</span>
+                                <span class="text-muted">@testResult.Message</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="card-footer">
+                        <button class="btn btn-sm btn-outline" @onclick="() => EditProvider(provider.Id)">Edit</button>
+                        <button class="btn btn-sm btn-soft" @onclick="() => TestProviderAsync(provider.Id)" disabled="@(_testingProviderId == provider.Id || !provider.HasApiKey)">
+                            @(_testingProviderId == provider.Id ? "Testing…" : "Test connection")
+                        </button>
+                        @if (!provider.IsDefault)
+                        {
+                            <button class="btn btn-sm btn-outline" @onclick="() => SetDefaultAsync(provider.Id)">Make default</button>
+                        }
+                        <button class="btn btn-sm btn-danger" @onclick="() => DeleteProviderAsync(provider)">Delete</button>
+                    </div>
+                </article>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    private string _error = string.Empty;
+    private List<AiProviderSettingsDto> _providers = new();
+    private readonly Dictionary<Guid, ProviderTestResult> _testResults = new();
+    private Guid? _testingProviderId;
+    private bool _loading;
+
+    private sealed class ProviderTestResult
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    protected override async Task OnInitializedAsync() => await LoadProvidersAsync();
+
+    private async Task LoadProvidersAsync()
+    {
+        _loading = true;
+        _error = string.Empty;
+        try
+        {
+            using var response = await Http.GetAsync("api/ai/providers");
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not load AI providers.");
+                return;
+            }
+            _providers = await response.Content.ReadFromJsonAsync<List<AiProviderSettingsDto>>() ?? new List<AiProviderSettingsDto>();
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Could not reach the server to load AI providers.";
+        }
+        catch (JsonException)
+        {
+            _error = "The server returned unreadable AI provider settings.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void CreateProvider() => NavigationManager.NavigateTo("/ai-provider-wizard");
+    private void OpenBuildBudgets() => NavigationManager.NavigateTo("/admin/ai-settings");
+    private void EditProvider(Guid id) => NavigationManager.NavigateTo($"/ai-provider-wizard/{id}");
+
+    // The saved value is the API root; this is the URL the app actually posts to.
+    private static string RequestUrl(AiProviderSettingsDto provider) =>
+        AiProviderEndpoints.DeriveRequestUrl(provider.Endpoint, provider.ApiMode);
+
+    private async Task TestProviderAsync(Guid id)
+    {
+        _testingProviderId = id;
+        try
+        {
+            using var response = await Http.PostAsync($"api/ai/providers/{id}/test", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _testResults[id] = new ProviderTestResult { Message = await ReadErrorAsync(response, "The provider connection test failed.") };
+                return;
+            }
+            var result = await response.Content.ReadFromJsonAsync<AiProviderTestResponseDto>();
+            _testResults[id] = new ProviderTestResult
+            {
+                Success = result?.Success == true,
+                Message = result?.Message ?? "Provider connection succeeded."
+            };
+        }
+        catch (HttpRequestException)
+        {
+            _testResults[id] = new ProviderTestResult { Message = "Could not reach the server to test the provider." };
+        }
+        catch (JsonException)
+        {
+            _testResults[id] = new ProviderTestResult { Message = "The server returned an unreadable test response." };
+        }
+        finally
+        {
+            _testingProviderId = null;
+        }
+    }
+
+    private async Task SetDefaultAsync(Guid id)
+    {
+        try
+        {
+            using var response = await Http.PostAsync($"api/ai/providers/{id}/default", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not set the default provider.");
+                return;
+            }
+            await LoadProvidersAsync();
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Could not reach the server to set the default provider.";
+        }
+    }
+
+    private async Task DeleteProviderAsync(AiProviderSettingsDto provider)
+    {
+        if (!await JSRuntime.InvokeAsync<bool>("confirm", $"Delete AI provider '{provider.Name}'?"))
+            return;
+
+        try
+        {
+            using var response = await Http.DeleteAsync($"api/ai/providers/{provider.Id}");
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not delete the AI provider.");
+                return;
+            }
+            _testResults.Remove(provider.Id);
+            await LoadProvidersAsync();
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Could not reach the server to delete the AI provider.";
+        }
+    }
+
+    private static string Monogram(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "AI";
+        var words = name.Split(new[] { ' ', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length > 1) return $"{char.ToUpperInvariant(words[0][0])}{char.ToUpperInvariant(words[1][0])}";
+        return name.Length > 1 ? name[..2].ToUpperInvariant() : name.ToUpperInvariant();
+    }
+
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage response, string fallback)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(body)) return fallback;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            string? message = null;
+            if (root.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String)
+                message = messageElement.GetString();
+            else if (root.TryGetProperty("detail", out var detailElement) && detailElement.ValueKind == JsonValueKind.String)
+                message = detailElement.GetString();
+            else if (root.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String)
+                message = titleElement.GetString();
+
+            if (root.TryGetProperty("traceId", out var traceElement) &&
+                traceElement.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(traceElement.GetString()))
+                return $"{message ?? fallback} (Trace ID: {traceElement.GetString()})";
+
+            if (!string.IsNullOrWhiteSpace(message))
+                return message;
+        }
+        catch (JsonException)
+        {
+        }
+        return fallback;
+    }
+}

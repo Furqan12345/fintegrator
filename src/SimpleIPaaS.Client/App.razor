@@ -1,7 +1,40 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using SimpleIPaaS.Client.Services
+@inject AuthSession Auth
+
 <Fluxor.Blazor.Web.StoreInitializer />
-<Router AppAssembly="@typeof(App).Assembly" NotFoundPage="typeof(Pages.NotFound)">
-    <Found Context="routeData">
-        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)"/>
-        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
-    </Found>
-</Router>
+
+@if (!Auth.IsInitialized)
+{
+    <div class="auth-loading">
+        <div class="auth-loading-card">
+            <span class="brand-text">fusetor.com</span>
+            <p>Restoring your session…</p>
+        </div>
+    </div>
+}
+else
+{
+    <CascadingAuthenticationState>
+        <Router AppAssembly="@typeof(App).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+            <Found Context="routeData">
+                <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)">
+                    <NotAuthorized>
+                        <RedirectToLogin />
+                    </NotAuthorized>
+                    <Authorizing>
+                        <div class="auth-loading"><div class="auth-loading-card"><p>Checking your session…</p></div></div>
+                    </Authorizing>
+                </AuthorizeRouteView>
+                <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+            </Found>
+        </Router>
+    </CascadingAuthenticationState>
+}
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        await Auth.InitializeAsync();
+    }
+}

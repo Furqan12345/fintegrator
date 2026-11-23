@@ -1,0 +1,180 @@
+@using SimpleIPaaS.Client.Store
+@inject HttpClient Http
+@inject IDispatcher Dispatcher
+@inject IJSRuntime JSRuntime
+
+@if (IsVisible)
+{
+    <div class="modal-overlay @(_isMaximized ? "modal-maximized-overlay" : string.Empty)" @onclick="CloseAsync" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+        <div class="modal-container editor-modal @(_isMaximized ? "modal-maximized" : string.Empty)" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Flow helper script</h2>
+                <div class="modal-header-actions">
+                    <button class="modal-icon-btn" @onclick="ToggleMaximized" title="@(_isMaximized ? "Restore size" : "Maximize editor")" aria-label="@(_isMaximized ? "Restore size" : "Maximize editor")">
+                        <AppIcon Name="@(_isMaximized ? "minimize" : "maximize")" Class="icon icon-sm" />
+                    </button>
+                    <button class="modal-close-btn" @onclick="CloseAsync" aria-label="Close">✕</button>
+                </div>
+            </div>
+
+            <div class="modal-body">
+                <div class="editor-panel">
+                    <div class="panel-header">
+                        <span class="panel-label">C# helper declarations</span>
+                        @if (_isValidating)
+                        {
+                            <span class="panel-hint panel-hint-running">Checking…</span>
+                        }
+                        else if (_validationError != null)
+                        {
+                            <span class="panel-hint panel-hint-error" title="@_validationError">@_validationError</span>
+                        }
+                        else if (_hasUnsavedChanges)
+                        {
+                            <span class="panel-hint panel-hint-running">Unsaved changes</span>
+                        }
+                        else if (string.IsNullOrWhiteSpace(Code))
+                        {
+                            <span class="panel-hint">No helper script</span>
+                        }
+                        else
+                        {
+                            <span class="panel-hint panel-hint-success">Valid helper script</span>
+                        }
+                    </div>
+                    <CodeEditor Value="@Code" ValueChanged="OnCodeChanged" Language="csharp" CssClass="code-editor-main" />
+                </div>
+
+                <p class="helper-script-hint">
+                    These declarations are prepended to every Mapping, URL, Pre-flight, Post-flight, Branch and Persisted State script in this flow.
+                    Define static classes or methods only — top-level statements would run before every card. The scripting host already imports
+                    System, LINQ and JSON namespaces; use fully-qualified names for anything else. Apply updates the draft; the toolbar Save persists it.
+                </p>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-outline" @onclick="ValidateAsync" disabled="@(_isValidating || _isApplying)">Validate</button>
+                <div class="modal-footer-spacer"></div>
+                <button class="btn btn-outline" @onclick="CloseAsync" disabled="@_isApplying">Cancel</button>
+                <button class="btn btn-primary" @onclick="ApplyAsync" disabled="@(_isApplying || _isValidating || !_hasUnsavedChanges)">
+                    @(_isApplying ? "Applying…" : "Apply to draft")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public EventCallback<bool> IsVisibleChanged { get; set; }
+    [Parameter] public string Value { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+
+    private string Code { get; set; } = string.Empty;
+    private string _originalCode = string.Empty;
+    private string? _validationError;
+    private bool _isValidating;
+    private bool _isApplying;
+    private bool _isMaximized;
+    private bool _wasVisible;
+    private bool _hasUnsavedChanges;
+
+    protected override Task OnParametersSetAsync()
+    {
+        if (IsVisible && !_wasVisible)
+        {
+            _isMaximized = false;
+            Code = Value ?? string.Empty;
+            _originalCode = Code;
+            _hasUnsavedChanges = false;
+            _validationError = null;
+        }
+
+        _wasVisible = IsVisible;
+        return Task.CompletedTask;
+    }
+
+    private void OnCodeChanged(string value)
+    {
+        Code = value ?? string.Empty;
+        _hasUnsavedChanges = !string.Equals(Code, _originalCode, StringComparison.Ordinal);
+        _validationError = null;
+    }
+
+    private async Task ValidateAsync()
+    {
+        await ValidateCodeAsync();
+    }
+
+    private async Task<bool> ValidateCodeAsync()
+    {
+        _isValidating = true;
+        _validationError = null;
+        try
+        {
+            var response = await Http.PostAsJsonAsync("api/integrationflow/validate-helper", new HelperScriptDto
+            {
+                HelperCode = Code
+            });
+
+            if (response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            _validationError = await SafeFetch.DescribeFailureAsync(response, "The helper script could not be compiled.");
+            return false;
+        }
+        catch (Exception)
+        {
+            _validationError = "Could not validate the helper script. The API may be unavailable.";
+            return false;
+        }
+        finally
+        {
+            _isValidating = false;
+        }
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(Code) && !await ValidateCodeAsync())
+        {
+            return;
+        }
+
+        _isApplying = true;
+        try
+        {
+            await ValueChanged.InvokeAsync(Code);
+            _originalCode = Code;
+            _hasUnsavedChanges = false;
+            Dispatcher.Dispatch(new ShowToastAction { Message = "Helper script applied to the draft. Save the flow to persist it." });
+            await CloseAsync();
+        }
+        finally
+        {
+            _isApplying = false;
+        }
+    }
+
+    private async Task ToggleMaximized()
+    {
+        _isMaximized = !_isMaximized;
+        StateHasChanged();
+
+        await Task.Delay(60);
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSCodeEditor.layoutAll");
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task CloseAsync()
+    {
+        await IsVisibleChanged.InvokeAsync(false);
+    }
+}

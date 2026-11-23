@@ -1,0 +1,118 @@
+@page "/packet-logs/{PacketId:guid}"
+@using System.Net.Http.Json
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+
+<PageTitle>Packet Log - fusetor.com</PageTitle>
+
+<div class="packet-detail-page">
+    @if (_loading)
+    {
+        <p class="text-muted">Loading packet…</p>
+    }
+    else if (_packet == null)
+    {
+        <div class="alert alert-error">@(_error ?? "This packet log entry was not found.")</div>
+        <a class="btn btn-outline" href="packet-logs">Back to Packet Logs</a>
+    }
+    else
+    {
+        <div class="packet-detail-head">
+            <div>
+                <a class="packet-detail-back" href="packet-logs">← Packet Logs</a>
+                <h2><span class="packet-method">@_packet.HttpMethod</span> @_packet.RequestUrl</h2>
+                <p class="text-muted">@_packet.FlowName · @_packet.NodeName · @_packet.StartedAt.ToLocalTime().ToString("g")</p>
+            </div>
+            <div class="packet-detail-actions">
+                <a class="btn btn-outline" href="@($"/transaction-history/{_packet.FlowExecutionId}")">Open transaction</a>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(_packet.Error))
+        {
+            <div class="alert alert-error"><strong>Error:</strong> @_packet.Error</div>
+        }
+
+        <div class="packet-detail-grid">
+            <div class="packet-detail-fact"><span>Status</span><strong class="@StatusClass(_packet.StatusCode)">@(_packet.StatusCode?.ToString() ?? "No response")</strong></div>
+            <div class="packet-detail-fact"><span>Duration</span><strong>@(_packet.DurationMs.HasValue ? $"{_packet.DurationMs} ms" : "—")</strong></div>
+            <div class="packet-detail-fact"><span>Integration</span><strong>@(string.IsNullOrWhiteSpace(_packet.IntegrationName) ? "—" : _packet.IntegrationName)</strong></div>
+            <div class="packet-detail-fact"><span>Connection</span><strong>@_packet.ConnectionName</strong></div>
+            <div class="packet-detail-fact"><span>Node</span><strong>@_packet.NodeName</strong></div>
+            <div class="packet-detail-fact"><span>Page / attempt</span><strong>@(_packet.PageNumber.HasValue ? $"page {_packet.PageNumber}" : "—")@(_packet.Attempt > 0 ? $" · attempt {_packet.Attempt}" : string.Empty)</strong></div>
+            <div class="packet-detail-fact"><span>Started</span><strong>@_packet.StartedAt.ToLocalTime().ToString("G")</strong></div>
+            <div class="packet-detail-fact"><span>Completed</span><strong>@(_packet.CompletedAt?.ToLocalTime().ToString("G") ?? "—")</strong></div>
+        </div>
+
+        <section class="packet-detail-section">
+            <h3>Request headers</h3>
+            <pre class="packet-detail-code">@Pretty(_packet.RequestHeadersJson)</pre>
+        </section>
+
+        <section class="packet-detail-section">
+            <h3>Request body</h3>
+            <pre class="packet-detail-code">@(_packet.RequestBody.Length == 0 ? "(empty)" : Pretty(_packet.RequestBody))</pre>
+        </section>
+
+        <section class="packet-detail-section">
+            <h3>Response headers</h3>
+            <pre class="packet-detail-code">@Pretty(_packet.ResponseHeadersJson)</pre>
+        </section>
+
+        <section class="packet-detail-section">
+            <h3>Response body</h3>
+            <pre class="packet-detail-code">@(_packet.ResponseBody.Length == 0 ? "(empty)" : Pretty(_packet.ResponseBody))</pre>
+        </section>
+    }
+</div>
+
+@code {
+    [Parameter] public Guid PacketId { get; set; }
+
+    private PacketLogDetailDto? _packet;
+    private string? _error;
+    private bool _loading = true;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        try
+        {
+            _packet = await Http.GetFromJsonAsync<PacketLogDetailDto>($"api/packetlogs/{PacketId}");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _packet = null;
+        }
+        catch (Exception)
+        {
+            _error = "Could not load this packet log entry.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string Pretty(string value)
+    {
+        var text = value?.Trim() ?? string.Empty;
+        if (text.Length == 0) return string.Empty;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(text);
+            return System.Text.Json.JsonSerializer.Serialize(document.RootElement, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return text;
+        }
+    }
+
+    private static string StatusClass(int? statusCode) => statusCode switch
+    {
+        >= 200 and < 300 => "is-ok",
+        >= 400 => "is-error",
+        _ => "is-unknown"
+    };
+}

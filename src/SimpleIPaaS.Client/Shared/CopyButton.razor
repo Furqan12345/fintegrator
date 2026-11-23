@@ -1,0 +1,31 @@
+@using Microsoft.JSInterop
+
+<button type="button" class="btn btn-ghost btn-sm copy-button" @onclick="CopyAsync" @onclick:stopPropagation="true" title="Copy to clipboard">
+    <AppIcon Name="@(_copied ? "check-circle" : "copy")" Class="icon icon-xs" />
+    @(_copied ? "Copied" : Label)
+</button>
+
+@code {
+    [Parameter] public string? Text { get; set; }
+    [Parameter] public string Label { get; set; } = "Copy";
+    [Inject] private IJSRuntime JS { get; set; } = null!;
+
+    private bool _copied;
+
+    private async Task CopyAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("simpleIPaaSCopyText", Text ?? string.Empty);
+            _copied = true;
+            StateHasChanged();
+            await Task.Delay(1200);
+            _copied = false;
+            StateHasChanged();
+        }
+        catch (JSException)
+        {
+            // Clipboard permission can be denied; the viewer remains usable.
+        }
+    }
+}

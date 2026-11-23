@@ -1,0 +1,904 @@
+@page "/settings"
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject IDispatcher Dispatcher
+@inject IJSRuntime JSRuntime
+@inherits FluxorComponent
+
+<PageTitle>Settings - fusetor.com</PageTitle>
+
+<div class="page-scroll settings-page">
+    <div class="page-header">
+        <div class="header-left">
+            <span class="page-eyebrow"><AppIcon Name="settings" Class="icon icon-sm" /> System</span>
+            <h2>Settings</h2>
+            <p class="subtitle">
+                Failure alerts, storage backends and retention for this deployment. Flows,
+                integrations and connections stay in the relational database; the growing
+                datasets can be served by the database or by Elasticsearch, each with its own
+                retention window.
+            </p>
+        </div>
+        <div class="header-right">
+            @if (_dirty)
+            {
+                <span class="chip chip-warning">Unsaved changes</span>
+            }
+            <button class="btn btn-outline" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Refresh")</button>
+            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(_saving || _loading)">
+                @(_saving ? "Saving…" : "Save storage settings")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="validation-banner" role="alert">
+            <span>@_error</span>
+            <button class="btn btn-sm btn-outline" @onclick="() => _error = null">Dismiss</button>
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_notice))
+    {
+        <div class="notice-banner" role="status">
+            <span>@_notice</span>
+            <button class="btn btn-sm btn-outline" @onclick="() => _notice = null">Dismiss</button>
+        </div>
+    }
+
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <h3 class="panel-heading">Failure alerts</h3>
+                <p class="panel-sub">
+                    Email a digest when an order fails. One email per cooldown window,
+                    grouped by flow and node with the error message — never the payload.
+                </p>
+            </div>
+            <label class="checkbox-label switch-label">
+                <input type="checkbox" @bind="_alerts.Enabled" />
+                <span>@(_alerts.Enabled ? "Enabled" : "Disabled")</span>
+            </label>
+        </div>
+
+        <div class="panel-content">
+            @if (_alertsLoading)
+            {
+                <p class="text-muted">Loading alert settings…</p>
+            }
+            else
+            {
+                @if (!_alerts.SmtpConfigured)
+                {
+                    <div class="validation-banner" role="alert">
+                        <span>SMTP isn't configured. Set <code>Email:Smtp:Host</code> for both the API and the Engine before alerts can be sent.</span>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_alertsError))
+                {
+                    <div class="validation-banner" role="alert">
+                        <span>@_alertsError</span>
+                        <button class="btn btn-sm btn-outline" @onclick="() => _alertsError = null">Dismiss</button>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_alertsNotice))
+                {
+                    <div class="notice-banner" role="status">
+                        <span>@_alertsNotice</span>
+                        <button class="btn btn-sm btn-outline" @onclick="() => _alertsNotice = null">Dismiss</button>
+                    </div>
+                }
+
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="alerts-recipients">Recipients</label>
+                        <input id="alerts-recipients" class="form-control"
+                               placeholder="ops@example.com; alerts@example.com"
+                               @bind="_alerts.Recipients" @bind:event="oninput" />
+                        <small class="field-hint">Up to 10 addresses, separated by commas or semicolons. A Teams or Slack channel's email address works too.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="alerts-cooldown">Cooldown (minutes)</label>
+                        <input id="alerts-cooldown" type="number" min="1" max="1440" class="form-control"
+                               @bind="_alerts.CooldownMinutes" />
+                        <small class="field-hint">One digest per window, from 1 to 1440 minutes. Turning alerts on starts a fresh window, so old failures are not emailed.</small>
+                    </div>
+                </div>
+
+                <div class="inline-actions">
+                    <button class="btn btn-primary" @onclick="SaveAlertSettingsAsync" disabled="@_alertsSaving">
+                        @(_alertsSaving ? "Saving…" : "Save alerts")
+                    </button>
+                    <button class="btn btn-soft" @onclick="SendTestAlertAsync" disabled="@_alertsTesting"
+                            title="Uses the saved recipients">
+                        @(_alertsTesting ? "Sending…" : "Send test email")
+                    </button>
+                    @if (_alerts.LastSentAt.HasValue)
+                    {
+                        <span class="text-muted">Last digest: @_alerts.LastSentAt.Value.ToLocalTime().ToString("g")</span>
+                    }
+                </div>
+            }
+        </div>
+    </section>
+
+    @if (_loading && _settings == null)
+    {
+        <div class="loading-state">Loading storage settings…</div>
+    }
+    else if (_settings != null)
+    {
+        <section class="panel">
+            <div class="panel-head">
+                <div>
+                    <h3 class="panel-heading">Elasticsearch cluster</h3>
+                    <p class="panel-sub">
+                        Documents are written to a per-dataset <strong>write alias</strong> and searched through
+                        <strong>@_settings.IndexPrefix-&lt;dataset&gt;-*</strong>, so a new index is started for each period and an expired
+                        period is removed by deleting one index (or by an ILM delete phase) instead of scanning the whole dataset.
+                    </p>
+                </div>
+                <label class="checkbox-label switch-label">
+                    <input type="checkbox" @bind="_settings.ElasticsearchEnabled" @bind:after="MarkDirty" />
+                    <span>@(_settings.ElasticsearchEnabled ? "Enabled" : "Disabled")</span>
+                </label>
+            </div>
+
+            <div class="panel-content">
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="es-url">Cluster URL</label>
+                        <input id="es-url" class="form-control" placeholder="http://localhost:9200"
+                               @bind="_settings.Url" @bind:event="oninput" @bind:after="MarkDirty" />
+                        <small class="field-hint">http or https, including the port. Index templates, ILM policies and aliases are created here.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="es-index-prefix">Index prefix</label>
+                        <input id="es-index-prefix" class="form-control" placeholder="fusetor"
+                               @bind="_settings.IndexPrefix" @bind:event="oninput" @bind:after="MarkDirty" />
+                        <small class="field-hint">Every index this app owns is named @_settings.IndexPrefix-&lt;dataset&gt;-&lt;period&gt;.</small>
+                    </div>
+                </div>
+
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="es-username">Username</label>
+                        <input id="es-username" class="form-control" autocomplete="off"
+                               @bind="_settings.Username" @bind:event="oninput" @bind:after="MarkDirty" />
+                    </div>
+                    <div class="form-group">
+                        <label for="es-password">Password</label>
+                        <input id="es-password" name="es-secret" type="password" class="form-control" autocomplete="off"
+                               placeholder="@(_settings.HasPassword ? "Saved; blank keeps the current password" : "Cluster password")"
+                               @bind="_password" @bind:event="oninput" @bind:after="MarkDirty" />
+                        @if (_settings.HasPassword)
+                        {
+                            <small class="field-hint">A password is stored. Leave blank to keep it.</small>
+                        }
+                    </div>
+                </div>
+
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="es-apikey">API key (optional)</label>
+                        <input id="es-apikey" name="es-secret" type="password" class="form-control" autocomplete="off"
+                               placeholder="@(_settings.HasApiKey ? "Saved; blank keeps the current key" : "Used instead of username/password when set")"
+                               @bind="_apiKey" @bind:event="oninput" @bind:after="MarkDirty" />
+                    </div>
+                    <div class="form-group">
+                        <label for="es-timeout">Request timeout (seconds)</label>
+                        <input id="es-timeout" type="number" min="1" max="300" class="form-control"
+                               @bind="_settings.TimeoutSeconds" @bind:after="MarkDirty" />
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" @bind="_settings.AllowInvalidCertificate" @bind:after="MarkDirty" />
+                        <span>Allow self-signed certificates (development clusters only — TLS verification is skipped)</span>
+                    </label>
+                </div>
+
+                <div class="inline-actions">
+                    <button class="btn btn-soft" @onclick="TestConnectionAsync" disabled="@_testing">
+                        @(_testing ? "Testing…" : "Test connection")
+                    </button>
+                    <button class="btn btn-outline" @onclick="ApplyIndexPlanAsync" disabled="@(_applying || !_settings.ElasticsearchEnabled)">
+                        @(_applying ? "Creating…" : "Create templates, policies & indices")
+                    </button>
+                    <span class="text-muted">Credentials are stored encrypted and never sent back to this page.</span>
+                </div>
+
+                @if (_testResult != null)
+                {
+                    <div class="connection-test-result @(_testResult.Success ? "is-success" : "is-failed")">
+                        <span class="status-badge @(_testResult.Success ? "success" : "failed")">@(_testResult.Success ? "Connected" : "Failed")</span>
+                        <span>@_testResult.Message</span>
+                        @if (_testResult.Success)
+                        {
+                            <span class="text-muted">@_testResult.DurationMs.ToString() ms</span>
+                        }
+                    </div>
+                }
+
+                @if (_applyOutcomes.Count > 0)
+                {
+                    <ul class="apply-outcomes">
+                        @foreach (var outcome in _applyOutcomes)
+                        {
+                            <li>
+                                <span class="status-badge @(outcome.Success ? "success" : "failed")">@(outcome.Success ? "Ready" : "Failed")</span>
+                                <span class="mono">@outcome.Index</span>
+                                @if (outcome.Success)
+                                {
+                                    <span class="text-muted">alias @outcome.WriteAlias · template @outcome.TemplateName</span>
+                                }
+                                else
+                                {
+                                    <span class="error-text">@outcome.Error</span>
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <div>
+                    <h3 class="panel-heading">Datasets</h3>
+                    <p class="panel-sub">
+                        Pick the backend per dataset. Retention is counted in days; <strong>0 keeps data forever</strong>.
+                        With Elasticsearch, retention is enforced by ILM (delete phase) or, when ILM is off for the dataset,
+                        by deleting expired period indices.
+                    </p>
+                </div>
+            </div>
+
+            <div class="panel-content">
+                @foreach (var dataset in _settings.Datasets)
+                {
+                    var catalog = CatalogFor(dataset.Dataset);
+                    var isElastic = dataset.UseElasticsearch && _settings.ElasticsearchEnabled;
+                    <article class="dataset-card @(isElastic ? "is-elasticsearch" : "is-database")">
+                        <header class="dataset-card-head">
+                            <div class="dataset-identity">
+                                <h4>@catalog?.Name</h4>
+                                <p>@catalog?.Holds</p>
+                            </div>
+                            <div class="dataset-backend">
+                                @if (catalog is { CanUseElasticsearch: true })
+                                {
+                                    <select class="form-control" aria-label="@($"Backend for {catalog.Name}")"
+                                            value="@(isElastic ? "Elasticsearch" : "Database")"
+                                            @onchange="args => SetBackend(dataset, args.Value?.ToString())">
+                                        <option value="Database">Database</option>
+                                        <option value="Elasticsearch">Elasticsearch</option>
+                                    </select>
+                                }
+                                else
+                                {
+                                    <span class="chip">Database only</span>
+                                }
+                            </div>
+                        </header>
+
+                        <div class="dataset-card-body">
+                            @if (catalog is { CanUseElasticsearch: false })
+                            {
+                                <p class="field-hint">@catalog.VolumeHint</p>
+                            }
+                            else
+                            {
+                                <div class="form-group">
+                                    <label>Index period</label>
+                                    <select class="form-control" aria-label="@($"Index period for {catalog?.Name}")"
+                                            value="@dataset.Granularity"
+                                            @onchange="args => SetGranularity(dataset, args.Value?.ToString())"
+                                            disabled="@(!isElastic)">
+                                        <option value="Daily">Daily — one index per day</option>
+                                        <option value="Weekly">Weekly — one index per ISO week</option>
+                                        <option value="Monthly">Monthly — one index per month</option>
+                                    </select>
+                                </div>
+                            }
+
+                            <div class="form-group">
+                                <label>Keep for (days)</label>
+                                <input type="number" min="0" max="3650" class="form-control"
+                                       aria-label="@($"Retention days for {catalog?.Name}")"
+                                       @bind="dataset.RetentionDays" @bind:after="MarkDirty" />
+                                <small class="field-hint">@RetentionHint(dataset, catalog)</small>
+                            </div>
+
+                            @if (catalog is { CanUseIlm: true })
+                            {
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" @bind="dataset.UseIlm" @bind:after="MarkDirty" disabled="@(!isElastic)" />
+                                        <span>Let ILM delete expired indices</span>
+                                    </label>
+                                    <small class="field-hint">When off, the app deletes whole expired indices itself, on the retention schedule.</small>
+                                </div>
+                            }
+                        </div>
+                    </article>
+                }
+
+                @if (!_settings.ElasticsearchEnabled)
+                {
+                    <p class="field-hint">Elasticsearch is switched off above, so every dataset is served by the database whatever is selected here.</p>
+                }
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <div>
+                    <h3 class="panel-heading">Indexes &amp; retention</h3>
+                    <p class="panel-sub">What exists right now, and when each period will be removed.</p>
+                </div>
+                <div class="inline-actions">
+                    <button class="btn btn-outline" @onclick="LoadStatusAsync" disabled="@_statusLoading">
+                        @(_statusLoading ? "Refreshing…" : "Refresh status")
+                    </button>
+                    <button class="btn btn-soft" @onclick="RunRetentionAsync" disabled="@_runningRetention">
+                        @(_runningRetention ? "Running…" : "Run retention now")
+                    </button>
+                </div>
+            </div>
+
+            <div class="panel-content">
+                @if (_status == null)
+                {
+                    <p class="text-muted">Loading…</p>
+                }
+                else
+                {
+                    @if (!string.IsNullOrWhiteSpace(_status.Error))
+                    {
+                        <div class="validation-banner" role="alert">@_status.Error</div>
+                    }
+
+                    <div class="status-grid">
+                        @foreach (var dataset in _status.Datasets)
+                        {
+                            <article class="status-card">
+                                <header>
+                                    <h4>@dataset.Name</h4>
+                                    <span class="chip @(dataset.Backend == "Elasticsearch" ? "chip-primary" : "chip-mono")">@dataset.Backend</span>
+                                </header>
+                                <dl class="status-meta">
+                                    <div><dt>Documents</dt><dd>@dataset.DocumentCount.ToString("N0")</dd></div>
+                                    <div><dt>Retention</dt><dd>@RetentionText(dataset.RetentionDays)</dd></div>
+                                    <div><dt>Stored in</dt><dd class="mono">@(dataset.Backend == "Elasticsearch" ? dataset.Pattern : dataset.SqlStore)</dd></div>
+                                    @if (dataset.Backend == "Elasticsearch")
+                                    {
+                                        <div><dt>Write alias</dt><dd class="mono">@dataset.WriteAlias</dd></div>
+                                        <div><dt>Policy</dt><dd class="mono">@(dataset.UseIlm ? dataset.PolicyName : "app-managed")</dd></div>
+                                    }
+                                </dl>
+
+                                @if (!string.IsNullOrWhiteSpace(dataset.Error))
+                                {
+                                    <p class="error-text">@dataset.Error</p>
+                                }
+                                else if (dataset.Indices.Count > 0)
+                                {
+                                    <table class="table table-hover index-table">
+                                        <caption class="sr-only">Backing indices for @dataset.Name</caption>
+                                        <thead>
+                                            <tr><th>Index</th><th class="cell-num">Docs</th><th class="cell-num">Size</th><th>Age</th><th><span class="sr-only">State</span></th></tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var index in dataset.Indices)
+                                            {
+                                                <tr>
+                                                    <td class="cell-mono">@index.Name</td>
+                                                    <td class="cell-num">@index.DocumentCount.ToString("N0")</td>
+                                                    <td class="cell-num">@FormatSize(index.Size)</td>
+                                                    <td>@index.AgeDays day(s)</td>
+                                                    <td>
+                                                        @if (index.Expired)
+                                                        {
+                                                            <span class="chip chip-warning">expired</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span class="chip chip-success">active</span>
+                                                        }
+                                                    </td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                }
+                                else if (dataset.Backend == "Elasticsearch")
+                                {
+                                    <p class="field-hint">No index yet — it is created on the first write, or from the panel above.</p>
+                                }
+                            </article>
+                        }
+                    </div>
+
+                    @if (_retentionReport != null)
+                    {
+                        <div class="retention-report">
+                            <h4>Retention run @_retentionReport.RanAtUtc.ToLocalTime().ToString("HH:mm:ss")</h4>
+                            <ul>
+                                @foreach (var outcome in _retentionReport.Datasets)
+                                {
+                                    <li>
+                                        <strong>@CatalogFor(outcome.Dataset)?.Name</strong>
+                                        <span class="text-muted">(@outcome.Backend)</span> — @outcome.Action
+                                        @if (outcome.Removed > 0)
+                                        {
+                                            <span class="chip chip-success">@outcome.Removed.ToString("N0") removed</span>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(outcome.Error))
+                                        {
+                                            <span class="error-text">@outcome.Error</span>
+                                        }
+                                    </li>
+                                }
+                            </ul>
+                        </div>
+                    }
+                }
+            </div>
+        </section>
+    }
+</div>
+
+@code {
+    private StorageSettingsDto? _settings;
+    private StorageInventoryDto? _status;
+    private StorageConnectionTestDto? _testResult;
+    private StorageRetentionReportDto? _retentionReport;
+    private readonly List<StorageApplyOutcomeDto> _applyOutcomes = new();
+
+    private string? _password;
+    private string? _apiKey;
+    private string? _error;
+    private string? _notice;
+    private bool _dirty;
+
+    private bool _loading;
+    private bool _saving;
+    private bool _testing;
+    private bool _applying;
+    private bool _statusLoading;
+    private bool _runningRetention;
+
+    private AlertSettingsDto _alerts = new() { CooldownMinutes = 15 };
+    private bool _alertsLoading;
+    private bool _alertsSaving;
+    private bool _alertsTesting;
+    private string? _alertsError;
+    private string? _alertsNotice;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        await LoadAlertSettingsAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAlertSettingsAsync()
+    {
+        _alertsLoading = true;
+        _alertsError = null;
+
+        try
+        {
+            using var response = await Http.GetAsync("api/alert-settings");
+            if (!response.IsSuccessStatusCode)
+            {
+                _alertsError = await SafeFetch.DescribeFailureAsync(response, "Could not load alert settings.");
+                return;
+            }
+
+            _alerts = await response.Content.ReadFromJsonAsync<AlertSettingsDto>()
+                ?? new AlertSettingsDto { CooldownMinutes = 15 };
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _alertsError = "Could not reach the API for alert settings.";
+        }
+        finally
+        {
+            _alertsLoading = false;
+        }
+    }
+
+    private async Task SaveAlertSettingsAsync()
+    {
+        _alertsSaving = true;
+        _alertsError = null;
+        _alertsNotice = null;
+
+        try
+        {
+            var request = new AlertSettingsUpdateDto
+            {
+                Enabled = _alerts.Enabled,
+                Recipients = _alerts.Recipients,
+                CooldownMinutes = _alerts.CooldownMinutes
+            };
+
+            using var response = await Http.PutAsJsonAsync("api/alert-settings", request);
+            if (!response.IsSuccessStatusCode)
+            {
+                _alertsError = await SafeFetch.DescribeFailureAsync(response, "Could not save alert settings.");
+                return;
+            }
+
+            _alerts = await response.Content.ReadFromJsonAsync<AlertSettingsDto>() ?? _alerts;
+            _alertsNotice = "Alert settings saved.";
+            Dispatcher.Dispatch(new ShowToastAction { Message = "Alert settings saved.", Level = "success" });
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _alertsError = "Could not reach the API to save alert settings.";
+        }
+        finally
+        {
+            _alertsSaving = false;
+        }
+    }
+
+    private async Task SendTestAlertAsync()
+    {
+        _alertsTesting = true;
+        _alertsError = null;
+        _alertsNotice = null;
+
+        try
+        {
+            using var response = await Http.PostAsync("api/alert-settings/test", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _alertsError = await SafeFetch.DescribeFailureAsync(response, "Could not send the test email.");
+                return;
+            }
+
+            _alertsNotice = "Test email sent to the saved recipients.";
+            Dispatcher.Dispatch(new ShowToastAction { Message = "Test email sent.", Level = "success" });
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _alertsError = "Could not reach the API to send the test email.";
+        }
+        finally
+        {
+            _alertsTesting = false;
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+
+        try
+        {
+            using var response = await Http.GetAsync("api/storage/settings");
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "Could not load the storage settings.");
+                return;
+            }
+
+            _settings = await response.Content.ReadFromJsonAsync<StorageSettingsDto>();
+            _password = string.Empty;
+            _apiKey = string.Empty;
+            _dirty = false;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _error = "Could not reach the API for the storage settings.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+
+        await LoadStatusAsync();
+    }
+
+    private async Task LoadStatusAsync()
+    {
+        _statusLoading = true;
+
+        try
+        {
+            using var response = await Http.GetAsync("api/storage/status");
+            if (response.IsSuccessStatusCode)
+            {
+                _status = await response.Content.ReadFromJsonAsync<StorageInventoryDto>();
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            // Status is informational; the save path reports real failures.
+        }
+        finally
+        {
+            _statusLoading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_settings == null)
+        {
+            return;
+        }
+
+        _saving = true;
+        _error = null;
+        _notice = null;
+        _applyOutcomes.Clear();
+
+        try
+        {
+            var request = new StorageSettingsUpdateDto
+            {
+                ElasticsearchEnabled = _settings.ElasticsearchEnabled,
+                Url = _settings.Url,
+                Username = _settings.Username,
+                Password = string.IsNullOrEmpty(_password) ? null : _password,
+                ApiKey = string.IsNullOrEmpty(_apiKey) ? null : _apiKey,
+                IndexPrefix = _settings.IndexPrefix,
+                AllowInvalidCertificate = _settings.AllowInvalidCertificate,
+                TimeoutSeconds = _settings.TimeoutSeconds,
+                Datasets = _settings.Datasets.Select(dataset => new StorageDatasetSettingsDto
+                {
+                    Dataset = dataset.Dataset,
+                    UseElasticsearch = dataset.UseElasticsearch,
+                    Granularity = dataset.Granularity,
+                    RetentionDays = dataset.RetentionDays,
+                    UseIlm = dataset.UseIlm
+                }).ToList()
+            };
+
+            using var response = await Http.PutAsJsonAsync("api/storage/settings", request);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "Could not save the storage settings.");
+                return;
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<StorageSaveResultDto>();
+            if (result == null)
+            {
+                _error = "The API returned an empty save result.";
+                return;
+            }
+
+            _settings = result.Settings;
+            _applyOutcomes.AddRange(result.Applied);
+            _password = string.Empty;
+            _apiKey = string.Empty;
+            _dirty = false;
+
+            if (result.Success)
+            {
+                Dispatcher.Dispatch(new ShowToastAction { Message = result.Message, Level = "success" });
+            }
+            else
+            {
+                _error = result.Message;
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _error = "Could not reach the API to save the storage settings.";
+        }
+        finally
+        {
+            _saving = false;
+        }
+
+        await LoadStatusAsync();
+    }
+
+    private async Task TestConnectionAsync()
+    {
+        _testing = true;
+        _testResult = null;
+
+        try
+        {
+            // Send the values currently in the form: the server tests them without saving, so an
+            // unsaved URL or credential is actually dialled instead of the persisted configuration.
+            var request = new StorageConnectionTestRequestDto
+            {
+                Url = _settings?.Url ?? string.Empty,
+                Username = _settings?.Username ?? string.Empty,
+                Password = string.IsNullOrEmpty(_password) ? null : _password,
+                ApiKey = string.IsNullOrEmpty(_apiKey) ? null : _apiKey,
+                AllowInvalidCertificate = _settings?.AllowInvalidCertificate ?? false,
+                TimeoutSeconds = _settings?.TimeoutSeconds ?? 15
+            };
+
+            using var response = await Http.PostAsJsonAsync("api/storage/test", request);
+            _testResult = response.IsSuccessStatusCode
+                ? await response.Content.ReadFromJsonAsync<StorageConnectionTestDto>()
+                : new StorageConnectionTestDto
+                {
+                    Success = false,
+                    Message = await SafeFetch.DescribeFailureAsync(response, "The connection test failed.")
+                };
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _testResult = new StorageConnectionTestDto { Success = false, Message = "Could not reach the API to run the test." };
+        }
+        finally
+        {
+            _testing = false;
+        }
+    }
+
+    private async Task ApplyIndexPlanAsync()
+    {
+        _applying = true;
+        _error = null;
+        _applyOutcomes.Clear();
+
+        try
+        {
+            using var response = await Http.PostAsync("api/storage/apply", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "Could not create the index plan.");
+                return;
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<StorageApplyResultDto>();
+            if (result == null)
+            {
+                return;
+            }
+
+            _applyOutcomes.AddRange(result.Datasets);
+            _notice = result.Message;
+            Dispatcher.Dispatch(new ShowToastAction
+            {
+                Message = result.Message,
+                Level = result.Success ? "success" : "warning"
+            });
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _error = "Could not reach the API to create the index plan.";
+        }
+        finally
+        {
+            _applying = false;
+        }
+
+        await LoadStatusAsync();
+    }
+
+    private async Task RunRetentionAsync()
+    {
+        _runningRetention = true;
+        _error = null;
+
+        try
+        {
+            using var response = await Http.PostAsync("api/storage/retention/run", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "Could not run retention.");
+                return;
+            }
+
+            _retentionReport = await response.Content.ReadFromJsonAsync<StorageRetentionReportDto>();
+            var removed = _retentionReport?.Datasets.Sum(outcome => outcome.Removed) ?? 0;
+            Dispatcher.Dispatch(new ShowToastAction
+            {
+                Message = removed > 0 ? $"Retention removed {removed:N0} record(s)." : "Retention ran; nothing was old enough to remove.",
+                Level = "success"
+            });
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            _error = "Could not reach the API to run retention.";
+        }
+        finally
+        {
+            _runningRetention = false;
+        }
+
+        await LoadStatusAsync();
+    }
+
+    private void SetBackend(StorageDatasetSettingsDto dataset, string? backend)
+    {
+        var wantsElasticsearch = string.Equals(backend, "Elasticsearch", StringComparison.OrdinalIgnoreCase);
+
+        if (wantsElasticsearch && !_settings!.ElasticsearchEnabled)
+        {
+            Dispatcher.Dispatch(new ShowToastAction
+            {
+                Message = "Switch Elasticsearch on above first; the setting has been kept for when it is enabled.",
+                Level = "warning"
+            });
+        }
+
+        dataset.UseElasticsearch = wantsElasticsearch;
+        MarkDirty();
+    }
+
+    private void SetGranularity(StorageDatasetSettingsDto dataset, string? granularity)
+    {
+        dataset.Granularity = granularity ?? "Daily";
+        MarkDirty();
+    }
+
+    private void MarkDirty() => _dirty = true;
+
+    private StorageDatasetCatalogDto? CatalogFor(string dataset) =>
+        _settings?.Catalog.FirstOrDefault(item => string.Equals(item.Dataset, dataset, StringComparison.OrdinalIgnoreCase));
+
+    private static string RetentionText(int days) =>
+        days <= 0 ? "Keep forever" : days == 1 ? "1 day" : $"{days} days";
+
+    private string RetentionHint(StorageDatasetSettingsDto dataset, StorageDatasetCatalogDto? catalog)
+    {
+        if (dataset.RetentionDays <= 0)
+        {
+            return "0 = keep everything. Nothing is deleted by age.";
+        }
+
+        var definition = catalog ?? _settings?.Catalog.FirstOrDefault();
+
+        if (definition is { CanUseElasticsearch: true, CanUseIlm: true } && dataset.UseElasticsearch && _settings!.ElasticsearchEnabled && dataset.UseIlm)
+        {
+            return $"ILM deletes each {dataset.Granularity.ToLowerInvariant()} index {dataset.RetentionDays} day(s) after its period ends.";
+        }
+
+        if (dataset.UseElasticsearch && _settings!.ElasticsearchEnabled)
+        {
+            return $"Indices whose period ended more than {dataset.RetentionDays} day(s) ago are deleted by the retention schedule.";
+        }
+
+        return catalog is { CanUseElasticsearch: false }
+            ? $"Finished rows older than {dataset.RetentionDays} day(s) are deleted by the retention schedule (never queued or running ones)."
+            : $"Rows older than {dataset.RetentionDays} day(s) are deleted by the retention schedule.";
+    }
+
+    private static string FormatSize(string size)
+    {
+        if (string.IsNullOrWhiteSpace(size) || size == "0")
+        {
+            return "0 B";
+        }
+
+        if (!long.TryParse(size, out var bytes))
+        {
+            return size;
+        }
+
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return $"{value:0.#} {units[unit]}";
+    }
+}

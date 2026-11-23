@@ -66,6 +66,35 @@ public class FlowEffects
         {
             dispatcher.Dispatch(new SaveFlowResultAction { Flow = savedFlow });
             dispatcher.Dispatch(new ShowToastAction { Message = $"Flow \"{savedFlow.Name}\" saved." });
+
+            // Bind a new-flow AI session to the flow id the save just assigned. Without this,
+            // the session keeps using its stale draft and its next "apply" creates a new flow.
+            if (action.ChatSessionId is Guid chatSessionId && savedFlow.Id != Guid.Empty)
+            {
+                try
+                {
+                    using var bindResponse = await _http.PostAsJsonAsync(
+                        $"api/ai/chat/sessions/{chatSessionId}/flow",
+                        new AiChatBindFlowDto { FlowId = savedFlow.Id });
+                    if (!bindResponse.IsSuccessStatusCode)
+                    {
+                        dispatcher.Dispatch(new ShowToastAction
+                        {
+                            Message = "Flow saved, but the AI session could not be linked. Reopen the session before asking for another change.",
+                            Level = "warning"
+                        });
+                    }
+                }
+                catch (Exception)
+                {
+                    dispatcher.Dispatch(new ShowToastAction
+                    {
+                        Message = "Flow saved, but the AI session could not be linked. Reopen the session before asking for another change.",
+                        Level = "warning"
+                    });
+                }
+            }
+
             if (action.RunAfterSave && savedFlow.Id != Guid.Empty)
             {
                 dispatcher.Dispatch(new RunFlowAction { Id = savedFlow.Id });

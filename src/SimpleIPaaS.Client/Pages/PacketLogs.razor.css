@@ -1,0 +1,108 @@
+.packet-logs-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-5) var(--page-gutter) var(--space-8);
+}
+
+.packet-logs-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.packet-logs-head h2 {
+    margin: 0;
+    font-size: 1.25rem;
+}
+
+.packet-logs-head p {
+    margin: var(--space-1) 0 0;
+    font-size: 0.82rem;
+}
+
+.packet-logs-filters {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.packet-filter-search {
+    flex: 1 1 260px;
+    min-width: 200px;
+}
+
+.packet-filter-select {
+    flex: 0 1 170px;
+    min-width: 140px;
+}
+
+.packet-logs-card { overflow: hidden; }
+
+.packet-logs-empty {
+    padding: var(--space-7) var(--space-5);
+    text-align: center;
+}
+
+.table-wrap { overflow-x: auto; }
+
+.packet-time { white-space: nowrap; }
+
+.packet-call-cell {
+    min-width: 240px;
+    max-width: 420px;
+}
+
+.packet-method {
+    font-weight: 700;
+    margin-right: var(--space-2);
+    color: var(--primary);
+}
+
+.packet-url {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.76rem;
+    word-break: break-all;
+}
+
+.packet-error {
+    display: block;
+    color: var(--danger);
+    font-size: 0.72rem;
+    margin-top: 2px;
+}
+
+.packet-connection-badge {
+    font-size: 0.72rem;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.packet-status {
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+}
+
+.packet-status.is-ok { color: var(--success); }
+.packet-status.is-error { color: var(--danger); }
+.packet-status.is-unknown { color: var(--text-muted); }
+
+.packet-detail-links {
+    display: flex;
+    gap: var(--space-2);
+    white-space: nowrap;
+}
+
+.packet-logs-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border-top: 1px solid var(--border-color);
+}

@@ -1,0 +1,47 @@
+@using SimpleIPaaS.Shared.Models
+
+<MinimizableNodeCard Title="Fan Out" NodeName="@Step.NodeName" NodeColorClass="node-header-violet">
+    <p class="node-hint">
+        Creates one stored transaction for each array item. Every transaction runs the nodes connected after this card.
+        The current item is available as <code>flowState.&lt;itemVariable&gt;</code>.
+    </p>
+
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. FanOutOrders" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Array Path</label>
+        <input type="text" class="form-control" @bind="Config.ArrayPath" @bind:after="Save" placeholder="orders or flowState.FetchOrders.payload.Orders" />
+        <small class="field-hint">Use a path from the incoming payload or start with flowState. for the full flow state.</small>
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Item Variable</label>
+        <input type="text" class="form-control" @bind="Config.ItemVariable" @bind:after="Save" placeholder="item" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Maximum items per run</label>
+        <input type="number" min="1" max="10000" class="form-control" @bind="Config.MaxItems" @bind:after="Save" />
+    </div>
+</MinimizableNodeCard>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+
+    private FanOutCardConfig Config { get; set; } = new();
+    private Guid _hydratedStepId;
+
+    protected override void OnParametersSet()
+    {
+        if (Step.Id != _hydratedStepId)
+        {
+            _hydratedStepId = Step.Id;
+            Config = FanOutCardConfig.Read(Step.StepConfig);
+        }
+    }
+
+    private void Save() => Step.StepConfig = Config.Write(Step.StepConfig);
+}

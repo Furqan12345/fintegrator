@@ -4,40 +4,56 @@
 @inject NavigationManager NavigationManager
 @inject HttpClient Http
 @inject IJSRuntime JSRuntime
+@inject SimpleIPaaS.Client.Services.AiBuildJobTracker BuildTracker
+@inject SimpleIPaaS.Client.Services.AuthSession Auth
 
 <ToastHost />
 
 <div class="app-layout @SidebarLayoutClass">
  <!-- Sidebar -->
- <aside class="app-sidebar">
+ <aside class="app-sidebar" aria-label="Primary">
         <div class="sidebar-brand">
             <span class="brand-icon"><AppIcon Name="brand" Class="icon icon-sm" /></span>
-            <span class="brand-text">SimpleIPaaS</span>
+            <span class="brand-text">fusetor.com</span>
         </div>
 
-        <nav class="sidebar-nav">
+        <nav class="sidebar-nav" aria-label="Main navigation">
             <div class="sidebar-section-label">Build</div>
             <NavLink class="sidebar-link" href="" Match="NavLinkMatch.All" title="Dashboard">
                 <span class="sidebar-icon"><AppIcon Name="dashboard" /></span>
                 <span>Dashboard</span>
             </NavLink>
+            <NavLink class="sidebar-link" href="integrations" title="Integrations">
+                <span class="sidebar-icon"><AppIcon Name="integrations" /></span>
+                <span>Integrations</span>
+            </NavLink>
+            <NavLink class="sidebar-link" href="ai-builder" title="Build with AI">
+                <span class="sidebar-icon"><AppIcon Name="flows" /></span>
+                <span>Build with AI</span>
+            </NavLink>
             <NavLink class="sidebar-link" href="connections" title="Connections">
                 <span class="sidebar-icon"><AppIcon Name="connections" /></span>
                 <span>Connections</span>
             </NavLink>
+            <AuthorizeView Roles="Admin">
+                <NavLink class="sidebar-link" href="ai-providers" title="AI Providers">
+                    <span class="sidebar-icon"><AppIcon Name="sparkline" /></span>
+                    <span>AI Providers</span>
+                </NavLink>
+            </AuthorizeView>
             <NavLink class="sidebar-link" href="cross-references" title="Cross-References">
                 <span class="sidebar-icon"><AppIcon Name="crossreferences" /></span>
                 <span>Cross-References</span>
             </NavLink>
 
             <div class="sidebar-section-label">Monitor</div>
-            <NavLink class="sidebar-link" href="activity" title="Activity Log">
-                <span class="sidebar-icon"><AppIcon Name="activity" /></span>
-                <span>Activity Log</span>
-            </NavLink>
             <NavLink class="sidebar-link" href="transaction-history" title="Transactions">
                 <span class="sidebar-icon"><AppIcon Name="transactions" /></span>
                 <span>Transactions</span>
+            </NavLink>
+            <NavLink class="sidebar-link" href="packet-logs" title="Packet Logs">
+                <span class="sidebar-icon"><AppIcon Name="external" /></span>
+                <span>Packet Logs</span>
             </NavLink>
             <NavLink class="sidebar-link" href="deadletters" title="Dead Letters">
                 <span class="sidebar-icon"><AppIcon Name="deadletters" /></span>
@@ -47,6 +63,18 @@
                 <span class="sidebar-icon"><AppIcon Name="logs" /></span>
                 <span>Debug Logs</span>
             </NavLink>
+
+            <div class="sidebar-section-label">System</div>
+            <AuthorizeView Roles="Admin">
+                <NavLink class="sidebar-link" href="settings" title="Storage &amp; retention">
+                    <span class="sidebar-icon"><AppIcon Name="settings" /></span>
+                    <span>Storage</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="admin/users" title="Users and access">
+                    <span class="sidebar-icon"><AppIcon Name="connections" /></span>
+                    <span>Users</span>
+                </NavLink>
+            </AuthorizeView>
         </nav>
 
         <div class="sidebar-footer">
@@ -65,17 +93,49 @@
                 <h1 class="topbar-title">@PageHeading</h1>
             </div>
             <div class="topbar-right">
-                <span class="topbar-status @HealthCssClass" title="@HealthDetail">
+                @if (BuildTracker.IsRestoring)
+                {
+                    <span class="topbar-build-status is-restoring">Checking AI builds…</span>
+                }
+                else if (BuildTracker.CurrentJob is { Status: "Queued" or "Running" } buildJob)
+                {
+                    <button type="button" class="topbar-build-status" @onclick="OpenBuildStatus" title="Open AI build status">
+                        <span class="status-dot"></span>AI @(buildJob.Status == "Queued" ? "waiting" : "building") · @buildJob.ToolCallsUsed tools
+                    </button>
+                }
+                else if (BuildTracker.CurrentJob is { Status: "Completed" })
+                {
+                    <button type="button" class="topbar-build-status is-complete" @onclick="OpenBuildStatus" title="Review the completed AI draft">
+                        AI draft ready · Review
+                    </button>
+                }
+                <span class="topbar-status @HealthCssClass" title="@HealthDetail" role="status" aria-live="polite">
                     <span class="status-dot"></span>@HealthLabel
                 </span>
-                <button type="button" class="topbar-icon-btn" title="@ThemeToggleLabel" aria-label="@ThemeToggleLabel" @onclick="ToggleThemeAsync">
+                <button type="button" class="topbar-icon-btn" title="@ThemeToggleLabel" aria-label="@ThemeToggleLabel"
+                        aria-pressed="@(_isDarkTheme ? "true" : "false")" @onclick="ToggleThemeAsync">
                     <AppIcon Name="@(_isDarkTheme ? "sun" : "moon")" Class="icon icon-sm" />
                 </button>
+                @if (Auth.User is { } signedInUser)
+                {
+                    <span class="topbar-divider" aria-hidden="true"></span>
+                    <div class="topbar-user">
+                        <span class="topbar-avatar" aria-hidden="true">@AccountInitial(signedInUser.Email)</span>
+                        <span class="topbar-user-meta">
+                            <span class="topbar-user-email" title="@signedInUser.Email">@signedInUser.Email</span>
+                            <span class="topbar-user-role">@signedInUser.Role</span>
+                        </span>
+                        <button type="button" class="topbar-signout" title="Sign out" aria-label="Sign out" @onclick="SignOutAsync">
+                            <AppIcon Name="logout" Class="icon icon-xs" />
+                            <span class="topbar-signout-label">Sign out</span>
+                        </button>
+                    </div>
+                }
             </div>
         </header>
 
         <!-- Page content -->
-        <div class="app-content">
+        <main class="app-content">
             <ErrorBoundary>
                 <ChildContent>
                     @Body
@@ -88,7 +148,7 @@
                     </div>
                 </ErrorContent>
             </ErrorBoundary>
-        </div>
+        </main>
     </div>
 </div>
 
@@ -131,10 +191,17 @@
 
     private string ThemeToggleLabel => _isDarkTheme ? "Switch to light theme" : "Switch to dark theme";
 
+    private static string AccountInitial(string? email)
+    {
+        var value = (email ?? string.Empty).Trim();
+        return value.Length == 0 ? "?" : value[..1].ToUpperInvariant();
+    }
+
     protected override void OnInitialized()
     {
         base.OnInitialized();
         NavigationManager.LocationChanged += OnLocationChanged;
+        BuildTracker.Changed += OnBuildChanged;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -145,6 +212,7 @@
             return;
         }
 
+        await BuildTracker.RestoreActiveJobAsync();
         await LoadThemeAsync();
         await LoadSidebarAsync();
         await CheckHealthAsync();
@@ -230,6 +298,24 @@
         InvokeAsync(StateHasChanged);
     }
 
+    private void OnBuildChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task SignOutAsync()
+    {
+        await Auth.SignOutAsync();
+        NavigationManager.NavigateTo("/login", forceLoad: true);
+    }
+
+    private void OpenBuildStatus()
+    {
+        var relative = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        var path = relative.Split('?', '#')[0];
+        var designerPath = path.StartsWith("flow/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("flow-designer/", StringComparison.OrdinalIgnoreCase)
+            ? "/" + path
+            : "/flow-designer";
+        NavigationManager.NavigateTo(designerPath + "?aiBuild=open");
+    }
+
     private static string HeadingFor(string relativePath)
     {
         var path = relativePath.Split('?')[0].Split('#')[0].Trim('/');
@@ -238,17 +324,24 @@
         return segment switch
         {
             "" => "Dashboard",
+            "integrations" => "Integrations",
+            "ai-builder" => "Build with AI",
             "connections" => "Connections",
             "connection-wizard" => "Connection Setup",
+            "ai-providers" => "AI Providers",
+            "ai-provider-wizard" => "AI Provider Setup",
+            "admin/ai-settings" => "AI Settings",
             "flow" or "flow-designer" => "Flow Designer",
-            "activity" or "activity-log" => "Activity Log",
+            "activity" or "activity-log" => "Transactions",
             "transaction-history" => "Transaction History",
+            "packet-logs" => "Packet Logs",
             "execution" or "execution-detail" => "Execution Details",
             "deadletters" => "Dead Letters",
             "cross-references" => "Cross-References",
             "logs" => "Debug Logs",
+            "settings" => "Storage & Retention",
             "docs" => "Assertion Guide",
-            _ => "SimpleIPaaS"
+            _ => "fusetor.com"
         };
     }
 

@@ -7,7 +7,7 @@
 @inject NavigationManager NavigationManager
 @inject HttpClient Http
 
-<PageTitle>Connections — SimpleIPaaS</PageTitle>
+<PageTitle>Connections — fusetor.com</PageTitle>
 
 <div class="page-scroll">
     <div class="page-header">
@@ -23,6 +23,47 @@
         </div>
     </div>
 
+    <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFilters" CssClass="connections-filter-panel">
+        <Actions>
+            @if (HasActiveFilters)
+            {
+                <button class="btn btn-outline btn-sm" @onclick="ClearFilters" title="Reset the filters">
+                    <AppIcon Name="x-circle" Class="icon icon-sm" /> Clear
+                </button>
+            }
+            <div class="filter-summary">@VisibleConnections.Count of @ConnectionState.Value.Connections.Count connections</div>
+        </Actions>
+        <Chips>
+            @if (!string.IsNullOrWhiteSpace(_search))
+            {
+                <FilterChip Label="@($"Search: {_search}")" Title="@_search" OnRemove="ClearSearch" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_authFilter))
+            {
+                <FilterChip Label="@($"Auth: {AuthLabel(_authFilter)}")" OnRemove="ClearAuthFilter" />
+            }
+        </Chips>
+        <ChildContent>
+            <div class="filter-bar-group">
+                <label class="filter-field filter-field-search">
+                    <span class="filter-label">Search</span>
+                    <input type="search" class="form-control filter-search" placeholder="Name, base URL or auth type"
+                           value="@_search" @oninput="OnSearchChanged" />
+                </label>
+                <label class="filter-field">
+                    <span class="filter-label">Auth type</span>
+                    <select class="form-control filter-select" value="@_authFilter" @onchange="OnAuthFilterChanged">
+                        <option value="">All auth types</option>
+                        @foreach (var authType in AuthTypeOptions)
+                        {
+                            <option value="@authType">@AuthLabel(authType)</option>
+                        }
+                    </select>
+                </label>
+            </div>
+        </ChildContent>
+    </FilterPanel>
+
     <div class="connections-grid">
         @if (ConnectionState.Value.IsLoading && !ConnectionState.Value.Connections.Any())
         {
@@ -37,9 +78,18 @@
                 <button class="btn btn-primary btn-lg" @onclick="CreateNewConnection"><AppIcon Name="plus" Class="icon icon-sm" /> Create connection</button>
             </div>
         }
+        else if (VisibleConnections.Count == 0)
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="search" Class="icon icon-lg" /></span>
+                <h3>No connections match these filters</h3>
+                <p>Try a shorter search term, or pick a different auth type.</p>
+                <button class="btn btn-outline" @onclick="ClearFilters">Clear filters</button>
+            </div>
+        }
         else
         {
-            @foreach (var conn in ConnectionState.Value.Connections)
+            @foreach (var conn in VisibleConnections)
             {
                 <article class="connection-card" @onclick="() => EditConnection(conn.Id)">
                     <div class="card-header">
@@ -71,6 +121,7 @@
                         <button class="btn btn-sm btn-soft" @onclick:stopPropagation="true" @onclick="() => TestConnection(conn.Id)" disabled="@(_testingConnectionId == conn.Id)">
                             @(_testingConnectionId == conn.Id ? "Testing…" : "Test connection")
                         </button>
+                        <button class="btn btn-sm btn-danger" @onclick:stopPropagation="true" @onclick="() => RequestDelete(conn)">Delete</button>
                     </div>
                 </article>
             }
@@ -78,9 +129,94 @@
     </div>
 </div>
 
+@if (_deleteCandidate != null)
+{
+    <div class="modal-overlay" @onclick="CancelDelete">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Delete connection</h2>
+                <button class="modal-close-btn" @onclick="CancelDelete" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Delete <strong>@_deleteCandidate.Name</strong>? Flow steps that reference this connection will fail until they are pointed at another one.</p>
+                <p class="text-muted">Type the connection name to confirm.</p>
+                <input type="text" class="form-control" @bind="_deleteConfirmName" placeholder="@_deleteCandidate.Name" />
+                @if (!string.IsNullOrEmpty(_deleteError))
+                {
+                    <div class="validation-banner" role="alert">@_deleteError</div>
+                }
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-outline" @onclick="CancelDelete">Cancel</button>
+                <button class="btn btn-danger" @onclick="ConfirmDelete" disabled="@(!CanConfirmDelete)">@(_deleting ? "Deleting…" : "Delete connection")</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private Guid? _testingConnectionId;
     private readonly Dictionary<Guid, ConnectionTestResult> _testResults = new();
+    private ConnectionDto? _deleteCandidate;
+    private string _deleteConfirmName = string.Empty;
+    private string? _deleteError;
+    private bool _deleting;
+
+    // Filters are client-side: the page already holds the whole connection list, so narrowing
+    // it never needs another request.
+    private string _search = string.Empty;
+    private string _authFilter = string.Empty;
+    private bool _filtersOpen;
+
+    private static readonly string[] AuthTypeOptions =
+    {
+        "None", "Basic", "Bearer", "ApiKey", "OAuth2ClientCredentials", "OAuth2RefreshToken",
+        "OAuth2AuthCode", "AmazonSpApi", "Shopify", "Custom"
+    };
+
+    private int ActiveFilterCount =>
+        (!string.IsNullOrWhiteSpace(_search) ? 1 : 0) + (!string.IsNullOrWhiteSpace(_authFilter) ? 1 : 0);
+
+    private bool HasActiveFilters => ActiveFilterCount > 0;
+
+    private IReadOnlyList<ConnectionDto> VisibleConnections
+    {
+        get
+        {
+            var connections = ConnectionState.Value.Connections.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(_search))
+            {
+                var term = _search.Trim();
+                connections = connections.Where(connection =>
+                    connection.Name.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    (connection.BaseUrl ?? string.Empty).Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    AuthLabel(connection.AuthType).Contains(term, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (!string.IsNullOrWhiteSpace(_authFilter))
+            {
+                connections = connections.Where(connection =>
+                    string.Equals(connection.AuthType, _authFilter, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return connections.ToList();
+        }
+    }
+
+    private void OnSearchChanged(ChangeEventArgs args) => _search = args.Value?.ToString() ?? string.Empty;
+
+    private void OnAuthFilterChanged(ChangeEventArgs args) => _authFilter = args.Value?.ToString() ?? string.Empty;
+
+    private void ClearFilters()
+    {
+        _search = string.Empty;
+        _authFilter = string.Empty;
+    }
+
+    private void ClearSearch() => _search = string.Empty;
+
+    private void ClearAuthFilter() => _authFilter = string.Empty;
 
     private class ConnectionTestResult
     {
@@ -111,7 +247,11 @@
                 var error = root.TryGetProperty("error", out var errorProp) ? errorProp.GetString() : null;
                 result.Message = result.Success
                     ? $"HTTP {statusCode}"
-                    : string.IsNullOrWhiteSpace(error) ? $"HTTP {statusCode}" : error!;
+                    : string.IsNullOrWhiteSpace(error)
+                        ? statusCode == 0
+                            ? "The connection could not be reached (no HTTP response)."
+                            : $"HTTP {statusCode}"
+                        : error!;
             }
             catch (System.Text.Json.JsonException)
             {
@@ -130,6 +270,58 @@
         NavigationManager.NavigateTo("/connection-wizard");
     }
 
+    private void RequestDelete(ConnectionDto connection)
+    {
+        _deleteCandidate = connection;
+        _deleteConfirmName = string.Empty;
+        _deleteError = null;
+    }
+
+    private void CancelDelete()
+    {
+        _deleteCandidate = null;
+        _deleteConfirmName = string.Empty;
+        _deleteError = null;
+    }
+
+    private bool CanConfirmDelete =>
+        _deleteCandidate != null && !_deleting &&
+        string.Equals(_deleteConfirmName.Trim(), _deleteCandidate.Name, StringComparison.Ordinal);
+
+    private async Task ConfirmDelete()
+    {
+        if (_deleteCandidate == null || !CanConfirmDelete)
+        {
+            return;
+        }
+
+        _deleting = true;
+        _deleteError = null;
+        try
+        {
+            var response = await Http.DeleteAsync($"api/connections/{_deleteCandidate.Id}");
+            if (response.IsSuccessStatusCode)
+            {
+                _deleteCandidate = null;
+                _deleteConfirmName = string.Empty;
+                Dispatcher.Dispatch(new LoadConnectionsAction());
+                return;
+            }
+
+            _deleteError = response.StatusCode == System.Net.HttpStatusCode.NotFound
+                ? "This connection no longer exists."
+                : $"The connection could not be deleted (HTTP {(int)response.StatusCode}).";
+        }
+        catch (Exception ex)
+        {
+            _deleteError = $"The connection could not be deleted: {ex.Message}";
+        }
+        finally
+        {
+            _deleting = false;
+        }
+    }
+
     private void EditConnection(Guid connectionId)
     {
         NavigationManager.NavigateTo($"/connection-wizard/{connectionId}");
@@ -145,6 +337,7 @@
         "OAuth2RefreshToken" => "OAuth 2.0 · refresh token",
         "OAuth2AuthCode" => "OAuth 2.0 · authorization code",
         "AmazonSpApi" => "Amazon SP-API · LWA + SigV4",
+        "Shopify" => "Shopify · Admin API",
         "Custom" => "Custom headers",
         _ => authType
     };

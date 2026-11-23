@@ -2,7 +2,63 @@
 @using SimpleIPaaS.Shared.Models
 @using System.Text.Json.Nodes
 
-<MinimizableNodeCard Title="HTTP Action" NodeColorClass="node-header-primary">
+<MinimizableNodeCard Title="HTTP Action" NodeName="@Step.NodeName" StartMinimized="true" NodeColorClass="node-header-primary">
+    <MinimizedContent>
+        <div class="node-field">
+            <label class="node-label">Node Name</label>
+            <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. FetchUsers" />
+        </div>
+
+        <div class="node-field">
+            <label class="node-label">Method</label>
+            <select class="form-control" @bind="Step.HttpMethod">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="PATCH">PATCH</option>
+                <option value="DELETE">DELETE</option>
+            </select>
+        </div>
+
+        <div class="node-field">
+            <label class="node-label">URL Source</label>
+            <select class="form-control" value="@Step.UrlMode" @onchange="OnUrlModeChanged">
+                <option value="Manual">Manual Full URL</option>
+                <option value="Connection">Predefined Connection</option>
+            </select>
+        </div>
+
+        @if (Step.UrlMode == "Connection")
+        {
+            <div class="node-field">
+                <label class="node-label">Connection</label>
+                <select class="form-control" value="@ConnectionValue" @onchange="OnConnectionChanged">
+                    <option value="">Select connection</option>
+                    @foreach (var connection in AvailableConnections)
+                    {
+                        <option value="@connection.Id">@connection.Name</option>
+                    }
+                </select>
+            </div>
+            <div class="node-field">
+                <label class="node-label">Base URL</label>
+                <input type="text" class="form-control" value="@SelectedConnectionBaseUrl" readonly />
+            </div>
+            <div class="node-field">
+                <label class="node-label">Remaining URL / Path</label>
+                <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="/users/123 or users?status=active" />
+            </div>
+        }
+        else
+        {
+            <div class="node-field">
+                <label class="node-label">Full URL</label>
+                <input type="text" class="form-control" @bind="Step.EndpointUrl" placeholder="https://api.example.com/users" />
+            </div>
+        }
+    </MinimizedContent>
+
+    <ChildContent>
     <div class="node-field">
         <label class="node-label">Node Name</label>
         <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. FetchUsers" />
@@ -26,6 +82,26 @@
             <option value="Connection">Predefined Connection</option>
         </select>
     </div>
+
+    <div class="node-field">
+        <label class="node-label">On HTTP error</label>
+        <select class="form-control" value="@Step.HttpErrorMode" @onchange="OnHttpErrorModeChanged">
+            <option value="Stop">Stop the flow</option>
+            <option value="Continue">Continue through the Error port</option>
+        </select>
+        <small class="field-hint">Continue routes non-2xx and network failures to the Error port after the final attempt. The Post-response script is skipped on that path.</small>
+    </div>
+    @if (_confirmRemoveErrorPort)
+    {
+        <div class="node-error-port-confirm">
+            <strong>Remove the Error port?</strong>
+            <small>Turning this off removes its connected edge(s).</small>
+            <div class="node-error-port-confirm-actions">
+                <button class="btn btn-soft-danger btn-sm" @onclick="ConfirmRemoveErrorPort">Remove port and edges</button>
+                <button class="btn btn-ghost btn-sm" @onclick="CancelRemoveErrorPort">Cancel</button>
+            </div>
+        </div>
+    }
 
     @if (Step.UrlMode == "Connection")
     {
@@ -66,6 +142,7 @@
                 <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
                 <option value="OAuth2AuthCode">OAuth 2.0 Authorization Code</option>
                 <option value="AmazonSpApi">Amazon SP-API (LWA + AWS SigV4)</option>
+                <option value="Shopify">Shopify (Admin API client credentials)</option>
                 <option value="Custom">Custom Headers</option>
             </select>
         </div>
@@ -73,83 +150,131 @@
         @if (Step.AuthType == "Basic")
         {
             <div class="node-field-row">
-                <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Username" />
-                <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Password" />
+                <div class="node-field">
+                    <label class="node-label">Username</label>
+                    <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Username" />
+                </div>
+                <div class="node-field">
+                    <label class="node-label">Password</label>
+                    <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Password" />
+                </div>
             </div>
         }
         else if (Step.AuthType == "Bearer")
         {
             <div class="node-field">
+                <label class="node-label">Bearer Token</label>
                 <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Bearer token" />
             </div>
         }
         else if (Step.AuthType == "ApiKey")
         {
             <div class="node-field">
+                <label class="node-label">Send API Key In</label>
                 <select class="form-control" @bind="_apiKeyPlacement" @bind:after="SyncAuthConfig">
                     <option value="header">Header</option>
                     <option value="query">Query Parameter</option>
                 </select>
             </div>
             <div class="node-field">
+                <label class="node-label">@(_apiKeyPlacement == "query" ? "Parameter Name" : "Header Name")</label>
                 <input type="text" class="form-control" @bind="Step.AuthUsername" @bind:after="SyncAuthConfig" placeholder="@(_apiKeyPlacement == "query" ? "Parameter name (e.g. api_key)" : "Header name (e.g. X-Api-Key)")" />
             </div>
             <div class="node-field">
+                <label class="node-label">API Key Value</label>
                 <input type="password" class="form-control" @bind="Step.AuthToken" @bind:after="SyncAuthConfig" placeholder="API key value" />
             </div>
         }
         else if (Step.AuthType == "OAuth2ClientCredentials")
         {
             <div class="node-field">
+                <label class="node-label">Token URL</label>
                 <input type="text" class="form-control" @bind="_tokenUrl" @bind:after="SyncAuthConfig" placeholder="Token URL" />
             </div>
             <div class="node-field">
+                <label class="node-label">Client ID</label>
                 <input type="text" class="form-control" @bind="_clientId" @bind:after="SyncAuthConfig" placeholder="Client ID" />
             </div>
             <div class="node-field">
+                <label class="node-label">Client Secret</label>
                 <input type="password" class="form-control" @bind="_clientSecret" @bind:after="SyncAuthConfig" placeholder="Client secret" />
             </div>
             <div class="node-field">
+                <label class="node-label">Scope (optional)</label>
                 <input type="text" class="form-control" @bind="_scope" @bind:after="SyncAuthConfig" placeholder="Scope (optional)" />
             </div>
         }
         else if (Step.AuthType == "OAuth2RefreshToken")
         {
             <div class="node-field">
+                <label class="node-label">Token URL</label>
                 <input type="text" class="form-control" @bind="Step.AuthUsername" placeholder="Token URL" />
             </div>
             <div class="node-field">
+                <label class="node-label">Refresh Token</label>
                 <input type="password" class="form-control" @bind="Step.AuthPassword" placeholder="Refresh token" />
             </div>
             <div class="node-field">
+                <label class="node-label">Access Token (optional)</label>
                 <input type="password" class="form-control" @bind="Step.AuthToken" placeholder="Access token (optional)" />
             </div>
         }
         else if (Step.AuthType == "OAuth2AuthCode")
         {
             <div class="node-field">
+                <label class="node-label">Token URL</label>
                 <input type="text" class="form-control" @bind="_tokenUrl" @bind:after="SyncAuthConfig" placeholder="Token URL" />
             </div>
             <div class="node-field">
+                <label class="node-label">Client ID</label>
                 <input type="text" class="form-control" @bind="_clientId" @bind:after="SyncAuthConfig" placeholder="Client ID" />
             </div>
             <div class="node-field">
+                <label class="node-label">Client Secret</label>
                 <input type="password" class="form-control" @bind="_clientSecret" @bind:after="SyncAuthConfig" placeholder="Client secret" />
             </div>
             <div class="node-field">
+                <label class="node-label">Access Token</label>
                 <input type="password" class="form-control" @bind="_accessToken" @bind:after="SyncAuthConfig" placeholder="Access token" />
             </div>
             <div class="node-field">
+                <label class="node-label">Refresh Token</label>
                 <input type="password" class="form-control" @bind="_refreshToken" @bind:after="SyncAuthConfig" placeholder="Refresh token" />
+            </div>
+        }
+        else if (Step.AuthType == "Shopify")
+        {
+            <div class="node-field">
+                <label class="node-label">Shop Domain</label>
+                <input type="text" class="form-control" @bind="_shopifyShop" @bind:after="SyncAuthConfig" placeholder="your-store.myshopify.com" />
+            </div>
+            <div class="node-field">
+                <label class="node-label">Client ID</label>
+                <input type="text" class="form-control" @bind="_clientId" @bind:after="SyncAuthConfig" placeholder="Shopify client ID" />
+            </div>
+            <div class="node-field">
+                <label class="node-label">Client Secret</label>
+                <input type="password" class="form-control" @bind="_clientSecret" @bind:after="SyncAuthConfig" placeholder="Shopify client secret" />
+            </div>
+            <div class="node-field">
+                <label class="node-label">API Version</label>
+                <input type="text" class="form-control" @bind="_shopifyApiVersion" @bind:after="SyncAuthConfig" placeholder="2026-10" />
             </div>
         }
         else if (Step.AuthType == "Custom")
         {
+            <label class="node-label">Custom Headers</label>
             @foreach (var header in _customHeaders)
             {
                 <div class="node-field-row">
-                    <input type="text" class="form-control" @bind="header.Name" @bind:after="SyncAuthConfig" placeholder="Header name" />
-                    <input type="text" class="form-control" @bind="header.Value" @bind:after="SyncAuthConfig" placeholder="Value" />
+                    <div class="node-field">
+                        <label class="node-label">Header Name</label>
+                        <input type="text" class="form-control" @bind="header.Name" @bind:after="SyncAuthConfig" placeholder="Header name" />
+                    </div>
+                    <div class="node-field">
+                        <label class="node-label">Value</label>
+                        <input type="text" class="form-control" @bind="header.Value" @bind:after="SyncAuthConfig" placeholder="Value" />
+                    </div>
                     <button class="btn btn-outline btn-sm" @onclick="() => RemoveCustomHeader(header)">x</button>
                 </div>
             }
@@ -210,8 +335,14 @@
             @if (PaginationStyle == "AmazonNextToken")
             {
                 <div class="node-field-row">
-                    <input class="form-control" value="@PaginationNextTokenPath" @onchange='args => SetPaginationValue("nextTokenPath", args.Value?.ToString() ?? "")' placeholder="payload.NextToken" />
-                    <input class="form-control" value="@PaginationNextTokenParameter" @onchange='args => SetPaginationValue("nextTokenParameter", args.Value?.ToString() ?? "NextToken")' placeholder="NextToken" />
+                    <div class="node-field">
+                        <label class="node-label">Token Path (response)</label>
+                        <input class="form-control" value="@PaginationNextTokenPath" @onchange='args => SetPaginationValue("nextTokenPath", args.Value?.ToString() ?? "")' placeholder="payload.NextToken" />
+                    </div>
+                    <div class="node-field">
+                        <label class="node-label">Token Parameter (request)</label>
+                        <input class="form-control" value="@PaginationNextTokenParameter" @onchange='args => SetPaginationValue("nextTokenParameter", args.Value?.ToString() ?? "NextToken")' placeholder="NextToken" />
+                    </div>
                 </div>
             }
             else if (PaginationStyle == "LinkHeader")
@@ -224,15 +355,27 @@
             else if (PaginationStyle == "Cursor")
             {
                 <div class="node-field-row">
-                    <input class="form-control" value="@PaginationCursorResponsePath" @onchange='args => SetPaginationValue("cursorResponsePath", args.Value?.ToString() ?? "")' placeholder="meta.nextCursor" />
-                    <input class="form-control" value="@PaginationCursorRequestParameter" @onchange='args => SetPaginationValue("cursorRequestParameter", args.Value?.ToString() ?? "cursor")' placeholder="cursor" />
+                    <div class="node-field">
+                        <label class="node-label">Cursor Path (response)</label>
+                        <input class="form-control" value="@PaginationCursorResponsePath" @onchange='args => SetPaginationValue("cursorResponsePath", args.Value?.ToString() ?? "")' placeholder="meta.nextCursor" />
+                    </div>
+                    <div class="node-field">
+                        <label class="node-label">Cursor Target (query name or body path)</label>
+                        <input class="form-control" value="@PaginationCursorRequestParameter" @onchange='args => SetPaginationValue("cursorRequestParameter", args.Value?.ToString() ?? "cursor")' placeholder="cursor or variables.cursor" />
+                    </div>
                 </div>
             }
             else if (PaginationStyle == "PageOffset")
             {
                 <div class="node-field-row">
-                    <input class="form-control" value="@PaginationOffsetParameter" @onchange='args => SetPaginationValue("offsetRequestParameter", args.Value?.ToString() ?? "offset")' placeholder="offset" />
-                    <input class="form-control" value="@PaginationPageSizeParameter" @onchange='args => SetPaginationValue("pageSizeParameter", args.Value?.ToString() ?? "limit")' placeholder="limit" />
+                    <div class="node-field">
+                        <label class="node-label">Offset Parameter</label>
+                        <input class="form-control" value="@PaginationOffsetParameter" @onchange='args => SetPaginationValue("offsetRequestParameter", args.Value?.ToString() ?? "offset")' placeholder="offset" />
+                    </div>
+                    <div class="node-field">
+                        <label class="node-label">Page Size Parameter</label>
+                        <input class="form-control" value="@PaginationPageSizeParameter" @onchange='args => SetPaginationValue("pageSizeParameter", args.Value?.ToString() ?? "limit")' placeholder="limit" />
+                    </div>
                 </div>
             }
         }
@@ -250,6 +393,7 @@
             @(string.IsNullOrWhiteSpace(Step.PostFlightCode) ? "Post-Response Script" : "Edit Post-Response Script")
         </button>
     </div>
+    </ChildContent>
 </MinimizableNodeCard>
 
 @code {
@@ -260,6 +404,32 @@
     private string SelectedConnectionBaseUrl => AvailableConnections.FirstOrDefault(connection => connection.Id == Step.ConnectionId)?.BaseUrl ?? string.Empty;
     private string ConnectionValue => Step.ConnectionId?.ToString() ?? string.Empty;
     private static readonly JsonSerializerOptions StepConfigJsonOptions = new() { WriteIndented = false };
+    private bool _confirmRemoveErrorPort;
+
+    private void OnHttpErrorModeChanged(ChangeEventArgs args)
+    {
+        var mode = args.Value?.ToString() == "Continue" ? "Continue" : "Stop";
+        if (mode == "Stop" && Designer.HttpErrorPortHasEdges(Step.Id))
+        {
+            _confirmRemoveErrorPort = true;
+            StateHasChanged();
+            return;
+        }
+        Designer.ApplyHttpErrorMode(Step.Id, mode);
+    }
+
+    private void ConfirmRemoveErrorPort()
+    {
+        Designer.RemoveHttpErrorEdges(Step.Id);
+        Designer.ApplyHttpErrorMode(Step.Id, "Stop");
+        _confirmRemoveErrorPort = false;
+    }
+
+    private void CancelRemoveErrorPort()
+    {
+        _confirmRemoveErrorPort = false;
+        StateHasChanged();
+    }
 
     private string PacketHeadersJson
     {
@@ -292,6 +462,8 @@
     private string _scope = string.Empty;
     private string _accessToken = string.Empty;
     private string _refreshToken = string.Empty;
+    private string _shopifyShop = string.Empty;
+    private string _shopifyApiVersion = "2026-10";
     private string PaginationStyle => GetPaginationValue("style", "None");
     private string PaginationMaxPages => GetPaginationValue("maxPages", "100");
     private string PaginationAggregatePath => GetPaginationValue("aggregatePath", string.Empty);
@@ -333,6 +505,8 @@
         _scope = string.Empty;
         _accessToken = string.Empty;
         _refreshToken = string.Empty;
+        _shopifyShop = string.Empty;
+        _shopifyApiVersion = "2026-10";
         _customHeaders = new List<CustomHeaderEntry> { new CustomHeaderEntry() };
 
         if (string.IsNullOrWhiteSpace(Step.AuthConfigJson))
@@ -351,6 +525,8 @@
             _scope = root.TryGetProperty("scope", out var scope) ? scope.GetString() ?? string.Empty : string.Empty;
             _accessToken = root.TryGetProperty("accessToken", out var accessToken) ? accessToken.GetString() ?? string.Empty : string.Empty;
             _refreshToken = root.TryGetProperty("refreshToken", out var refreshToken) ? refreshToken.GetString() ?? string.Empty : string.Empty;
+            _shopifyShop = root.TryGetProperty("shop", out var shop) ? shop.GetString() ?? string.Empty : string.Empty;
+            _shopifyApiVersion = root.TryGetProperty("apiVersion", out var apiVersion) ? apiVersion.GetString() ?? "2026-10" : "2026-10";
 
             if (root.TryGetProperty("headers", out var headers) && headers.ValueKind == JsonValueKind.Array)
             {
@@ -385,6 +561,7 @@
             "ApiKey" => new { headerName = Step.AuthUsername, apiKey = Step.AuthToken, placement = _apiKeyPlacement },
             "OAuth2ClientCredentials" => new { tokenUrl = _tokenUrl, clientId = _clientId, clientSecret = _clientSecret, scope = _scope },
             "OAuth2AuthCode" => new { tokenUrl = _tokenUrl, clientId = _clientId, clientSecret = _clientSecret, accessToken = _accessToken, refreshToken = _refreshToken },
+            "Shopify" => new { shop = _shopifyShop, clientId = _clientId, clientSecret = _clientSecret, apiVersion = _shopifyApiVersion },
             "Custom" => new { headers = _customHeaders.Where(header => !string.IsNullOrWhiteSpace(header.Name)).Select(header => new { name = header.Name, value = header.Value }).ToList() },
             _ => null
         };
@@ -399,6 +576,7 @@
             "ApiKey" => !string.IsNullOrWhiteSpace(Step.AuthUsername) || !string.IsNullOrWhiteSpace(Step.AuthToken),
             "OAuth2ClientCredentials" => !string.IsNullOrWhiteSpace(_tokenUrl) || !string.IsNullOrWhiteSpace(_clientId) || !string.IsNullOrWhiteSpace(_clientSecret) || !string.IsNullOrWhiteSpace(_scope),
             "OAuth2AuthCode" => !string.IsNullOrWhiteSpace(_tokenUrl) || !string.IsNullOrWhiteSpace(_clientId) || !string.IsNullOrWhiteSpace(_clientSecret) || !string.IsNullOrWhiteSpace(_accessToken) || !string.IsNullOrWhiteSpace(_refreshToken),
+            "Shopify" => !string.IsNullOrWhiteSpace(_shopifyShop) || !string.IsNullOrWhiteSpace(_clientId) || !string.IsNullOrWhiteSpace(_clientSecret),
             "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
             _ => false
         };

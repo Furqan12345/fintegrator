@@ -1,0 +1,227 @@
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@using Microsoft.JSInterop
+@using SimpleIPaaS.Client.Store
+@inject HttpClient Http
+@inject IDispatcher Dispatcher
+@inject IJSRuntime JSRuntime
+
+@if (IsVisible)
+{
+    <div class="modal-overlay @(_isMaximized ? "modal-maximized-overlay" : string.Empty)" @onclick="Close" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+        <div class="modal-container editor-modal @(_isMaximized ? "modal-maximized" : string.Empty)" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Persisted State</h2>
+                <div class="modal-header-actions">
+                    <button class="modal-icon-btn" @onclick="ToggleMaximized" title="@(_isMaximized ? "Restore size" : "Maximize editor")" aria-label="@(_isMaximized ? "Restore size" : "Maximize editor")">
+                        <AppIcon Name="@(_isMaximized ? "minimize" : "maximize")" Class="icon icon-sm" />
+                    </button>
+                    <button class="modal-close-btn" @onclick="Close" aria-label="Close">✕</button>
+                </div>
+            </div>
+
+            <div class="modal-body">
+                <div class="editor-panel">
+                    <div class="panel-header">
+                        <span class="panel-label">Flow State (JSON)</span>
+                        @if (_isLoading)
+                        {
+                            <span class="panel-hint panel-hint-running">Loading…</span>
+                        }
+                        else if (_validationError != null)
+                        {
+                            <span class="panel-hint panel-hint-error">@_validationError</span>
+                        }
+                        else if (_hasUnsavedChanges)
+                        {
+                            <span class="panel-hint panel-hint-running">Unsaved changes</span>
+                        }
+                        else
+                        {
+                            <span class="panel-hint panel-hint-success">Saved</span>
+                        }
+                    </div>
+                    <CodeEditor Value="@Json" ValueChanged="OnJsonChanged" Language="json" CssClass="code-editor-main" />
+                </div>
+
+                <p class="persisted-state-hint">
+                    Durable across runs: Persisted State cards read and write this object, and every execution starts from it.
+                    Editing it here changes what the next run sees.
+                </p>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-outline" @onclick="ReloadAsync" disabled="@(_isLoading || _isSaving)">Reload</button>
+                <button class="btn btn-outline" @onclick="ResetAsync" disabled="@(_isLoading || _isSaving)" title="Reset the persisted state back to an empty object">Reset to {}</button>
+                <div class="modal-footer-spacer"></div>
+                <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(_isLoading || _isSaving || _validationError != null || !_hasUnsavedChanges)">
+                    @(_isSaving ? "Saving…" : "Save")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public EventCallback<bool> IsVisibleChanged { get; set; }
+    [Parameter] public Guid FlowId { get; set; }
+
+    private string Json { get; set; } = "{}";
+    private string? _validationError;
+    private bool _isLoading;
+    private bool _isSaving;
+    private bool _isMaximized;
+    private bool _wasVisible;
+    private bool _hasUnsavedChanges;
+    private string _originalJson = "{}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsVisible && !_wasVisible && FlowId != Guid.Empty)
+        {
+            _isMaximized = false;
+            await LoadAsync();
+        }
+
+        _wasVisible = IsVisible;
+    }
+
+    private void OnJsonChanged(string value)
+    {
+        Json = value ?? string.Empty;
+        _validationError = Validate(Json);
+        _hasUnsavedChanges = Json != _originalJson;
+    }
+
+    private static string? Validate(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Enter a JSON object";
+        }
+
+        try
+        {
+            var parsed = JsonNode.Parse(value);
+            return parsed is JsonObject ? null : "State must be a JSON object";
+        }
+        catch (JsonException)
+        {
+            return "Invalid JSON";
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        try
+        {
+            var state = await Http.GetFromJsonAsync<PersistedStateDto>($"api/integrationflow/{FlowId}/persisted-state");
+            Json = string.IsNullOrWhiteSpace(state?.PersistedStateJson) ? "{}" : state!.PersistedStateJson;
+            _originalJson = Json;
+            _validationError = Validate(Json);
+            _hasUnsavedChanges = false;
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Could not load persisted state: {ex.Message}", Level = "error" });
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task ReloadAsync() => await LoadAsync();
+
+    private async Task SaveAsync()
+    {
+        if (_validationError != null) return;
+
+        _isSaving = true;
+        try
+        {
+            var response = await Http.PutAsJsonAsync($"api/integrationflow/{FlowId}/persisted-state", new PersistedStateDto
+            {
+                FlowId = FlowId,
+                PersistedStateJson = Json
+            });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Dispatcher.Dispatch(new ShowToastAction
+                {
+                    Message = await SafeFetch.DescribeFailureAsync(response, "Persisted state could not be saved."),
+                    Level = "error"
+                });
+                return;
+            }
+
+            _originalJson = Json;
+            _hasUnsavedChanges = false;
+            Dispatcher.Dispatch(new ShowToastAction { Message = "Persisted state saved." });
+            await Close();
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Persisted state could not be saved: {ex.Message}", Level = "error" });
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task ResetAsync()
+    {
+        _isSaving = true;
+        try
+        {
+            var response = await Http.DeleteAsync($"api/integrationflow/{FlowId}/persisted-state");
+            if (!response.IsSuccessStatusCode)
+            {
+                Dispatcher.Dispatch(new ShowToastAction
+                {
+                    Message = await SafeFetch.DescribeFailureAsync(response, "Persisted state could not be reset."),
+                    Level = "error"
+                });
+                return;
+            }
+
+            Json = "{}";
+            _originalJson = "{}";
+            _validationError = null;
+            _hasUnsavedChanges = false;
+            Dispatcher.Dispatch(new ShowToastAction { Message = "Persisted state reset to {}." });
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Persisted state could not be reset: {ex.Message}", Level = "error" });
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task ToggleMaximized()
+    {
+        _isMaximized = !_isMaximized;
+        StateHasChanged();
+
+        await Task.Delay(60);
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSCodeEditor.layoutAll");
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task Close()
+    {
+        await IsVisibleChanged.InvokeAsync(false);
+    }
+}

@@ -1,0 +1,13 @@
+@page "/activity"
+@page "/activity-log"
+@inject NavigationManager NavigationManager
+
+@code {
+    // The activity log was merged into the transaction history page; these routes
+    // stay alive so existing links and bookmarks keep working.
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        NavigationManager.NavigateTo("/transaction-history", replace: true);
+    }
+}

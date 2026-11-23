@@ -1,0 +1,254 @@
+@using System.Globalization
+@using System.Text.Encodings.Web
+@using System.Text.Json
+@using Microsoft.JSInterop
+@using SimpleIPaaS.Client.Services
+@using SimpleIPaaS.Client.Shared
+
+<div class="debug-inspector">
+    <div class="debug-inspector-head">
+        <div>
+            <span class="debug-inspector-eyebrow">DEBUG INSPECTOR</span>
+            <h2>@NodeName</h2>
+            <small>@StepType</small>
+        </div>
+        <button class="debug-inspector-close" @onclick="OnClose" title="Close inspector" aria-label="Close inspector">✕</button>
+    </div>
+
+    <nav class="debug-inspector-tabs">
+        <button class="@(_tab == "Step" ? "active" : "")" @onclick="ShowStepTab">Step</button>
+        <button class="@(_tab == "State" ? "active" : "")" @onclick="ShowStateTab">State</button>
+    </nav>
+
+    <div class="debug-inspector-body">
+        @if (_tab == "Step")
+        {
+        <div class="debug-inspector-status @StatusClass">
+            <span>@StatusLabel</span>
+            @if (Session?.State == DebugNodeState.Success || Session?.State == DebugNodeState.Error)
+            {
+                <span>@Session.DurationMs ms</span>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Session?.Error))
+        {
+            <section class="debug-inspector-section">
+                <div class="debug-inspector-section-title">
+                    <strong>Failure</strong>
+                    <button class="debug-copy" @onclick="() => CopyAsync(Session!.Error)" title="Copy the error">
+                        <AppIcon Name="copy" Class="icon icon-xs" /> Copy
+                    </button>
+                </div>
+                <pre class="debug-payload debug-payload-error">@FormatJson(Session!.Error)</pre>
+            </section>
+        }
+
+        <section class="debug-inspector-section">
+            <div class="debug-inspector-section-title">
+                <strong>Input payload</strong>
+                <button class="debug-copy" @onclick="() => CopyAsync(Session?.Input)" title="Copy the input payload">
+                    <AppIcon Name="copy" Class="icon icon-xs" /> Copy
+                </button>
+            </div>
+            @if (string.IsNullOrWhiteSpace(Session?.Input))
+            {
+                <div class="debug-inspector-empty">This step received no input payload.</div>
+            }
+            else
+            {
+                <pre class="debug-payload">@FormatJson(Session!.Input)</pre>
+            }
+        </section>
+
+        <section class="debug-inspector-section">
+            <div class="debug-inspector-section-title">
+                <strong>Output payload</strong>
+                <button class="debug-copy" @onclick="() => CopyAsync(Session?.Output)" title="Copy the output payload">
+                    <AppIcon Name="copy" Class="icon icon-xs" /> Copy
+                </button>
+            </div>
+            @if (string.IsNullOrWhiteSpace(Session?.Output))
+            {
+                <div class="debug-inspector-empty">This step produced no output payload.</div>
+            }
+            else
+            {
+                <pre class="debug-payload">@FormatJson(Session!.Output)</pre>
+            }
+        </section>
+
+        <section class="debug-inspector-section">
+            <div class="debug-inspector-section-title">
+                <strong>Execution logs</strong>
+                <button class="debug-copy" @onclick="RefreshLogs" disabled="@LoadingLogs" title="Reload the console logs for this step">
+                    <AppIcon Name="refresh" Class="icon icon-xs" /> @(LoadingLogs ? "Loading…" : "Refresh")
+                </button>
+            </div>
+            @if (Logs.Count == 0)
+            {
+                <div class="debug-inspector-empty">@(LogsError ?? "No console logs were recorded for this step.")</div>
+            }
+            else
+            {
+                <div class="debug-log-list">
+                    @foreach (var entry in Logs)
+                    {
+                        <div class="debug-log-row @entry.Level.ToLowerInvariant()">
+                            <span class="debug-log-time">@entry.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)</span>
+                            <span class="debug-log-level">@entry.Level</span>
+                            <span class="debug-log-message">@entry.Message</span>
+                            @if (!string.IsNullOrWhiteSpace(entry.Exception))
+                            {
+                                <pre class="debug-log-exception">@entry.Exception</pre>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+        }
+        else
+        {
+            <section class="debug-inspector-section">
+                <div class="debug-inspector-section-title">
+                    <strong>Flow state</strong>
+                    <CopyButton Text="@(FlowStateJson ?? "{}")" />
+                </div>
+                <div class="field-hint">Exactly the state passed to the next card, keyed by node name.</div>
+                @if (StateEntries(FlowStateJson).Count == 0)
+                {
+                    <div class="debug-inspector-empty">No completed or supplied cards yet.</div>
+                }
+                else
+                {
+                    @foreach (var entry in StateEntries(FlowStateJson))
+                    {
+                        <details class="debug-state-entry">
+                            <summary>@entry.Key</summary>
+                            <pre>@entry.Value</pre>
+                        </details>
+                    }
+                }
+            </section>
+            <section class="debug-inspector-section">
+                <div class="debug-inspector-section-title">
+                    <strong>Persisted state</strong>
+                    <CopyButton Text="@(PersistedStateJson ?? "{}")" />
+                </div>
+                <div class="field-hint">Debug runs do not write persisted state to the database. A supplied Persisted State card changes this session view only.</div>
+                @foreach (var entry in StateEntries(PersistedStateJson))
+                {
+                    <details class="debug-state-entry">
+                        <summary>@entry.Key</summary>
+                        <pre>@entry.Value</pre>
+                    </details>
+                }
+                @if (StateEntries(PersistedStateJson).Count == 0)
+                {
+                    <div class="debug-inspector-empty">The persisted state is empty.</div>
+                }
+            </section>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string NodeName { get; set; } = string.Empty;
+    [Parameter] public string StepType { get; set; } = string.Empty;
+    [Parameter] public DebugNodeSession? Session { get; set; }
+    [Parameter] public string FlowStateJson { get; set; } = "{}";
+    [Parameter] public string PersistedStateJson { get; set; } = "{}";
+    [Parameter] public List<AppLogEntryDto> Logs { get; set; } = new();
+    [Parameter] public string? LogsError { get; set; }
+    [Parameter] public bool LoadingLogs { get; set; }
+    [Parameter] public EventCallback OnCloseRequested { get; set; }
+    [Parameter] public EventCallback RefreshRequested { get; set; }
+
+    [Inject] private IJSRuntime JSRuntime { get; set; } = null!;
+
+    private string _tab = "Step";
+    private void ShowStepTab() => _tab = "Step";
+    private void ShowStateTab() => _tab = "State";
+
+    private string StatusClass => Session?.State switch
+    {
+        DebugNodeState.Success => "is-success",
+        DebugNodeState.Error => "is-error",
+        DebugNodeState.Running => "is-running",
+        DebugNodeState.Supplied => "is-supplied",
+        _ => "is-idle"
+    };
+
+    private string StatusLabel => Session?.State switch
+    {
+        DebugNodeState.Success => "Success",
+        DebugNodeState.Error => "Failed",
+        DebugNodeState.Running => "Running",
+        DebugNodeState.Supplied => "Supplied",
+        _ => "Idle"
+    };
+
+    private static List<(string Key, string Value)> StateEntries(string? json)
+    {
+        var result = new List<(string, string)>();
+        if (string.IsNullOrWhiteSpace(json)) return result;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return new List<(string, string)> { ("value", FormatJson(json)) };
+            foreach (var property in document.RootElement.EnumerateObject())
+                result.Add((property.Name, FormatJson(property.Value.GetRawText())));
+        }
+        catch (JsonException)
+        {
+            result.Add(("raw", json));
+        }
+        return result;
+    }
+
+    private Task OnClose() => OnCloseRequested.InvokeAsync();
+
+    private Task RefreshLogs() => RefreshRequested.InvokeAsync();
+
+    // Pretty-print JSON payloads so the inspector reads like a document, and leave anything that is
+    // not JSON (a plain string, a C# exception) exactly as the node produced it.
+    private static string FormatJson(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+        }
+        catch (JsonException)
+        {
+            return payload;
+        }
+    }
+
+    private async Task CopyAsync(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", FormatJson(text));
+        }
+        catch (JSException)
+        {
+        }
+    }
+}

@@ -1,0 +1,25 @@
+@* One applied filter inside the collapsed summary of <see cref="FilterPanel"/>.
+   Each chip removes only its own filter, so a user can drop one condition without
+   reopening the panel. *@
+<span class="filter-chip">
+    <span class="filter-chip-label" title="@(Title ?? Label)">@Label</span>
+    <button type="button"
+            class="filter-chip-remove"
+            aria-label="@($"Remove filter {Label}")"
+            title="@($"Remove filter {Label}")"
+            @onclick="RemoveAsync">&#215;</button>
+</span>
+
+@code {
+    [Parameter]
+    public string Label { get; set; } = string.Empty;
+
+    /// <summary>Tooltip text, for values too long for the chip (a full search term, for example).</summary>
+    [Parameter]
+    public string? Title { get; set; }
+
+    [Parameter]
+    public EventCallback OnRemove { get; set; }
+
+    private async Task RemoveAsync() => await OnRemove.InvokeAsync();
+}

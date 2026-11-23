@@ -1,0 +1,80 @@
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+
+<div class="code-editor-shell @CssClass" style="@Style">
+    <div id="@_hostId" class="code-editor-host"></div>
+    @if (!_ready)
+    {
+        <pre class="code-editor-ghost">@Value</pre>
+    }
+</div>
+
+@code {
+    [Parameter] public string Value { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public string Language { get; set; } = "csharp";
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public string CssClass { get; set; } = string.Empty;
+    [Parameter] public string Style { get; set; } = string.Empty;
+
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    private readonly string _hostId = $"code-editor-{Guid.NewGuid():N}";
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<CodeEditor>? _selfReference;
+    private long _editorId;
+    private bool _ready;
+    private bool _disposed;
+    private string _currentValue = string.Empty;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _disposed) return;
+
+        _selfReference = DotNetObjectReference.Create(this);
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/code-editor.js");
+        _currentValue = Value ?? string.Empty;
+        _editorId = await _module.InvokeAsync<long>("create", _hostId, _currentValue, Language, ReadOnly, _selfReference);
+        _ready = true;
+        StateHasChanged();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_ready || _module == null) return;
+
+        var next = Value ?? string.Empty;
+        if (next == _currentValue) return;
+
+        _currentValue = next;
+        await _module.InvokeVoidAsync("setValue", _editorId, next);
+    }
+
+    [JSInvokable]
+    public async Task OnEditorChanged(string value)
+    {
+        _currentValue = value ?? string.Empty;
+        Value = _currentValue;
+        if (ValueChanged.HasDelegate)
+        {
+            await ValueChanged.InvokeAsync(_currentValue);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_module != null)
+        {
+            if (_ready)
+            {
+                try { await _module.InvokeVoidAsync("dispose", _editorId); }
+                catch (JSDisconnectedException) { }
+                catch (ObjectDisposedException) { }
+            }
+            try { await _module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        _selfReference?.Dispose();
+    }
+}

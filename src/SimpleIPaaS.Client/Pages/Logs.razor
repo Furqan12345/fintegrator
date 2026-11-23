@@ -11,7 +11,7 @@
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
 
-<PageTitle>Debug Logs — SimpleIPaaS</PageTitle>
+<PageTitle>Debug Logs — fusetor.com</PageTitle>
 
 <div class="logs-page">
     <header class="logs-header">
@@ -32,99 +32,149 @@
         </div>
     </header>
 
-    <div class="logs-filters">
-        <label class="logs-field compact">
-            <span>Minimum level</span>
-            <select value="@_level" @onchange="OnLevelChanged">
-                <option value="">All levels</option>
-                @foreach (var level in _levels)
-                {
-                    <option value="@level">@level and above</option>
-                }
-            </select>
-        </label>
+    @* The toggle, the result count and the active-filter controls all live inside this card so
+       the filter area is one bounded unit; closing it never hides the fact that it is filtering. *@
+    <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFiltersAsync" CssClass="logs-filter-panel">
+        <Actions>
+            <div class="logs-count">
+                Showing <strong>@_entries.Count</strong>@(_total > _entries.Count ? $" of {_total} matching" : string.Empty)
+                <span class="logs-cursor" title="Live tail cursor">cursor @_cursor</span>
+            </div>
+        </Actions>
+        <Chips>
+            @if (HasLevelFilter)
+            {
+                <FilterChip Label="@($"Level: {_level} and above")" OnRemove="ClearLevelFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_source))
+            {
+                <FilterChip Label="@($"Source: {_source}")" OnRemove="ClearSourceFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_integrationFilter))
+            {
+                <FilterChip Label="@($"Integration: {IntegrationFilterLabel}")" OnRemove="ClearIntegrationFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_flowFilter))
+            {
+                <FilterChip Label="@($"Flow: {FlowFilterLabel}")" OnRemove="ClearFlowFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_search))
+            {
+                <FilterChip Label="@($"Search: {_search}")" Title="@_search" OnRemove="ClearSearchFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_executionFilter))
+            {
+                <FilterChip Label="@($"Execution: {_executionFilter}")" Title="@_executionFilter" OnRemove="ClearExecutionFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_service))
+            {
+                <FilterChip Label="@($"Service: {_service}")" OnRemove="ClearServiceFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_component))
+            {
+                <FilterChip Label="@($"Component: {_component}")" OnRemove="ClearComponentFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_eventName))
+            {
+                <FilterChip Label="@($"Event: {_eventName}")" OnRemove="ClearEventFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_outcome))
+            {
+                <FilterChip Label="@($"Outcome: {_outcome}")" OnRemove="ClearOutcomeFilterAsync" />
+            }
+        </Chips>
+        <ChildContent>
+            <div class="logs-filters">
+                <label class="logs-field compact">
+                    <span>Minimum level</span>
+                    <select value="@_level" @onchange="OnLevelChanged">
+                        <option value="">All levels</option>
+                        @foreach (var level in _levels)
+                        {
+                            <option value="@level">@level and above</option>
+                        }
+                    </select>
+                </label>
 
-        <label class="logs-field compact">
-            <span>Source</span>
-            <select value="@_source" @onchange="OnSourceChanged">
-                <option value="">All sources</option>
-                @foreach (var source in _sources)
-                {
-                    <option value="@source">@source</option>
-                }
-            </select>
-        </label>
+                <label class="logs-field compact">
+                    <span>Source</span>
+                    <select value="@_source" @onchange="OnSourceChanged">
+                        <option value="">All sources</option>
+                        @foreach (var source in _sources)
+                        {
+                            <option value="@source">@source</option>
+                        }
+                    </select>
+                </label>
 
-        <label class="logs-field compact">
-            <span>Integration</span>
-            <select value="@_integrationFilter" @onchange="OnIntegrationChanged">
-                <option value="">All integrations</option>
-                @foreach (var integration in _integrations)
-                {
-                    <option value="@integration.Id">@integration.Name</option>
-                }
-            </select>
-        </label>
-        <label class="logs-field flow-filter">
-            <span>Flow</span>
-            <select value="@_flowFilter" @onchange="OnFlowChanged">
-                <option value="">All flows</option>
-                @foreach (var flow in _flows)
-                {
-                    <option value="@flow.Id">@flow.Name</option>
-                }
-            </select>
-        </label>
+                <label class="logs-field compact">
+                    <span>Integration</span>
+                    <select value="@_integrationFilter" @onchange="OnIntegrationChanged">
+                        <option value="">All integrations</option>
+                        @foreach (var integration in _integrations)
+                        {
+                            <option value="@integration.Id">@integration.Name</option>
+                        }
+                    </select>
+                </label>
+                <label class="logs-field flow-filter">
+                    <span>Flow</span>
+                    <select value="@_flowFilter" @onchange="OnFlowChanged">
+                        <option value="">All flows</option>
+                        @foreach (var flow in _flows)
+                        {
+                            <option value="@flow.Id">@flow.Name</option>
+                        }
+                    </select>
+                </label>
 
-        <label class="logs-field grow">
-            <span>Search</span>
-            <input type="search"
-                   placeholder="Message, category, node or exception text — press Enter"
-                   value="@_search"
-                   @onchange="OnSearchChanged" />
-        </label>
+                <label class="logs-field grow">
+                    <span>Search</span>
+                    <input type="search"
+                           placeholder="Message, category, node or exception text — press Enter"
+                           value="@_search"
+                           @onchange="OnSearchChanged" />
+                </label>
 
-        <label class="logs-field execution-filter">
-            <span>Execution id</span>
-            <input type="text"
-                   placeholder="correlate by execution"
-                   value="@_executionFilter"
-                   @onchange="OnExecutionFilterChanged" />
-        </label>
+                <label class="logs-field execution-filter">
+                    <span>Execution id</span>
+                    <input type="text"
+                           placeholder="correlate by execution"
+                           value="@_executionFilter"
+                           @onchange="OnExecutionFilterChanged" />
+                </label>
 
-        <label class="logs-field compact observability-filter">
-            <span>Service</span>
-            <select value="@_service" @onchange="OnServiceChanged">
-                <option value="">All services</option>
-                @foreach (var item in _services) { <option value="@item">@item</option> }
-            </select>
-        </label>
-        <label class="logs-field compact observability-filter">
-            <span>Component</span>
-            <select value="@_component" @onchange="OnComponentChanged">
-                <option value="">All components</option>
-                @foreach (var item in _components) { <option value="@item">@item</option> }
-            </select>
-        </label>
-        <label class="logs-field compact observability-filter">
-            <span>Event</span>
-            <select value="@_eventName" @onchange="OnEventChanged">
-                <option value="">All events</option>
-                @foreach (var item in _events) { <option value="@item">@item</option> }
-            </select>
-        </label>
-        <label class="logs-field compact observability-filter">
-            <span>Outcome</span>
-            <select value="@_outcome" @onchange="OnOutcomeChanged">
-                <option value="">All outcomes</option>
-                @foreach (var item in _outcomes) { <option value="@item">@item</option> }
-            </select>
-        </label>
-        <div class="logs-count">
-            Showing <strong>@_entries.Count</strong>@(_total > _entries.Count ? $" of {_total} matching" : string.Empty)
-            <span class="logs-cursor" title="Live tail cursor">cursor @_cursor</span>
-        </div>
-    </div>
+                <label class="logs-field compact observability-filter">
+                    <span>Service</span>
+                    <select value="@_service" @onchange="OnServiceChanged">
+                        <option value="">All services</option>
+                        @foreach (var item in _services) { <option value="@item">@item</option> }
+                    </select>
+                </label>
+                <label class="logs-field compact observability-filter">
+                    <span>Component</span>
+                    <select value="@_component" @onchange="OnComponentChanged">
+                        <option value="">All components</option>
+                        @foreach (var item in _components) { <option value="@item">@item</option> }
+                    </select>
+                </label>
+                <label class="logs-field compact observability-filter">
+                    <span>Event</span>
+                    <select value="@_eventName" @onchange="OnEventChanged">
+                        <option value="">All events</option>
+                        @foreach (var item in _events) { <option value="@item">@item</option> }
+                    </select>
+                </label>
+                <label class="logs-field compact observability-filter">
+                    <span>Outcome</span>
+                    <select value="@_outcome" @onchange="OnOutcomeChanged">
+                        <option value="">All outcomes</option>
+                        @foreach (var item in _outcomes) { <option value="@item">@item</option> }
+                    </select>
+                </label>
+            </div>
+        </ChildContent>
+    </FilterPanel>
 
     @if (!string.IsNullOrEmpty(_notice))
     {
@@ -227,10 +277,6 @@
                             {
                                 <dt>Node</dt><dd>@entry.NodeName</dd>
                             }
-                            @if (entry.TenantId.HasValue)
-                            {
-                                <dt>Tenant</dt><dd>@entry.TenantId</dd>
-                            }
                         </dl>
                         @if (!string.IsNullOrWhiteSpace(entry.Operation))
                         {
@@ -297,7 +343,7 @@
     [SupplyParameterFromQuery(Name = "flowId")]
     public Guid? FlowId { get; set; }
 
-    private string _level = "Information";
+    private string _level = DefaultLevel;
     private string _source = string.Empty;
     private string _service = string.Empty;
     private string _component = string.Empty;
@@ -311,10 +357,19 @@
     private long _cursor;
     private int _total;
     private bool _paused;
+    // True while the pause came from a failed call. A later successful load clears that pause and
+    // its notice, so a transient API failure cannot leave the console stuck on "could not be
+    // reached" after Refresh proved the API is answering again.
+    private bool _apiUnreachable;
+    private bool _filtersOpen;
     private bool _busy;
     private bool _loading = true;
     private bool _confirmClear;
     private string? _notice;
+    // OnInitializedAsync awaits several API calls, so the user can navigate away before the
+    // poll loop starts. DisposeAsync disposes _cts; without this flag the resumed init would
+    // call _cts.Token and throw ObjectDisposedException (surfaced by the layout error boundary).
+    private bool _disposed;
 
     private ElementReference _consoleRef;
     private IJSObjectReference? _module;
@@ -340,6 +395,7 @@
         await LoadFilterOptionsAsync();
         await ReloadAsync();
 
+        if (_disposed) return;
         _pollTask = PollAsync(_cts.Token);
     }
 
@@ -476,10 +532,21 @@
         {
             _notice = "Log polling paused because the API could not be reached. Press Resume to try again.";
             _paused = true;
+            _apiUnreachable = true;
             return;
         }
 
         _notice = null;
+
+        // A load that succeeded proves the API is reachable again: clear the pause the failure left
+        // behind. A pause the operator chose (Pause button) is untouched because _apiUnreachable is
+        // false in that case.
+        if (_apiUnreachable)
+        {
+            _apiUnreachable = false;
+            _paused = false;
+        }
+
         _entries.Clear();
         _expanded.Clear();
 
@@ -514,6 +581,7 @@
         {
             // Stop hammering a dead API — one toast, then wait for the user.
             _paused = true;
+            _apiUnreachable = true;
             _notice = "Log polling paused because the API could not be reached. Press Resume to try again.";
             await InvokeAsync(StateHasChanged);
             return;
@@ -676,12 +744,80 @@
         await ReloadAsync();
     }
 
+    /// <summary>The page opens at Information and above, so that is the "no level filter" state.</summary>
+    private const string DefaultLevel = "Information";
+
+    private bool HasLevelFilter =>
+        !string.IsNullOrWhiteSpace(_level) && !string.Equals(_level, DefaultLevel, StringComparison.OrdinalIgnoreCase);
+
+    private string IntegrationFilterLabel =>
+        _integrations.FirstOrDefault(integration => integration.Id.ToString() == _integrationFilter)?.Name
+        ?? ShortId(Guid.TryParse(_integrationFilter, out var integrationId) ? integrationId : Guid.Empty);
+
+    private string FlowFilterLabel =>
+        _flows.FirstOrDefault(flow => flow.Id.ToString() == _flowFilter)?.Name
+        ?? ShortId(Guid.TryParse(_flowFilter, out var flowId) ? flowId : Guid.Empty);
+
+    private int ActiveFilterCount
+    {
+        get
+        {
+            var count = 0;
+            if (HasLevelFilter) count++;
+            if (!string.IsNullOrWhiteSpace(_source)) count++;
+            if (!string.IsNullOrWhiteSpace(_integrationFilter)) count++;
+            if (!string.IsNullOrWhiteSpace(_flowFilter)) count++;
+            if (!string.IsNullOrWhiteSpace(_search)) count++;
+            if (!string.IsNullOrWhiteSpace(_executionFilter)) count++;
+            if (!string.IsNullOrWhiteSpace(_service)) count++;
+            if (!string.IsNullOrWhiteSpace(_component)) count++;
+            if (!string.IsNullOrWhiteSpace(_eventName)) count++;
+            if (!string.IsNullOrWhiteSpace(_outcome)) count++;
+            return count;
+        }
+    }
+
+    // Per-chip removals from the collapsed summary. Each one reloads the console exactly the
+    // way the matching control does, so live tailing keeps its cursor behaviour.
+    private Task ClearLevelFilterAsync() => ResetFiltersAsync(() => _level = DefaultLevel);
+    private Task ClearSourceFilterAsync() => ResetFiltersAsync(() => _source = string.Empty);
+    private Task ClearIntegrationFilterAsync() => ResetFiltersAsync(() => _integrationFilter = string.Empty);
+    private Task ClearFlowFilterAsync() => ResetFiltersAsync(() => _flowFilter = string.Empty);
+    private Task ClearSearchFilterAsync() => ResetFiltersAsync(() => _search = string.Empty);
+    private Task ClearExecutionFilterAsync() => ResetFiltersAsync(() => _executionFilter = string.Empty);
+    private Task ClearServiceFilterAsync() => ResetFiltersAsync(() => _service = string.Empty);
+    private Task ClearComponentFilterAsync() => ResetFiltersAsync(() => _component = string.Empty);
+    private Task ClearEventFilterAsync() => ResetFiltersAsync(() => _eventName = string.Empty);
+    private Task ClearOutcomeFilterAsync() => ResetFiltersAsync(() => _outcome = string.Empty);
+
+    /// <summary>Back to every level, every source, no scope: a full reload, as any filter change.</summary>
+    private Task ClearFiltersAsync() => ResetFiltersAsync(() =>
+    {
+        _level = DefaultLevel;
+        _source = string.Empty;
+        _integrationFilter = string.Empty;
+        _flowFilter = string.Empty;
+        _search = string.Empty;
+        _executionFilter = string.Empty;
+        _service = string.Empty;
+        _component = string.Empty;
+        _eventName = string.Empty;
+        _outcome = string.Empty;
+    });
+
+    private async Task ResetFiltersAsync(Action apply)
+    {
+        apply();
+        await ReloadAsync();
+    }
+
     private async Task TogglePause()
     {
         _paused = !_paused;
         if (!_paused)
         {
             _notice = null;
+            _apiUnreachable = false;
             await ReloadAsync();
         }
     }
@@ -690,6 +826,9 @@
     {
         await RefreshSourcesAsync();
         await RefreshIntegrationsAsync();
+
+        // ReloadAsync clears the error pause and its notice as soon as it loads successfully, so a
+        // Refresh after a failed first load re-renders the console instead of leaving it stuck.
         await ReloadAsync();
     }
 
@@ -763,7 +902,6 @@
         || !string.IsNullOrWhiteSpace(entry.FlowName)
         || entry.FlowExecutionId.HasValue
         || entry.FlowId.HasValue
-        || entry.TenantId.HasValue
         || entry.Category.Contains('.');
 
     private string IntegrationLabel(AppLogEntryDto entry)
@@ -826,6 +964,7 @@
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
         _cts.Cancel();
 
         if (_pollTask != null)

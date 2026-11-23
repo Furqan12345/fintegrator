@@ -1,9 +1,10 @@
-@page "/flow"
+﻿@page "/flow"
 @page "/flow/{FlowId:guid}"
 @page "/flow-designer"
 @page "/flow-designer/{FlowId:guid}"
 @using System.Globalization
 @using System.Net.Http.Json
+@using System.Text.Encodings.Web
 @using System.Text.Json
 @using System.Text.Json.Nodes
 @using Blazor.Diagrams
@@ -14,8 +15,11 @@
 @using Blazor.Diagrams.Core.Routers
 @using Blazor.Diagrams.Options
 @using SimpleIPaaS.Client.Components.Nodes
+@using SimpleIPaaS.Client.Components.FlowTests
+@using SimpleIPaaS.Client.Services
 @using SimpleIPaaS.Client.Shared
 @using SimpleIPaaS.Client.Store
+@using Microsoft.AspNetCore.Components.Routing
 @using SimpleIPaaS.Shared.Models
 @using Microsoft.JSInterop
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
@@ -25,17 +29,58 @@
 @inject HttpClient Http
 @inject IJSRuntime JSRuntime
 @inject NavigationManager NavigationManager
+@inject SimpleIPaaS.Client.Services.AiBuildJobTracker AiBuild
 
-<PageTitle>Flow Designer - SimpleIPaaS</PageTitle>
+<PageTitle>Flow Designer - fusetor.com</PageTitle>
 
-<div class="diagram-container @CanvasContainerClass">
+<div class="designer-shell">
+@if (!_testMode && _testReturnState != null)
+{
+    <div class="test-return-bar">
+        <button class="btn btn-primary btn-sm" @onclick="ReturnToTestsAsync">← Back to tests</button>
+        <span>Return to @TestReturnSummary</span>
+    </div>
+}
+@if (_testMode && _testSession != null)
+{
+    <TestScenarioPanel Session="_testSession"
+                       Collapsed="@(!_testSession.ScenarioPanelOpen)"
+                       OnToggle="ToggleTestScenarioPanel"
+                       OnNew="RequestNewTestScenario"
+                       OnDuplicate="RequestDuplicateTestScenario" />
+}
+@if (_debugMode && _debugInspectorNodeId.HasValue)
+{
+    <DebugInspector NodeName="@_debugInspectorNodeName"
+                    StepType="@_debugInspectorStepType"
+                    Session="@CurrentInspectorSession"
+                    FlowStateJson="@DebugFlowStateSnapshot"
+                    PersistedStateJson="@DebugPersistedStateSnapshot"
+                    Logs="@_debugInspectorLogs"
+                    LogsError="@_debugInspectorLogsError"
+                    LoadingLogs="@_debugInspectorLogsLoading"
+                    OnCloseRequested="@CloseDebugInspector"
+                    RefreshRequested="@RefreshDebugInspectorLogsAsync" />
+}
+
+<div class="@CanvasContainerClass @(_testMode ? "test-mode-active" : "") @(_testMode && _testSession?.ResultsOpen == true ? "test-results-open" : "")" style="@TestCanvasStyle">
     <div class="diagram-toolbar @ToolbarClass">
         <button class="btn btn-icon toolbar-toggle" @onclick="ToggleToolbar" title="@ToolbarToggleLabel" aria-label="@ToolbarToggleLabel">
             <AppIcon Name="@(_toolbarCollapsed ? "chevron-down" : "chevron-up")" Class="icon icon-sm" />
         </button>
 
         <div class="toolbar-content">
-            <input class="toolbar-input" type="text" @bind="FlowName" placeholder="Flow Name" />
+            <input class="toolbar-input flow-name-input" type="text" @bind="FlowName" readonly="@_testMode" placeholder="Flow Name" />
+            @if (_testMode && _testSession != null)
+            {
+                <TestModeToolbar Session="_testSession"
+                                 OnExit="RequestExitTestMode"
+                                 OnScenarioSelected="OnTestScenarioSelected"
+                                 OnNew="RequestNewTestScenario"
+                                 OnDuplicate="RequestDuplicateTestScenario" />
+            }
+            else
+            {
             <select class="toolbar-input toolbar-select" value="@IntegrationValue" @onchange="OnIntegrationChanged">
                 <option value="">Unassigned flow</option>
                 @foreach (var integration in AvailableIntegrations)
@@ -54,7 +99,23 @@
                 <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.PersistedState)" title="Add persisted state">+ Persisted State</button>
                 <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Debug)" title="Add a debug node">+ Debug</button>
                 <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.ForEach)" title="Add a for-each loop">+ For Each</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.FanOut)" title="Create one transaction per array item">+ Fan Out</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Email)" title="Send an email">+ Email</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.AddIdentifier)" title="Set the transaction's identifier">+ Identifier</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Error)" title="Set the transaction's error message">+ Error</button>
+                <button class="btn btn-outline btn-sm" @onclick="() => AddNode(StepType.Success)" title="Set the transaction's success message">+ Success</button>
             </div>
+            <button class="btn btn-primary btn-sm ai-flow-launch" @onclick="OpenAiChat" title="Describe a flow and let the AI agent build it in a chat session" disabled="@(FlowState.Value.CurrentFlow == null || (FlowId.HasValue && !_isLoaded))">Build with AI</button>
+            @if (AiBuild != null && AiBuild.IsBusy)
+            {
+                <button class="btn btn-outline btn-sm ai-build-chip" @onclick="OpenAiFlowBuilder" title="Open the AI build progress">
+                    AI building… @AiBuild.CurrentJob?.ToolCallsUsed tools
+                </button>
+            }
+            else if (AiBuild?.CurrentJob?.Status == "Completed")
+            {
+                <button class="btn btn-success btn-sm ai-build-chip" @onclick="OpenAiFlowBuilder" title="Review the AI draft">AI draft ready</button>
+            }
             <div class="toolbar-divider"></div>
             <button class="btn btn-outline btn-sm" @onclick="DeleteSelectedNodes" title="Delete selected node(s)">
                 <AppIcon Name="trash" Class="icon icon-xs" /> Delete
@@ -62,31 +123,99 @@
             <button class="btn btn-outline btn-sm" @onclick="OpenFlowSettings" disabled="@(FlowState.Value.CurrentFlow == null)" title="Flow settings">
                 <AppIcon Name="settings" Class="icon icon-xs" /> Settings
             </button>
-            <button class="btn btn-outline btn-sm" @onclick="OpenFlowTests" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="Run isolated test cases for this flow">
-                <AppIcon Name="check" Class="icon icon-xs" /> Tests
+            <button class="btn btn-outline btn-sm" @onclick="OpenPersistedState" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="View and edit the durable state every run starts from">
+                <AppIcon Name="crossreferences" Class="icon icon-xs" /> State
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="OpenHelperScript" disabled="@(FlowState.Value.CurrentFlow == null || (FlowId.HasValue && !_isLoaded))" title="Define C# helper functions shared by every script in this flow">
+                <AppIcon Name="logs" Class="icon icon-xs" /> Helpers
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="ToggleTestModeAsync" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="Open the flow in test mode">
+                <AppIcon Name="check" Class="icon icon-xs" />
+                @TestToolbarLabel
             </button>
             <button class="btn btn-outline btn-sm" @onclick="OpenFlowLogs" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="View debug logs for this flow">
                 <AppIcon Name="search" Class="icon icon-xs" /> Logs
             </button>
-            <button class="btn btn-outline btn-sm" @onclick="PublishFlowAsync" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty || FlowState.Value.IsLoading)" title="Publish this draft">
-                <AppIcon Name="arrow-right" Class="icon icon-xs" /> Publish
+            <button class="btn btn-outline btn-sm" @onclick="PublishFlowAsync" disabled="@(_publishBusy || FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty || FlowState.Value.IsLoading)" title="Publish this draft">
+                <AppIcon Name="arrow-right" Class="icon icon-xs" /> @(_publishBusy ? "Publishing…" : "Publish")
             </button>
+            @if (HasSchedule)
+            {
+                <button class="btn btn-outline btn-sm" @onclick="ToggleScheduleAsync"
+                        disabled="@(_scheduleBusy || !CanToggleSchedule || FlowState.Value.IsLoading)"
+                        title="@(FlowState.Value.CurrentFlow?.PublishedVersion == null ? "Publish the flow before starting its schedule" : IsScheduleActive ? "Pause the schedule" : "Start the schedule")">
+                    <AppIcon Name="clock" Class="icon icon-xs" />
+                    @(_scheduleBusy ? "Updating…" : IsScheduleActive ? "Pause schedule" : "Start schedule")
+                </button>
+            }
             <button class="btn btn-outline btn-sm" @onclick="OpenVersionHistoryAsync" disabled="@(FlowState.Value.CurrentFlow == null || FlowState.Value.CurrentFlow.Id == Guid.Empty)" title="View published versions">
                 <AppIcon Name="refresh" Class="icon icon-xs" /> Versions
             </button>
             <div class="toolbar-divider"></div>
+            <button class="btn btn-outline btn-sm @(_debugMode ? "debug-toggle-active" : string.Empty)"
+                    @onclick="ToggleDebugModeAsync"
+                    disabled="@(_debugBusy)"
+                    title="@(_debugMode ? "Leave step-by-step debugging" : "Run this flow one step at a time")">
+                <AppIcon Name="search" Class="icon icon-xs" /> @(_debugMode ? "Debug Mode On" : "Debug Mode")
+            </button>
+            @if (_debugMode)
+            {
+                <button class="btn btn-outline btn-sm" @onclick="ResetDebugSession" title="Clear all debug results and supplied outputs">
+                    <AppIcon Name="refresh" Class="icon icon-xs" /> Reset
+                </button>
+            }
             <button class="btn btn-primary" @onclick="SaveFlow" disabled="@FlowState.Value.IsLoading">
                 @(FlowState.Value.IsLoading ? "Saving…" : "Save")
             </button>
             <button class="btn btn-success" @onclick="RunFlow" disabled="@(FlowState.Value.IsLoading || FlowState.Value.CurrentFlow == null)">
                 <AppIcon Name="play" Class="icon icon-xs" /> Run
             </button>
+            }
         </div>
 
         <button class="btn btn-icon canvas-fullscreen" @onclick="ToggleFullscreen" title="@FullscreenLabel" aria-label="@FullscreenLabel">
             <AppIcon Name="@(_isFullscreen ? "minimize" : "maximize")" Class="icon icon-sm" />
         </button>
     </div>
+
+    @if (DeadLetterIdQuery.HasValue)
+    {
+        <section class="resync-panel">
+            <div class="resync-panel-heading">
+                <div>
+                    <h3>Resync dead letter</h3>
+                    <p class="text-muted">Choose a completed upstream node to replay from. That node and its downstream path will run again.</p>
+                </div>
+                <a class="btn btn-sm btn-outline" href="/deadletters">Close</a>
+            </div>
+            @if (_resyncLoading)
+            {
+                <p class="text-muted">Loading recovery details…</p>
+            }
+            else if (_resyncDeadLetter != null)
+            {
+                <div class="resync-controls">
+                    <label class="form-group resync-node-select">
+                        <span>Start from node</span>
+                        <select class="form-control" @bind="_selectedResyncStepId" disabled="@(_resyncOptions.Count == 0 || _resyncQueued)">
+                            @foreach (var option in _resyncOptions)
+                            {
+                                <option value="@option.StepId">@option.NodeName (@option.StepType)@(option.IsDefault ? " — flow default + downstream" : option.IsFailedNode ? " — failed node + downstream" : " + downstream")</option>
+                            }
+                        </select>
+                    </label>
+                    <button class="btn btn-primary" @onclick="QueueResyncAsync" disabled="@(!CanQueueResync)">
+                        @(_resyncQueueing ? "Queueing…" : "Resync")
+                    </button>
+                </div>
+                <small class="field-hint">The selected node and all reachable downstream nodes run again. Earlier nodes keep their original results; HTTP actions on the rerun path may run again.</small>
+            }
+            @if (!string.IsNullOrWhiteSpace(_resyncMessage))
+            {
+                <div class="resync-message @(_resyncQueued ? "success" : "error")">@_resyncMessage</div>
+            }
+        </section>
+    }
 
     @if (_validationErrors.Any())
     {
@@ -111,10 +240,11 @@
     <div class="zoom-controls">
         <button class="btn btn-icon" @onclick="ZoomIn" title="Zoom In">+</button>
         <button class="btn btn-icon" @onclick="ZoomOut" title="Zoom Out">-</button>
-        <button class="btn btn-icon" @onclick="() => Diagram.ZoomToFit(10)" title="Fit to Screen">Fit</button>
+        <button class="btn btn-icon" @onclick="FitToScreenAsync" title="Fit the whole flow in view with a comfortable margin">Fit</button>
+        <button class="btn btn-icon" @onclick="TidyLayoutAsync" title="Arrange the cards in evenly spaced columns">Tidy</button>
     </div>
 
-    @if (!string.IsNullOrWhiteSpace(FlowState.Value.RunResult))
+    @if (!_testMode && !string.IsNullOrWhiteSpace(FlowState.Value.RunResult))
     {
         <div class="run-result-panel">
             <h4>Execution Result</h4>
@@ -122,14 +252,154 @@
             <button class="btn btn-outline btn-block run-result-dismiss" @onclick="ClearResult">Dismiss</button>
         </div>
     }
+
+    @if (_testMode && _testSession != null && _testSession.ResultsOpen)
+    {
+        <TestResultsDrawer Session="_testSession"
+                           Height="_testDrawerHeight"
+                           Collapsed="_testDrawerCollapsed"
+                           OnHeightChanged="TestDrawerHeightChanged"
+                           OnToggleCollapsed="ToggleTestDrawer"
+                           OnShowCard="ShowTestCard"
+                           OnClose="CloseTestResults" />
+    }
+</div>
+@if (_testMode && _testSession?.SelectedCardId is Guid testCardId)
+{
+    <TestCardInspector Session="_testSession"
+                       CardId="testCardId"
+                       CardName="@_testSession.SelectedCardName"
+                       OnClose="CloseTestInspector"
+                       OnOpenInEditor="OpenCardInEditor" />
+}
 </div>
 
+@if (_showPublishTests && _testSession != null)
+{
+    <PublishTestsDialog Session="_testSession"
+                        OnClose="ClosePublishTestsDialog"
+                        OnOpenTestMode="OpenTestModeFromPublish"
+                        OnPublished="OnTestsPublished" />
+}
+@if (_showTestConfirm)
+{
+    <div class="modal-overlay" @onclick="CancelTestDiscard">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <div>
+                    <div class="test-eyebrow">UNSAVED FLOW CHANGES</div>
+                    <h3 class="modal-title">
+                        @(_testConfirmAction switch
+                        {
+                            "save-before-test" => "Save changes before testing?",
+                            "return-to-tests" => "Save changes before returning to tests?",
+                            _ => "Discard unsaved changes?"
+                        })
+                    </h3>
+                    <p class="modal-subtitle">
+                        @(_testConfirmAction switch
+                        {
+                            "save-before-test" => "Tests run against the saved draft. Save the flow, then enter test mode.",
+                            "return-to-tests" => "The flow changed while you were in the editor. Save it, then restore your test session.",
+                            _ => "The current flow has unsaved edits. This action will discard them."
+                        })
+                    </p>
+                </div>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(_testSaveError))
+            {
+                <div class="modal-body">
+                    <div class="test-error-box">@_testSaveError</div>
+                </div>
+            }
+            <div class="modal-actions">
+                <button class="btn btn-ghost" @onclick="CancelTestDiscard">Cancel</button>
+                <button class="btn btn-primary" @onclick="ConfirmTestDiscardAsync">
+                    @(_testConfirmAction switch
+                    {
+                        "save-before-test" => "Save and continue",
+                        "return-to-tests" => "Save and return",
+                        _ => "Discard and continue"
+                    })
+                </button>
+            </div>
+        </div>
+    </div>
+}
 @if (_editingStep != null)
 {
-    <MapperModal @bind-IsVisible="_showMapperModal" Step="_editingStep" TargetProperty="@_editingProperty" />
+    <MapperModal @bind-IsVisible="_showMapperModal"
+                 Step="_editingStep"
+                 TargetProperty="@_editingProperty"
+                 HelperCode="@(FlowState.Value.CurrentFlow?.HelperCode ?? string.Empty)" />
 }
 
+    <PersistedStateModal @bind-IsVisible="_showPersistedStateModal" FlowId="@(_persistedStateFlowId)" />
+    <HelperScriptModal @bind-IsVisible="_showHelperScriptModal"
+                       Value="@(FlowState.Value.CurrentFlow?.HelperCode ?? string.Empty)"
+                       ValueChanged="OnHelperCodeChanged" />
+
 <DebugJsonModal @bind-IsVisible="_showDebugJsonModal" JsonContent="@_debugJsonContent" ErrorMessage="@_debugJsonError" />
+@if (_showDebugSupplyModal)
+{
+    <div class="modal-overlay" @onclick="CloseDebugSupply">
+        <div class="modal-container flow-settings-modal debug-supply-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <div>
+                    <div class="test-eyebrow">DEBUG · SUPPLY OUTPUT</div>
+                    <h3 class="modal-title">@_debugSupplyNodeName</h3>
+                    <p class="modal-subtitle">The card is marked done without calling the API. No HTTP, email or database side effects.</p>
+                </div>
+                <button class="modal-close-btn" @onclick="CloseDebugSupply">×</button>
+            </div>
+            <div class="modal-body">
+                @if (DebugSupplyStepType == "Branch")
+                {
+                    <div class="debug-supply-choice">
+                        <label class="test-radio">
+                            <input type="radio" name="supply-branch" checked="@_debugSupplyBranchResult" @onchange="() => _debugSupplyBranchResult = true" />
+                            <span><strong>True</strong><small>Route down the true port.</small></span>
+                        </label>
+                        <label class="test-radio">
+                            <input type="radio" name="supply-branch" checked="@(!_debugSupplyBranchResult)" @onchange="() => _debugSupplyBranchResult = false" />
+                            <span><strong>False</strong><small>Route down the false port.</small></span>
+                        </label>
+                    </div>
+                }
+                else
+                {
+                    @if (DebugSupplyStepType == "HttpAction" && DebugSupplyHttpContinue)
+                    {
+                        <div class="debug-supply-choice">
+                            <label class="test-radio">
+                                <input type="radio" name="supply-http" checked="@(!_debugSupplyHttpError)" @onchange="() => SetDebugSupplyHttpMode(false)" />
+                                <span><strong>Success</strong><small>Route through the normal output port.</small></span>
+                            </label>
+                            <label class="test-radio">
+                                <input type="radio" name="supply-http" checked="@_debugSupplyHttpError" @onchange="() => SetDebugSupplyHttpMode(true)" />
+                                <span><strong>Error</strong><small>Route through the Error port with the error envelope.</small></span>
+                            </label>
+                        </div>
+                    }
+                    <CodeEditor Value="@_debugSupplyJson" ValueChanged="OnDebugSupplyJsonChanged" Language="json" CssClass="test-config-editor" />
+                    @if (!string.IsNullOrWhiteSpace(_debugSupplyError))
+                    {
+                        <div class="test-field-error">@_debugSupplyError</div>
+                    }
+                    @if (DebugSupplyStepType is "ForEach" or "FanOut")
+                    {
+                        <div class="field-hint">Supply a JSON array; it becomes this loop/fan-out card's output.</div>
+                    }
+                }
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" @onclick="CloseDebugSupply">Cancel</button>
+                <button class="btn btn-primary" @onclick="ConfirmDebugSupplyAsync">Supply output</button>
+            </div>
+        </div>
+    </div>
+}
+<AiFlowBuilderModal @bind-IsVisible="_showAiFlowBuilder" CurrentFlow="_aiFlowCurrentFlow" OnFlowGenerated="ApplyAiFlowDraftAsync" />
 
 @if (_showFlowSettings && FlowState.Value.CurrentFlow != null)
 {
@@ -212,9 +482,20 @@
                 }
 
                 <div class="form-group">
+                    <label for="default-resync-node">Dead-letter resync starts from</label>
+                    <select id="default-resync-node" class="form-control" value="@DefaultDeadLetterResyncNodeValue" @onchange="OnDefaultDeadLetterResyncNodeChanged">
+                        <option value="">Failed node + downstream (default)</option>
+                        @foreach (var node in ResyncNodeChoices)
+                        {
+                            <option value="@node.StepConfig.Id">@ResyncNodeLabel(node)</option>
+                        }
+                    </select>
+                    <small class="field-hint">Resync reruns the selected node and all reachable downstream nodes. With the default, it reruns the failed node and the rest of its downstream path.</small>
+                </div>
+                <div class="form-group">
                     <label class="checkbox-label">
                         <input type="checkbox" @bind="FlowState.Value.CurrentFlow!.AllowPostReplay" />
-                        Allow POST steps to be replayed from the dead-letter queue
+                        Allow side-effecting steps (POST, PATCH, …) to be replayed from the dead-letter queue
                     </label>
                     <small class="field-hint">POST requests are not idempotent — replaying one can duplicate its effect on the target system. Leave off unless the endpoint is safe to call twice.</small>
                 </div>
@@ -250,7 +531,7 @@
                     {
                         <div class="version-history-row">
                             <div>
-                                <strong>v@version.VersionNumber</strong>
+                                <strong>v@(version.VersionNumber)</strong>
                                 @if (version.IsCurrent)
                                 {
                                     <span class="text-muted"> · current</span>
@@ -259,7 +540,7 @@
                                 <div>@version.ChangeNote</div>
                                 @if (version.RolledBackFromVersion.HasValue)
                                 {
-                                    <small class="field-hint">Rollback from v@version.RolledBackFromVersion</small>
+                                    <small class="field-hint">Rollback from v@(version.RolledBackFromVersion)</small>
                                 }
                             </div>
                             <button class="btn btn-outline btn-sm"
@@ -281,10 +562,26 @@
 @code {
     [Parameter] public Guid? FlowId { get; set; }
 
+    [SupplyParameterFromQuery(Name = "deadLetterId")]
+    public Guid? DeadLetterIdQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "draftMessageId")]
+    public Guid? DraftMessageIdQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "chatSessionId")]
+    public Guid? ChatSessionIdQuery { get; set; }
+
     public IEnumerable<ConnectionDto> AvailableConnections => _connections;
+
+    private string DefaultDeadLetterResyncNodeValue => FlowState.Value.CurrentFlow?.DefaultDeadLetterResyncStepId?.ToString() ?? string.Empty;
+    private IEnumerable<IntegrationNodeModel> ResyncNodeChoices => Diagram == null ? Enumerable.Empty<IntegrationNodeModel>() : Diagram.Nodes.OfType<IntegrationNodeModel>().OrderBy(node => ResyncNodeLabel(node));
+    private static string ResyncNodeLabel(IntegrationNodeModel node) => string.IsNullOrWhiteSpace(node.StepConfig.NodeName) ? node.StepConfig.StepType : node.StepConfig.NodeName;
 
     [SupplyParameterFromQuery(Name = "integrationId")]
     public Guid? IntegrationIdQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "aiBuild")]
+    public string? AiBuildQuery { get; set; }
 
     private BlazorDiagram Diagram { get; set; } = null!;
     private string FlowName { get; set; } = "New Flow";
@@ -292,7 +589,13 @@
     private bool _showMapperModal;
     private IntegrationStepDto? _editingStep;
     private string _editingProperty = "MappingCode";
+    private bool _showPersistedStateModal;
+    private Guid _persistedStateFlowId;
+    private bool _showHelperScriptModal;
     private bool _showDebugJsonModal;
+    private bool _showAiFlowBuilder;
+    private bool _appliedDraftMessage;
+    private IntegrationFlowDto? _aiFlowCurrentFlow;
     private string _debugJsonContent = string.Empty;
     private string _debugJsonError = string.Empty;
     private List<IntegrationDto> _integrations = new();
@@ -302,12 +605,127 @@
     private List<FlowVersionDto> _versions = new();
     private bool _webhookCopied;
     private List<string> _validationErrors = new();
+    private bool _scheduleBusy;
+    private bool _publishBusy;
     private List<DateTime> _cronPreviewOccurrences = new();
     private string _cronPreviewDescription = string.Empty;
     private string _cronPreviewError = string.Empty;
     private bool _toolbarCollapsed;
     private bool _isFullscreen;
     private DotNetObjectReference<FlowDesigner>? _dotnetHelper;
+    private Guid? _expectedFlowId;
+    private Guid? _loadedResyncDeadLetterId;
+    private DeadLetterDto? _resyncDeadLetter;
+    private List<ResyncNodeOptionDto> _resyncOptions = new();
+    private string _selectedResyncStepId = string.Empty;
+    private string _resyncMessage = string.Empty;
+    private bool _resyncLoading;
+    private bool _resyncQueueing;
+    private bool _resyncQueued;
+    private bool CanQueueResync => !_resyncLoading && !_resyncQueueing && !_resyncQueued &&
+        Guid.TryParse(_selectedResyncStepId, out _) && _resyncOptions.Count > 0;
+
+    private bool _debugMode;
+    private bool _debugBusy;
+    private DebugGraph? _debugGraph;
+    private readonly Dictionary<Guid, DebugNodeSession> _debugSessions = new();
+    private Guid? _debugInspectorNodeId;
+    private string _debugInspectorNodeName = string.Empty;
+    private string _debugInspectorStepType = string.Empty;
+    private List<AppLogEntryDto> _debugInspectorLogs = new();
+    private string? _debugInspectorLogsError;
+    private bool _debugInspectorLogsLoading;
+    private string _debugPersistedStateJson = "{}";
+    private int _debugSequence;
+    private bool _debugLinkStylesApplied;
+    private bool _showDebugSupplyModal;
+    private Guid? _debugSupplyNodeId;
+    private string _debugSupplyNodeName = string.Empty;
+    private string _debugSupplyJson = "{}";
+    private string? _debugSupplyError;
+    private bool _debugSupplyBranchResult = true;
+    private bool _debugSupplyHttpError;
+    private bool DebugSupplyHttpContinue => DebugSupplyStepType == "HttpAction"
+        && FlowState.Value.CurrentFlow?.Nodes.FirstOrDefault(node => node.Id == _debugSupplyNodeId)?.HttpErrorMode == "Continue";
+
+    private string DebugFlowStateSnapshot => BuildDebugStateSnapshot();
+    private string DebugPersistedStateSnapshot => _debugPersistedStateJson;
+
+    [SupplyParameterFromQuery(Name = "mode")]
+    public string? ModeQuery { get; set; }
+
+    private bool _testMode;
+    private FlowTestSession? _testSession;
+    private FlowTestSuiteStatusDto? _testStatus;
+    private bool _showPublishTests;
+    private bool _showTestConfirm;
+    private string _testConfirmAction = string.Empty;
+    private Guid? _pendingScenarioId;
+    private Guid? _pendingEditorCardId;
+    private TestModeReturnState? _testReturnState;
+    private TestRestoreView? _testRestoreView;
+    private bool _restoringTestSession;
+
+    private sealed record TestModeReturnState(
+        Guid ScenarioId,
+        string ScenarioName,
+        Guid? CardId,
+        string CardName,
+        string InspectorTab,
+        Guid? RunId,
+        bool ResultsOpen,
+        bool DrawerCollapsed,
+        int DrawerHeight,
+        bool ScenarioPanelOpen,
+        double Zoom,
+        double PanX,
+        double PanY);
+
+    private sealed record TestRestoreView(double Zoom, double PanX, double PanY);
+    private string? _pendingNavigationUrl;
+    private Guid? _lastFailedTestCardId;
+    private string? _lastSavedDraftJson;
+    private bool _awaitingSaveBaseline;
+    private IntegrationFlowDto? _flowBeforeSave;
+    private string? _testSaveError;
+    private IDisposable? _locationChangingRegistration;
+    private bool _allowTestNavigation;
+    private DateTime? _lastStatusFlowUpdated;
+    private bool _statusRefreshBusy;
+    private bool _fitTestAfterRender;
+    private bool? _scenarioPanelUserChoice;
+    private int _testCanvasWidth;
+    private int _testCanvasHeight;
+    private int _testFullCanvasHeight;
+    private int _testDrawerHeight = 240;
+    private bool _testDrawerCollapsed;
+    private bool _testDrawerAutoCollapsed;
+    private bool _testDrawerHeightInitialized;
+    private bool _lastTestResultsOpen;
+    private Guid? _failedCardToCenter;
+    private bool _testCanvasObserverAttached;
+
+    private string TestCanvasStyle => _testMode && _testSession?.ResultsOpen == true
+        ? $"--test-drawer-height:{(_testDrawerCollapsed ? 120 : _testDrawerHeight)}px"
+        : string.Empty;
+
+    private string TestToolbarLabel
+    {
+        get
+        {
+            var status = _testSession?.Status ?? _testStatus;
+            if (status == null) return "Tests";
+            if (status.Total == 0)
+                return status.ScenarioCount == 0 ? "Tests" : $"Tests • {status.ScenarioCount}";
+            if (status.Failed > 0) return $"Tests ✗ {status.Passed}/{status.Total}";
+            if (status.Stale > 0) return "Tests • stale";
+            if (status.NeverRun > 0) return $"Tests • {status.Passed}/{status.Total}";
+            return $"Tests ✓ {status.Passed}/{status.Total}";
+        }
+    }
+
+    private DebugNodeSession? CurrentInspectorSession =>
+        _debugInspectorNodeId.HasValue && _debugSessions.TryGetValue(_debugInspectorNodeId.Value, out var session) ? session : null;
 
     private string ToolbarClass => _toolbarCollapsed ? "diagram-toolbar collapsed" : "diagram-toolbar";
     private string ToolbarToggleLabel => _toolbarCollapsed ? "Show node panel" : "Hide node panel";
@@ -325,6 +743,30 @@
         StateHasChanged();
     }
 
+    private void OpenPersistedState()
+    {
+        var flowId = FlowState.Value.CurrentFlow?.Id ?? Guid.Empty;
+        if (flowId == Guid.Empty) return;
+
+        _persistedStateFlowId = flowId;
+        _showPersistedStateModal = true;
+        StateHasChanged();
+    }
+
+    private void OpenHelperScript()
+    {
+        if (FlowState.Value.CurrentFlow == null) return;
+        _showHelperScriptModal = true;
+        StateHasChanged();
+    }
+
+    private void OnHelperCodeChanged(string helperCode)
+    {
+        if (FlowState.Value.CurrentFlow == null) return;
+        FlowState.Value.CurrentFlow.HelperCode = helperCode ?? string.Empty;
+        StateHasChanged();
+    }
+
     public void OpenDebugJsonModal(string jsonContent, string errorMessage)
     {
         _debugJsonContent = jsonContent;
@@ -336,14 +778,17 @@
     protected override async Task OnInitializedAsync()
     {
         await base.OnInitializedAsync();
+        AiBuild.Changed += OnAiBuildChanged;
         SetupDiagram();
+        _locationChangingRegistration = NavigationManager.RegisterLocationChangingHandler(OnLocationChangingAsync);
         await LoadLookupsAsync();
 
+        _expectedFlowId = FlowId;
         if (FlowId.HasValue)
         {
             Dispatcher.Dispatch(new LoadFlowAction { Id = FlowId.Value });
         }
-        else
+        else if (!DeadLetterIdQuery.HasValue)
         {
             Dispatcher.Dispatch(new UpdateFlowStateAction
             {
@@ -357,10 +802,12 @@
         }
     }
 
-    protected override void OnAfterRender(bool firstRender)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
+            if (string.Equals(AiBuildQuery, "open", StringComparison.OrdinalIgnoreCase))
+                _ = InvokeAsync(OpenRestoredAiBuildAsync);
             _dotnetHelper = DotNetObjectReference.Create(this);
             _ = InvokeAsync(async () =>
             {
@@ -372,18 +819,188 @@
                 {
                 }
             });
+            // Warm up the Monaco bundle while the user is still on the canvas so
+            // the mapper modal opens with its editor ready.
+            _ = InvokeAsync(async () =>
+            {
+                try
+                {
+                    var editorModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/code-editor.js");
+                    await editorModule.InvokeVoidAsync("preload");
+                    await editorModule.DisposeAsync();
+                }
+                catch (JSException)
+                {
+                }
+            });
         }
 
-        if (FlowState.Value.CurrentFlow == null)
+        if (DeadLetterIdQuery.HasValue && _loadedResyncDeadLetterId != DeadLetterIdQuery.Value && !_resyncLoading)
+        {
+            await LoadResyncContextAsync(DeadLetterIdQuery.Value);
+        }
+
+        if (DraftMessageIdQuery.HasValue && !_appliedDraftMessage && (!FlowId.HasValue || _isLoaded))
+        {
+            await ApplyChatDraftAsync(DraftMessageIdQuery.Value);
+        }
+
+        var currentFlow = FlowState.Value.CurrentFlow;
+        if (currentFlow != null && _expectedFlowId.HasValue && !_isLoaded && currentFlow.Id == _expectedFlowId.Value)
+        {
+            FlowName = currentFlow.Name;
+            LoadDiagramFromCurrentFlow();
+            _lastSavedDraftJson = FlowDraftSignature.Create(currentFlow);
+            _isLoaded = true;
+            StateHasChanged();
+        }
+
+        if (_awaitingSaveBaseline && !FlowState.Value.IsLoading && currentFlow != null)
+        {
+            if (!ReferenceEquals(currentFlow, _flowBeforeSave))
+                _lastSavedDraftJson = FlowDraftSignature.Create(currentFlow);
+            _awaitingSaveBaseline = false;
+            _flowBeforeSave = null;
+        }
+
+        if (_fitTestAfterRender && _testMode)
+        {
+            _fitTestAfterRender = false;
+            await FitToScreenAsync();
+        }
+
+        if (_testRestoreView is { } restoreView && _testMode)
+        {
+            _testRestoreView = null;
+            _restoringTestSession = false;
+            Diagram.SetZoom(restoreView.Zoom);
+            Diagram.SetPan(restoreView.PanX, restoreView.PanY);
+        }
+
+        if (_failedCardToCenter is Guid failedCardId && _testMode)
+        {
+            _failedCardToCenter = null;
+            CenterTestCard(failedCardId);
+        }
+
+        await MarkHttpErrorLinksAsync();
+
+        if (_debugMode)
+        {
+            await ApplyDebugLinkStylesAsync();
+            _debugLinkStylesApplied = true;
+        }
+        else if (_debugLinkStylesApplied)
+        {
+            _debugLinkStylesApplied = false;
+            try { await JSRuntime.InvokeVoidAsync("simpleIPaaSDesigner.clearLinkStyles"); }
+            catch (JSException) { }
+        }
+
+        if (_testMode && !_testCanvasObserverAttached && _dotnetHelper != null)
+        {
+            _testCanvasObserverAttached = true;
+            try { await JSRuntime.InvokeVoidAsync("simpleIPaaSDesigner.observeCanvas", _dotnetHelper); }
+            catch (JSException) { }
+        }
+
+        if (_isLoaded && currentFlow != null)
+        {
+            if (!_testMode && string.Equals(ModeQuery, "test", StringComparison.OrdinalIgnoreCase))
+            {
+                var restore = _testReturnState;
+                await EnterTestModeAsync(skipDirtyGuard: true, restoreState: restore);
+            }
+            else if (!_testMode)
+            {
+                await RefreshTestStatusIfNeededAsync(currentFlow);
+            }
+        }
+    }
+
+    private async Task LoadResyncContextAsync(Guid deadLetterId)
+    {
+        _resyncLoading = true;
+        _loadedResyncDeadLetterId = deadLetterId;
+        _resyncMessage = string.Empty;
+        try
+        {
+            var entry = await Http.GetFromJsonAsync<DeadLetterDto>($"api/deadletters/{deadLetterId}");
+            if (entry == null || entry.FlowId == Guid.Empty)
+            {
+                _resyncMessage = "The dead letter or its flow could not be found.";
+                return;
+            }
+
+            if (FlowId.HasValue && FlowId.Value != entry.FlowId)
+            {
+                _resyncMessage = "This dead letter belongs to a different flow.";
+                return;
+            }
+
+            _resyncDeadLetter = entry;
+            _expectedFlowId = entry.FlowId;
+            if (FlowState.Value.CurrentFlow?.Id != entry.FlowId)
+            {
+                Dispatcher.Dispatch(new LoadFlowAction { Id = entry.FlowId });
+            }
+
+            _resyncOptions = await Http.GetFromJsonAsync<List<ResyncNodeOptionDto>>(
+                $"api/deadletters/{deadLetterId}/resync-nodes") ?? new List<ResyncNodeOptionDto>();
+            _selectedResyncStepId = _resyncOptions.FirstOrDefault(option => option.IsDefault)?.StepId.ToString()
+                ?? _resyncOptions.FirstOrDefault(option => option.IsFailedNode)?.StepId.ToString()
+                ?? _resyncOptions.FirstOrDefault()?.StepId.ToString()
+                ?? string.Empty;
+            if (_resyncOptions.Count == 0)
+            {
+                _resyncMessage = "No eligible failed or completed upstream nodes are available for resync.";
+            }
+        }
+        catch (Exception)
+        {
+            _resyncMessage = "Could not load this dead letter’s resync options. Refresh the page and try again.";
+        }
+        finally
+        {
+            _resyncLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task QueueResyncAsync()
+    {
+        if (_resyncDeadLetter == null || !Guid.TryParse(_selectedResyncStepId, out var startStepId))
         {
             return;
         }
 
-        if (FlowId.HasValue && !_isLoaded && FlowState.Value.CurrentFlow.Id == FlowId)
+        _resyncQueueing = true;
+        _resyncMessage = string.Empty;
+        try
         {
-            FlowName = FlowState.Value.CurrentFlow.Name;
-            LoadDiagramFromCurrentFlow();
-            _isLoaded = true;
+            var response = await Http.PostAsJsonAsync(
+                $"api/deadletters/{_resyncDeadLetter.Id}/retry",
+                new ResyncDeadLetterRequestDto { StartStepId = startStepId });
+            if (response.IsSuccessStatusCode)
+            {
+                _resyncQueued = true;
+                _resyncMessage = "Resync queued. The engine will run the selected node and its downstream path.";
+            }
+            else
+            {
+                var detail = await response.Content.ReadAsStringAsync();
+                _resyncMessage = string.IsNullOrWhiteSpace(detail)
+                    ? "Could not queue this resync."
+                    : detail;
+            }
+        }
+        catch (Exception)
+        {
+            _resyncMessage = "Could not reach the API to queue this resync.";
+        }
+        finally
+        {
+            _resyncQueueing = false;
             StateHasChanged();
         }
     }
@@ -396,6 +1013,13 @@
 
     private void LoadDiagramFromCurrentFlow()
     {
+        // Loading a different flow (or a fresh copy of this one) rebuilds every card, so a debug
+        // session holding the old node ids would point at nodes that no longer exist.
+        if (_debugMode)
+        {
+            ExitDebugMode();
+        }
+
         Diagram.Nodes.Clear();
         Diagram.Links.Clear();
 
@@ -427,6 +1051,7 @@
                 Diagram.Links.Add(new LinkModel(sourcePort, targetPort));
             }
         }
+        ApplyTestModeToDiagram();
     }
 
     private void SetupDiagram()
@@ -442,7 +1067,7 @@
             Links =
             {
                 DefaultRouter = new NormalRouter(),
-                DefaultPathGenerator = new SmoothPathGenerator()
+                DefaultPathGenerator = new DirectionalPathGenerator()
             }
         };
 
@@ -450,17 +1075,909 @@
         Diagram.RegisterComponent<IntegrationNodeModel, IntegrationNodeWidget>();
     }
 
+    private string? DraftSignature()
+    {
+        var draft = CaptureCurrentDraft();
+        return draft == null ? null : FlowDraftSignature.Create(draft);
+    }
+
+    private bool IsDraftDirty()
+    {
+        var signature = DraftSignature();
+        return _lastSavedDraftJson != null && signature != null && signature != _lastSavedDraftJson;
+    }
+
+    private async Task ToggleTestModeAsync()
+    {
+        if (_testMode)
+        {
+            RequestExitTestMode();
+            return;
+        }
+        await EnterTestModeAsync(skipDirtyGuard: false);
+    }
+
+    private async Task EnterTestModeAsync(bool skipDirtyGuard, TestModeReturnState? restoreState = null)
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null || flow.Id == Guid.Empty) return;
+        if (!skipDirtyGuard && IsDraftDirty())
+        {
+            _testConfirmAction = "save-before-test";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        await StartTestModeAsync(flow, restoreState);
+    }
+
+    private async Task SaveDraftBeforeTestAsync(TestModeReturnState? restoreState = null)
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null) return;
+        var draft = CaptureCurrentDraft();
+        if (draft == null) return;
+        _testSaveError = null;
+        HttpResponseMessage response;
+        try
+        {
+            response = await Http.PutAsJsonAsync($"api/integrationflow/{flow.Id}", draft);
+        }
+        catch (Exception ex)
+        {
+            _testSaveError = $"Could not reach the API to save the flow: {ex.Message}";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        if (!response.IsSuccessStatusCode)
+        {
+            _testSaveError = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(_testSaveError))
+                _testSaveError = "The flow could not be saved.";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        var saved = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+        if (saved == null)
+        {
+            _testSaveError = "The API returned an empty saved flow.";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+
+        Dispatcher.Dispatch(new SaveFlowResultAction { Flow = saved });
+        FlowName = saved.Name;
+        LoadDiagramFromCurrentFlow();
+        _lastSavedDraftJson = FlowDraftSignature.Create(saved);
+        _testSaveError = null;
+        _showTestConfirm = false;
+        await StartTestModeAsync(saved, restoreState);
+    }
+
+    private async Task StartTestModeAsync(IntegrationFlowDto flow, TestModeReturnState? restoreState = null)
+    {
+        if (_debugMode) ExitDebugMode();
+        if (_testSession != null)
+        {
+            _testSession.Changed -= OnTestSessionChanged;
+            await _testSession.DisposeAsync();
+        }
+
+        _testSession = new FlowTestSession(Http, flow);
+        _testSession.Changed += OnTestSessionChanged;
+        _testMode = true;
+        _lastFailedTestCardId = null;
+        _scenarioPanelUserChoice = null;
+        _testDrawerHeightInitialized = false;
+        _testDrawerCollapsed = false;
+        _testDrawerAutoCollapsed = false;
+        _lastTestResultsOpen = false;
+        _testCanvasObserverAttached = false;
+        _restoringTestSession = restoreState != null;
+        await _testSession.InitializeAsync();
+
+        if (restoreState != null)
+        {
+            var scenario = _testSession.Scenarios.FirstOrDefault(item => item.Id == restoreState.ScenarioId);
+            if (scenario != null)
+            {
+                _testSession.LoadScenario(scenario);
+                await _testSession.LoadRunsAsync();
+                if (restoreState.RunId.HasValue)
+                    await _testSession.LoadRunAsync(restoreState.RunId.Value);
+            }
+
+            _scenarioPanelUserChoice = restoreState.ScenarioPanelOpen;
+            _testSession.SetPanelOpen(restoreState.ScenarioPanelOpen);
+            _testSession.KeepInspectorTab = true;
+            _testSession.SetInspectorTab(restoreState.InspectorTab);
+            _testSession.SetResultsOpen(restoreState.ResultsOpen);
+            if (restoreState.CardId.HasValue)
+                _testSession.SelectCard(restoreState.CardId, restoreState.CardName);
+            _testDrawerCollapsed = restoreState.DrawerCollapsed;
+            _testDrawerHeight = restoreState.DrawerHeight;
+            _testDrawerHeightInitialized = true;
+            _testDrawerAutoCollapsed = true;
+            _lastTestResultsOpen = restoreState.ResultsOpen;
+            _testRestoreView = new TestRestoreView(restoreState.Zoom, restoreState.PanX, restoreState.PanY);
+            _testReturnState = null;
+            _fitTestAfterRender = false;
+        }
+        else
+        {
+            _testSession.KeepInspectorTab = false;
+            _fitTestAfterRender = true;
+        }
+
+        ApplyTestModeToDiagram();
+        if (restoreState != null || !NavigationManager.Uri.Contains("mode=test", StringComparison.OrdinalIgnoreCase))
+        {
+            _allowTestNavigation = true;
+            NavigationManager.NavigateTo($"flow/{flow.Id}?mode=test", replace: true);
+            _allowTestNavigation = false;
+        }
+        StateHasChanged();
+    }
+
+    private void OnTestSessionChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            ApplyTestModeToDiagram();
+            if (_restoringTestSession)
+            {
+                StateHasChanged();
+                return;
+            }
+            var resultsOpen = _testSession?.ResultsOpen == true;
+            if (resultsOpen && !_lastTestResultsOpen)
+            {
+                _fitTestAfterRender = true;
+                if (!_testDrawerAutoCollapsed && _testCanvasWidth > 0 && _testCanvasWidth < 560)
+                {
+                    _testDrawerCollapsed = true;
+                    _testDrawerAutoCollapsed = true;
+                }
+            }
+            else if (!resultsOpen && _lastTestResultsOpen)
+            {
+                _fitTestAfterRender = true;
+            }
+            _lastTestResultsOpen = resultsOpen;
+
+            var failed = _testSession?.Evaluation?.FailedCardId;
+            if (failed.HasValue && failed != _lastFailedTestCardId)
+            {
+                _lastFailedTestCardId = failed;
+                _failedCardToCenter = failed;
+            }
+            StateHasChanged();
+        });
+    }
+
+    private void ToggleTestScenarioPanel()
+    {
+        if (_testSession == null) return;
+        var open = !_testSession.ScenarioPanelOpen;
+        _scenarioPanelUserChoice = open;
+        _testSession.SetPanelOpen(open);
+        _fitTestAfterRender = true;
+        if (_testSession.Evaluation?.FailedCardId is Guid failedCardId)
+            _failedCardToCenter = failedCardId;
+    }
+
+    [JSInvokable]
+    public async Task NotifyCanvasMetrics(int[] metrics)
+    {
+        if (metrics.Length < 2) return;
+        _testCanvasWidth = metrics[0];
+        _testCanvasHeight = metrics[1];
+        if (_testSession?.ResultsOpen == false) _testFullCanvasHeight = _testCanvasHeight;
+        if (!_testMode || _testSession == null) return;
+
+        if (!_scenarioPanelUserChoice.HasValue && _testCanvasWidth < 900 && _testSession.ScenarioPanelOpen)
+        {
+            _testSession.SetPanelOpen(false);
+            _fitTestAfterRender = true;
+        }
+
+        if (!_testDrawerHeightInitialized && _testSession.ResultsOpen && _testFullCanvasHeight > 0)
+        {
+            var minimumDrawerHeight = _testFullCanvasHeight < 620 ? 230 : 170;
+            _testDrawerHeight = Math.Clamp((int)(_testFullCanvasHeight * 0.32), minimumDrawerHeight, 300);
+            _testDrawerHeightInitialized = true;
+            _fitTestAfterRender = true;
+        }
+
+        if (!_testDrawerAutoCollapsed && _testSession.ResultsOpen && _testCanvasWidth > 0 && _testCanvasWidth < 560)
+        {
+            _testDrawerCollapsed = true;
+            _testDrawerAutoCollapsed = true;
+            _fitTestAfterRender = true;
+        }
+
+        if (_fitTestAfterRender && _testSession.Evaluation?.FailedCardId is Guid failedCardId)
+            _failedCardToCenter = failedCardId;
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void TestDrawerHeightChanged(int height)
+    {
+        _testDrawerHeight = Math.Clamp(height, 150, 520);
+        _fitTestAfterRender = true;
+        if (_testSession?.Evaluation?.FailedCardId is Guid failedCardId)
+            _failedCardToCenter = failedCardId;
+        StateHasChanged();
+    }
+
+    private void ToggleTestDrawer()
+    {
+        _testDrawerCollapsed = !_testDrawerCollapsed;
+        _fitTestAfterRender = true;
+        if (_testSession?.Evaluation?.FailedCardId is Guid failedCardId)
+            _failedCardToCenter = failedCardId;
+        StateHasChanged();
+    }
+
+    private void ApplyTestModeToDiagram()
+    {
+        if (Diagram == null) return;
+        var session = _testSession;
+        foreach (var node in Diagram.Nodes.OfType<IntegrationNodeModel>())
+        {
+            node.IsTestMode = _testMode;
+            node.Locked = _testMode;
+            foreach (var port in node.Ports) port.Locked = _testMode;
+            if (_testMode && session != null)
+            {
+                node.TestClick = OpenTestInspectorAsync;
+                var visual = session.GetCardVisual(node.StepConfig.Id);
+                node.TestBadge = visual.Badge;
+                node.TestTone = visual.Tone;
+                node.TestState = visual.State;
+                node.TestStatus = visual.Badge;
+                node.IsMocked = session.IsSupplied(node.StepConfig.Id);
+                var cardResult = session.CardResult(node.StepConfig.Id);
+                node.ActiveHttpPort = node.StepConfig.StepType == "HttpAction"
+                    && node.StepConfig.HttpErrorMode == "Continue"
+                    && cardResult != null
+                    && (cardResult.HttpStatusCode is > 0 and (< 200 or >= 300)
+                        || cardResult.Output.Contains("\"ok\":false", StringComparison.OrdinalIgnoreCase))
+                        ? "error"
+                        : null;
+            }
+            else
+            {
+                node.TestClick = null;
+                node.TestBadge = string.Empty;
+                node.TestTone = string.Empty;
+                node.TestState = string.Empty;
+                node.IsMocked = false;
+                node.ActiveHttpPort = null;
+            }
+            node.Refresh();
+        }
+
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            link.Locked = _testMode;
+            link.Color = null;
+            link.Width = 1.5;
+        }
+
+        if (_testMode && session?.Evaluation != null)
+        {
+            HighlightRunPath(session);
+        }
+    }
+
+    private void HighlightRunPath(FlowTestSession session)
+    {
+        var ran = new Dictionary<Guid, DateTime>();
+        if (session.IsRunning && session.Detail != null)
+        {
+            foreach (var card in session.Detail.Progress.Where(item => item.StartedAt.HasValue))
+                ran[card.CardId] = card.StartedAt!.Value;
+        }
+        else if (session.Evaluation != null)
+        {
+            foreach (var card in session.Evaluation.Cards.Where(item =>
+                         item.Status != "NotReached" && item.StartedAt.HasValue))
+                ran[card.CardId] = card.StartedAt!.Value;
+        }
+        if (ran.Count == 0) return;
+
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            if ((link.Source.Model as PortModel)?.Parent is not IntegrationNodeModel source
+                || (link.Target.Model as PortModel)?.Parent is not IntegrationNodeModel target)
+                continue;
+            if (!ran.TryGetValue(source.StepConfig.Id, out var sourceStart)
+                || !ran.TryGetValue(target.StepConfig.Id, out var targetStart)
+                || targetStart < sourceStart)
+                continue;
+
+            if (source.StepConfig.StepType.Equals("Branch", StringComparison.OrdinalIgnoreCase))
+            {
+                var output = session.CardResult(source.StepConfig.Id)?.Output ?? string.Empty;
+                var branchTrue = output.Contains("true", StringComparison.OrdinalIgnoreCase);
+                var branchFalse = output.Contains("false", StringComparison.OrdinalIgnoreCase);
+                if (branchTrue != branchFalse)
+                {
+                    var expectedPort = branchTrue ? "true" : "false";
+                    var sourcePortId = (link.Source.Model as PortModel)?.Id ?? string.Empty;
+                    if (!sourcePortId.Equals(expectedPort, StringComparison.OrdinalIgnoreCase)) continue;
+                }
+            }
+            else if (source.StepConfig.StepType.Equals("HttpAction", StringComparison.OrdinalIgnoreCase)
+                     && source.StepConfig.HttpErrorMode == "Continue")
+            {
+                var result = session.CardResult(source.StepConfig.Id);
+                var errorPort = result?.HttpStatusCode is > 0 and (< 200 or >= 300)
+                    || (result?.Output.Contains("\"ok\":false", StringComparison.OrdinalIgnoreCase) ?? false);
+                var sourcePortId = (link.Source.Model as PortModel)?.Id ?? string.Empty;
+                if (errorPort != sourcePortId.Equals("error", StringComparison.OrdinalIgnoreCase)) continue;
+            }
+
+            link.Color = "#6366f1";
+            link.Width = 3;
+        }
+    }
+
+    private Task OpenTestInspectorAsync(IntegrationNodeModel node)
+    {
+        _testSession?.SelectCard(node.StepConfig.Id, node.StepConfig.NodeName);
+        return Task.CompletedTask;
+    }
+
+    private void ShowTestCard(Guid cardId)
+    {
+        if (_testSession == null) return;
+        var node = Diagram.Nodes.OfType<IntegrationNodeModel>()
+            .FirstOrDefault(item => item.StepConfig.Id == cardId);
+        if (node != null) _testSession.SelectCard(cardId, node.StepConfig.NodeName);
+        _fitTestAfterRender = true;
+        _failedCardToCenter = cardId;
+        StateHasChanged();
+    }
+
+    private void CenterTestCard(Guid cardId)
+    {
+        var node = Diagram.Nodes.OfType<IntegrationNodeModel>()
+            .FirstOrDefault(item => item.StepConfig.Id == cardId);
+        if (node == null) return;
+        var zoom = Diagram.Zoom <= 0 ? 1 : Diagram.Zoom;
+        if (zoom < 0.72)
+        {
+            zoom = 0.72;
+            Diagram.SetZoom(zoom);
+        }
+        var container = Diagram.Container;
+        if (container == null || node.Size == null) return;
+        var x = container.Width / 2 - (node.Position.X + node.Size.Width / 2) * zoom;
+        var centerY = container.Height * 0.52;
+        if (_testMode && _testCanvasWidth > 0 && _testCanvasWidth < 560)
+        {
+            // Below the compact toolbar and zoom row, above the auto-collapsed drawer.
+            var topBoundary = 184d;
+            var bottomBoundary = Math.Max(topBoundary + 80, container.Height - 12d);
+            centerY = (topBoundary + bottomBoundary) / 2d;
+        }
+        var y = centerY - (node.Position.Y + node.Size.Height / 2) * zoom;
+        Diagram.SetPan(x, y);
+        Diagram.SelectModel(node, true);
+    }
+
+    private void CloseTestInspector() => _testSession?.CloseInspector();
+
+    private void CloseTestResults()
+    {
+        _testSession?.CloseResults();
+        _fitTestAfterRender = true;
+        StateHasChanged();
+    }
+
+    private void RequestExitTestMode()
+    {
+        if (_testSession?.IsDirty == true)
+        {
+            _testConfirmAction = "exit";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        _ = ExitTestModeAsync();
+    }
+
+    private async Task ExitTestModeAsync(Guid? openCardId = null)
+    {
+        if (openCardId.HasValue && _testSession != null)
+        {
+            var pan = Diagram.Pan;
+            _testReturnState = new TestModeReturnState(
+                _testSession.SelectedId,
+                _testSession.ScenarioName,
+                openCardId,
+                _testSession.SelectedCardName,
+                _testSession.InspectorTab,
+                _testSession.CurrentRun?.Id,
+                _testSession.ResultsOpen,
+                _testDrawerCollapsed,
+                _testDrawerHeight,
+                _testSession.ScenarioPanelOpen,
+                Diagram.Zoom,
+                pan.X,
+                pan.Y);
+        }
+        else if (!openCardId.HasValue)
+        {
+            _testReturnState = null;
+            _testRestoreView = null;
+        }
+
+        _showTestConfirm = false;
+        _testConfirmAction = string.Empty;
+        _testCanvasObserverAttached = false;
+        try { await JSRuntime.InvokeVoidAsync("simpleIPaaSDesigner.unobserveCanvas"); }
+        catch (JSException) { }
+        if (_testSession != null)
+        {
+            _testStatus = _testSession.Status;
+            _lastStatusFlowUpdated = null;
+            _testSession.Changed -= OnTestSessionChanged;
+            _testSession.StopPolling();
+            await _testSession.DisposeAsync();
+            _testSession = null;
+        }
+        _testMode = false;
+        ApplyTestModeToDiagram();
+        var id = FlowState.Value.CurrentFlow?.Id ?? FlowId;
+        if (id.HasValue && id.Value != Guid.Empty)
+        {
+            _allowTestNavigation = true;
+            NavigationManager.NavigateTo($"flow/{id.Value}", replace: !openCardId.HasValue);
+            _allowTestNavigation = false;
+        }
+        StateHasChanged();
+        if (openCardId.HasValue)
+        {
+            await Task.Delay(80);
+            OpenCardEditor(openCardId.Value);
+        }
+    }
+
+    private string TestReturnSummary => _testReturnState == null
+        ? string.Empty
+        : $"{_testReturnState.ScenarioName} · {_testReturnState.CardName} · {_testReturnState.InspectorTab}";
+
+    private async Task ReturnToTestsAsync()
+    {
+        if (_testReturnState == null) return;
+        if (IsDraftDirty())
+        {
+            _testConfirmAction = "return-to-tests";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null) return;
+        await StartTestModeAsync(flow, _testReturnState);
+    }
+
+    private void OpenCardInEditor(Guid cardId)
+    {
+        if (_testSession?.IsDirty == true)
+        {
+            _pendingEditorCardId = cardId;
+            _testConfirmAction = "open-editor";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        _ = ExitTestModeAsync(cardId);
+    }
+
+    private void OpenCardEditor(Guid cardId)
+    {
+        var node = Diagram.Nodes.OfType<IntegrationNodeModel>()
+            .FirstOrDefault(item => item.StepConfig.Id == cardId);
+        if (node == null) return;
+        Diagram.SetZoom(1);
+        Diagram.SelectModel(node, true);
+        CenterTestCard(cardId);
+        if (node.StepConfig.StepType is "Mapping" or "Branch" or "ForEach" or "Success" or "Error"
+            or "PersistedState" or "AddIdentifier"
+            || (node.StepConfig.StepType == "Email" && EmailCardConfig.Read(node.StepConfig.StepConfig).UseScript))
+        {
+            OpenMapperModal(node.StepConfig, "MappingCode");
+        }
+        StateHasChanged();
+    }
+
+    private void OnTestScenarioSelected(Guid scenarioId)
+    {
+        if (_testSession == null) return;
+        var scenario = _testSession.Scenarios.FirstOrDefault(item => item.Id == scenarioId);
+        if (scenario == null) return;
+        if (_testSession.IsDirty)
+        {
+            _pendingScenarioId = scenarioId;
+            _testConfirmAction = "switch";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        _testSession.LoadScenario(scenario);
+    }
+
+    private void RequestNewTestScenario()
+    {
+        if (_testSession == null) return;
+        if (_testSession.IsDirty)
+        {
+            _testConfirmAction = "new";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        _testSession.NewScenario();
+    }
+
+    private void RequestDuplicateTestScenario()
+    {
+        if (_testSession == null) return;
+        if (_testSession.IsDirty)
+        {
+            _testConfirmAction = "duplicate";
+            _showTestConfirm = true;
+            StateHasChanged();
+            return;
+        }
+        _testSession.DuplicateScenario();
+    }
+
+    private async Task ConfirmTestDiscardAsync()
+    {
+        if (_testConfirmAction == "save-before-test")
+        {
+            await SaveDraftBeforeTestAsync();
+            return;
+        }
+        if (_testConfirmAction == "return-to-tests")
+        {
+            await SaveDraftBeforeTestAsync(_testReturnState);
+            return;
+        }
+        if (_testSession == null) return;
+        switch (_testConfirmAction)
+        {
+            case "exit":
+                await ExitTestModeAsync();
+                break;
+            case "new":
+                _showTestConfirm = false;
+                _testSession.NewScenario();
+                break;
+            case "duplicate":
+                _showTestConfirm = false;
+                _testSession.DuplicateScenario();
+                break;
+            case "switch":
+                _showTestConfirm = false;
+                if (_pendingScenarioId is Guid scenarioId)
+                {
+                    var scenario = _testSession.Scenarios.FirstOrDefault(item => item.Id == scenarioId);
+                    if (scenario != null) _testSession.LoadScenario(scenario);
+                }
+                _pendingScenarioId = null;
+                break;
+            case "navigate":
+                _showTestConfirm = false;
+                _testSession.StopPolling();
+                _allowTestNavigation = true;
+                if (!string.IsNullOrWhiteSpace(_pendingNavigationUrl))
+                    NavigationManager.NavigateTo(_pendingNavigationUrl);
+                _allowTestNavigation = false;
+                break;
+            case "open-editor":
+                _showTestConfirm = false;
+                if (_pendingEditorCardId is Guid editorCardId)
+                {
+                    _pendingEditorCardId = null;
+                    await ExitTestModeAsync(editorCardId);
+                }
+                break;
+        }
+    }
+
+    private void CancelTestDiscard()
+    {
+        _showTestConfirm = false;
+        _testConfirmAction = string.Empty;
+        _testSaveError = null;
+        _pendingScenarioId = null;
+        _pendingEditorCardId = null;
+        _pendingNavigationUrl = null;
+    }
+
+    private async Task RefreshTestStatusIfNeededAsync(IntegrationFlowDto flow)
+    {
+        if (_statusRefreshBusy || _lastStatusFlowUpdated == flow.UpdatedAt) return;
+        _statusRefreshBusy = true;
+        try
+        {
+            _testStatus = await Http.GetFromJsonAsync<FlowTestSuiteStatusDto>(
+                $"api/integrationflow/{flow.Id}/test-suite/status");
+            _lastStatusFlowUpdated = flow.UpdatedAt;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (HttpRequestException) { }
+        finally
+        {
+            _statusRefreshBusy = false;
+        }
+    }
+
+    private async Task<FlowTestSuiteStatusDto?> LoadTestStatusAsync()
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null) return null;
+        try
+        {
+            _testStatus = await Http.GetFromJsonAsync<FlowTestSuiteStatusDto>(
+                $"api/integrationflow/{flow.Id}/test-suite/status");
+            _lastStatusFlowUpdated = flow.UpdatedAt;
+            return _testStatus;
+        }
+        catch (HttpRequestException)
+        {
+            return _testStatus;
+        }
+    }
+
+    private async Task EnsurePublishSessionAsync()
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null) return;
+        if (_testSession == null)
+        {
+            _testSession = new FlowTestSession(Http, flow);
+            await _testSession.InitializeAsync();
+        }
+    }
+
+    private void ClosePublishTestsDialog() => _showPublishTests = false;
+
+    private async Task OpenTestModeFromPublish(Guid? suiteRunId)
+    {
+        _showPublishTests = false;
+        await EnterTestModeAsync(skipDirtyGuard: true);
+        if (suiteRunId.HasValue && _testSession != null)
+            await _testSession.LoadSuiteAsync(suiteRunId.Value);
+    }
+
+    private async Task OnTestsPublished(IntegrationFlowDto published)
+    {
+        _showPublishTests = false;
+        Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = published });
+        await LoadTestStatusAsync();
+        await OpenVersionHistoryAsync();
+    }
+
+    private ValueTask OnLocationChangingAsync(LocationChangingContext context)
+    {
+        if (!_testMode && _testReturnState != null && !_allowTestNavigation
+            && context.TargetLocation.Contains("mode=test", StringComparison.OrdinalIgnoreCase)
+            && IsDraftDirty())
+        {
+            context.PreventNavigation();
+            _testConfirmAction = "return-to-tests";
+            _showTestConfirm = true;
+            _ = InvokeAsync(StateHasChanged);
+            return ValueTask.CompletedTask;
+        }
+
+        if (_testMode && (context.TargetLocation.Contains("mode=test", StringComparison.OrdinalIgnoreCase)
+                          || _allowTestNavigation))
+            return ValueTask.CompletedTask;
+
+        if (_testMode && _testSession?.IsDirty == true && !_allowTestNavigation)
+        {
+            context.PreventNavigation();
+            _pendingNavigationUrl = context.TargetLocation;
+            _testConfirmAction = "navigate";
+            _showTestConfirm = true;
+            _ = InvokeAsync(StateHasChanged);
+        }
+        return ValueTask.CompletedTask;
+    }
+
     private void AddNode(StepType type)
     {
+        if (_testMode) return;
         var step = new IntegrationStepDto
         {
             StepType = type.ToString(),
-            UrlMode = "Manual"
+            UrlMode = "Manual",
+            // Keep new cards away from the floating navigation/toolbar controls at the
+            // top-left of the canvas; a 0,0 node sat underneath them.
+            PositionX = 160,
+            PositionY = 140
         };
         var node = new IntegrationNodeModel(step) { Title = type.ToString() };
         Diagram.Nodes.Add(node);
+
+        // A structural edit invalidates the graph the session was planned against.
+        if (_debugMode)
+        {
+            ResetDebugSession();
+            StateHasChanged();
+        }
     }
 
+    public bool HttpErrorPortHasEdges(Guid stepId) =>
+        Diagram.Links.OfType<LinkModel>().Any(link =>
+            (link.Source.Model as PortModel)?.Parent is IntegrationNodeModel source
+            && source.StepConfig.Id == stepId
+            && string.Equals(((PortModel)link.Source.Model).Id, "error", StringComparison.OrdinalIgnoreCase));
+
+    public void RemoveHttpErrorEdges(Guid stepId)
+    {
+        foreach (var link in Diagram.Links.OfType<LinkModel>().Where(link =>
+                     (link.Source.Model as PortModel)?.Parent is IntegrationNodeModel source
+                     && source.StepConfig.Id == stepId
+                     && string.Equals(((PortModel)link.Source.Model).Id, "error", StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            Diagram.Links.Remove(link);
+        }
+    }
+
+    public void ApplyHttpErrorMode(Guid stepId, string mode)
+    {
+        var node = Diagram.Nodes.OfType<IntegrationNodeModel>()
+            .FirstOrDefault(candidate => candidate.StepConfig.Id == stepId);
+        if (node == null) return;
+        node.StepConfig.HttpErrorMode = mode;
+        node.SyncHttpErrorPort();
+        node.Refresh();
+        StateHasChanged();
+    }
+
+    // Used by the Email card to offer the node names immediately upstream of it.
+    public IReadOnlyList<string> GetUpstreamNodeNames(IntegrationStepDto step)
+    {
+        if (Diagram == null)
+        {
+            return Array.Empty<string>();
+        }
+
+        var upstreamIds = new HashSet<Guid>();
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            if ((link.Target.Model as PortModel)?.Parent is IntegrationNodeModel target
+                && target.StepConfig.Id == step.Id
+                && (link.Source.Model as PortModel)?.Parent is IntegrationNodeModel source)
+            {
+                upstreamIds.Add(source.StepConfig.Id);
+            }
+        }
+
+        return Diagram.Nodes.OfType<IntegrationNodeModel>()
+            .Where(node => upstreamIds.Contains(node.StepConfig.Id)
+                && !string.IsNullOrWhiteSpace(node.StepConfig.NodeName))
+            .Select(node => node.StepConfig.NodeName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name)
+            .ToList();
+    }
+
+    private void OpenAiFlowBuilder()
+    {
+        _aiFlowCurrentFlow = CaptureCurrentDraft();
+        _showAiFlowBuilder = true;
+    }
+
+    private void OpenAiChat()
+    {
+        var current = FlowState.Value.CurrentFlow;
+        var target = current != null && current.Id != Guid.Empty
+            ? $"/ai-builder?flowId={current.Id}"
+            : "/ai-builder";
+        NavigationManager.NavigateTo(target);
+    }
+
+    private async Task ApplyChatDraftAsync(Guid messageId)
+    {
+        _appliedDraftMessage = true;
+        try
+        {
+            var message = await Http.GetFromJsonAsync<AiChatMessageDto>($"api/ai/chat/messages/{messageId}");
+            if (message?.Flow != null)
+            {
+                if (message.Flow.Id == Guid.Empty && FlowId.HasValue) message.Flow.Id = FlowId.Value;
+                await ApplyAiFlowDraftAsync(new AiFlowBuildResponseDto
+                {
+                    Flow = message.Flow,
+                    Summary = message.Content,
+                    Warnings = message.Warnings,
+                    Sources = message.Sources
+                });
+            }
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private async Task OpenRestoredAiBuildAsync()
+    {
+        await AiBuild.RestoreActiveJobAsync();
+        for (var attempt = 0; attempt < 100 && FlowId.HasValue && !_isLoaded; attempt++)
+            await Task.Delay(100);
+
+        if (AiBuild.IsBusy) OpenAiFlowBuilder();
+        var relative = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        var path = relative.Split('?')[0];
+        NavigationManager.NavigateTo("/" + path, replace: true);
+    }
+
+    private IntegrationFlowDto? CaptureCurrentDraft()
+    {
+        var current = FlowState.Value.CurrentFlow;
+        if (current == null) return null;
+
+        var snapshot = JsonSerializer.Deserialize<IntegrationFlowDto>(JsonSerializer.Serialize(current));
+        if (snapshot == null) return null;
+        snapshot.Name = FlowName;
+        snapshot.IntegrationId = GetSelectedIntegrationId();
+        snapshot.Nodes = Diagram.Nodes.OfType<IntegrationNodeModel>()
+            .Select(node => JsonSerializer.Deserialize<IntegrationStepDto>(JsonSerializer.Serialize(node.StepConfig))!)
+            .ToList();
+        snapshot.Edges = new List<IntegrationEdgeDto>();
+
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            var sourcePort = link.Source.Model as PortModel;
+            var targetPort = link.Target.Model as PortModel;
+            if (sourcePort?.Parent is not IntegrationNodeModel sourceNode || targetPort?.Parent is not IntegrationNodeModel targetNode)
+                continue;
+            var previous = current.Edges.FirstOrDefault(edge => edge.SourceNodeId == sourceNode.StepConfig.Id &&
+                edge.TargetNodeId == targetNode.StepConfig.Id && edge.SourcePortId == sourcePort.Id && edge.TargetPortId == targetPort.Id);
+            snapshot.Edges.Add(new IntegrationEdgeDto
+            {
+                Id = previous?.Id ?? Guid.NewGuid(),
+                SourceNodeId = sourceNode.StepConfig.Id,
+                TargetNodeId = targetNode.StepConfig.Id,
+                SourcePortId = sourcePort.Id,
+                TargetPortId = targetPort.Id,
+                Condition = previous?.Condition ?? string.Empty,
+                Order = previous?.Order ?? 0
+            });
+        }
+        return snapshot;
+    }
+
+    private Task ApplyAiFlowDraftAsync(AiFlowBuildResponseDto result)
+    {
+        _validationErrors.Clear();
+        FlowName = result.Flow.Name;
+        if (string.IsNullOrWhiteSpace(result.Flow.HelperCode) && FlowState.Value.CurrentFlow != null)
+        {
+            // An AI draft may omit the helper prelude; never drop what the flow already had.
+            result.Flow.HelperCode = FlowState.Value.CurrentFlow.HelperCode;
+        }
+        Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = result.Flow });
+        LoadDiagramFromCurrentFlow();
+        _isLoaded = true;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
     private void SaveFlow()
     {
         SaveFlow(false);
@@ -479,9 +1996,39 @@
             return;
         }
 
-        var flow = FlowState.Value.CurrentFlow;
+        var flow = CaptureDiagramIntoFlow();
+        ApplyScheduleTrigger(flow);
+        _flowBeforeSave = FlowState.Value.CurrentFlow;
+        _awaitingSaveBaseline = true;
+
+        Dispatcher.Dispatch(new SaveFlowAction
+        {
+            Flow = flow,
+            RunAfterSave = runAfterSave,
+            ChatSessionId = ChatSessionIdQuery
+        });
+    }
+
+    // Copies the live canvas into the flow DTO the save and debug paths both persist. Positions are
+    // read from the diagram nodes because they change without touching StepConfig.
+    private IntegrationFlowDto CaptureDiagramIntoFlow()
+    {
+        var flow = FlowState.Value.CurrentFlow!;
+        if (flow.DefaultDeadLetterResyncStepId is Guid selectedNodeId && !Diagram.Nodes.OfType<IntegrationNodeModel>().Any(node => node.StepConfig.Id == selectedNodeId))
+        {
+            flow.DefaultDeadLetterResyncStepId = null;
+        }
+
         flow.Name = FlowName;
         flow.IntegrationId = GetSelectedIntegrationId();
+
+        // Capture the stored edges before clearing: a redrawn edge must keep its identity, otherwise
+        // every save mints new edge ids. That made an untouched flow look modified to the publish
+        // comparison, appended a version that carried no real change, and churned the edge rows.
+        var previousEdges = flow.Edges
+            .GroupBy(edge => (edge.SourceNodeId, edge.TargetNodeId, edge.SourcePortId, edge.TargetPortId))
+            .ToDictionary(group => group.Key, group => group.First());
+
         flow.Nodes.Clear();
         flow.Edges.Clear();
 
@@ -502,23 +2049,659 @@
                 continue;
             }
 
+            var key = (sourceNode.StepConfig.Id, targetNode.StepConfig.Id, sourcePort.Id, targetPort.Id);
+            previousEdges.TryGetValue(key, out var previous);
+
             flow.Edges.Add(new IntegrationEdgeDto
             {
-                SourceNodeId = sourceNode.StepConfig.Id,
-                TargetNodeId = targetNode.StepConfig.Id,
-                SourcePortId = sourcePort.Id,
-                TargetPortId = targetPort.Id
+                Id = previous?.Id ?? Guid.NewGuid(),
+                SourceNodeId = key.Item1,
+                TargetNodeId = key.Item2,
+                SourcePortId = key.Item3,
+                TargetPortId = key.Item4,
+                Condition = previous?.Condition ?? string.Empty,
+                Order = previous?.Order ?? 0
             });
         }
 
-        ApplyScheduleTrigger(flow);
-
-        Dispatcher.Dispatch(new SaveFlowAction { Flow = flow, RunAfterSave = runAfterSave });
+        return flow;
     }
 
     private void RunFlow()
     {
         SaveFlow(true);
+    }
+
+    // ── Debug Mode ───────────────────────────────────────────────────────────────
+    // A debug session never enqueues a run: each card is executed on its own, in the order the
+    // operator clicks them, and the accumulated upstream outputs travel with the request so a node
+    // sees exactly the input a production run would have handed it.
+
+    private async Task ToggleDebugModeAsync()
+    {
+        if (_debugMode)
+        {
+            ExitDebugMode();
+            return;
+        }
+
+        _validationErrors = ValidateDiagram();
+        if (_validationErrors.Any())
+        {
+            return;
+        }
+
+        // Debug execution resolves nodes by the ids the server stored, so the canvas has to be
+        // persisted before the first Run button can work.
+        var flow = CaptureDiagramIntoFlow();
+        if (flow.Id == Guid.Empty)
+        {
+            _validationErrors = new List<string> { "Save the flow before entering Debug Mode." };
+            return;
+        }
+
+        _debugBusy = true;
+        StateHasChanged();
+        try
+        {
+            using var response = await Http.PutAsJsonAsync($"api/integrationflow/{flow.Id}", flow);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                _validationErrors = new List<string>
+                {
+                    string.IsNullOrWhiteSpace(body) ? "The flow could not be saved for debugging." : body
+                };
+                return;
+            }
+
+            var saved = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+            if (saved != null)
+            {
+                Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = saved });
+            }
+
+            _debugMode = true;
+            ResetDebugSession();
+        }
+        catch (Exception)
+        {
+            _validationErrors = new List<string> { "Could not reach the API to save the flow for debugging." };
+        }
+        finally
+        {
+            _debugBusy = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ExitDebugMode()
+    {
+        _debugMode = false;
+        _debugInspectorNodeId = null;
+        _debugInspectorLogs = new();
+        _debugInspectorLogsError = null;
+        _debugSessions.Clear();
+        _debugGraph = null;
+        _debugPersistedStateJson = "{}";
+        ClearDebugLinkHighlight();
+        foreach (var node in Diagram.Nodes.OfType<IntegrationNodeModel>())
+        {
+            node.IsDebugMode = false;
+            node.DebugRunnable = false;
+            node.DebugState = DebugNodeState.Idle;
+            node.DebugRun = null;
+            node.DebugSupply = null;
+            node.DebugViewLogs = null;
+            node.Refresh();
+        }
+
+        StateHasChanged();
+    }
+
+    private void ResetDebugSession()
+    {
+        _debugSessions.Clear();
+        _debugInspectorNodeId = null;
+        _debugInspectorLogs = new();
+        _debugInspectorLogsError = null;
+        _debugPersistedStateJson = FlowState.Value.CurrentFlow?.PersistedStateJson ?? "{}";
+        _debugSequence = 0;
+        ClearDebugLinkHighlight();
+
+        var nodes = Diagram.Nodes.OfType<IntegrationNodeModel>().ToList();
+        var nodeIds = nodes.Select(node => node.StepConfig.Id);
+        var edges = Diagram.Links.OfType<LinkModel>()
+            .Select(link => (link.Source.Model as PortModel, link.Target.Model as PortModel))
+            .Where(pair => pair.Item1?.Parent is IntegrationNodeModel && pair.Item2?.Parent is IntegrationNodeModel)
+            .Select(pair => new DebugGraph.DebugEdge(
+                ((IntegrationNodeModel)pair.Item1!.Parent!).StepConfig.Id,
+                ((IntegrationNodeModel)pair.Item2!.Parent!).StepConfig.Id,
+                pair.Item1!.Id,
+                pair.Item2!.Id))
+            .ToList();
+
+        _debugGraph = DebugGraph.Build(nodeIds, edges);
+
+        foreach (var node in nodes)
+        {
+            node.IsDebugMode = true;
+            node.DebugState = DebugNodeState.Idle;
+            node.DebugRun = node_ => RunDebugNodeAsync(node_);
+            node.DebugSupply = node_ => OpenDebugSupplyAsync(node_);
+            node.DebugViewLogs = node_ => OpenDebugInspectorAsync(node_);
+            _debugSessions[node.StepConfig.Id] = new DebugNodeSession
+            {
+                NodeId = node.StepConfig.Id,
+                NodeName = DebugNodeLabel(node)
+            };
+        }
+
+        RefreshDebugRunnability();
+    }
+
+    private void RefreshDebugRunnability()
+    {
+        if (_debugGraph == null)
+        {
+            return;
+        }
+
+        foreach (var node in Diagram.Nodes.OfType<IntegrationNodeModel>())
+        {
+            var nodeId = node.StepConfig.Id;
+            if (!_debugSessions.TryGetValue(nodeId, out var session))
+            {
+                continue;
+            }
+
+            var incoming = _debugGraph.Incoming.TryGetValue(nodeId, out var edges) ? edges : new List<DebugGraph.DebugEdge>();
+
+            // The widget renders the node, so execution state has to land on the node as well as in
+            // the session. Projecting it here (the single place every state change funnels through)
+            // is what makes the badge and the View Logs button appear.
+            node.ApplyDebugSession(session);
+            node.DebugRunnable = DebugSessionRules.IsRunnable(session, incoming, _debugSessions);
+            node.Refresh();
+        }
+
+        HighlightDebugActiveEdges();
+    }
+
+    private void ClearDebugLinkHighlight()
+    {
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            link.Color = null;
+            link.Width = 1.5;
+        }
+    }
+
+    private async Task MarkHttpErrorLinksAsync()
+    {
+        var errorLinkIds = Diagram.Links.OfType<LinkModel>()
+            .Where(link => DiagramPortLayout.IsErrorPort((link.Source.Model as PortModel)?.Id))
+            .Select(link => link.Id)
+            .ToArray();
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSDesigner.markHttpErrorLinks", (object)errorLinkIds);
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    // LinkModel.Color is only a presentation attribute, and app.css intentionally styles
+    // .diagram-link path with !important for theme-aware default edges. Set the highlighted
+    // strokes inline with priority so Debug Mode actually renders them.
+    private async Task ApplyDebugLinkStylesAsync()
+    {
+        if (!_debugMode || _debugGraph == null)
+        {
+            return;
+        }
+
+        var active = new List<string>();
+        var dimmed = new List<string>();
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            if ((link.Source.Model as PortModel)?.Parent is not IntegrationNodeModel source)
+                continue;
+            if (!_debugSessions.TryGetValue(source.StepConfig.Id, out var session)
+                || session.State is not (DebugNodeState.Success or DebugNodeState.Supplied))
+                continue;
+
+            var sourcePortId = ((PortModel)link.Source.Model).Id;
+            if (!string.IsNullOrEmpty(session.ActivePortId)
+                && !string.Equals(session.ActivePortId, sourcePortId, StringComparison.OrdinalIgnoreCase))
+            {
+                dimmed.Add(link.Id);
+            }
+            else
+            {
+                active.Add(link.Id);
+            }
+        }
+
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSDesigner.applyLinkStyles", active.ToArray(), dimmed.ToArray());
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    // The same active-path treatment used by test runs, driven by Debug Mode's session state.
+    private void HighlightDebugActiveEdges()
+    {
+        ClearDebugLinkHighlight();
+        if (!_debugMode) return;
+
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            if ((link.Source.Model as PortModel)?.Parent is not IntegrationNodeModel source)
+                continue;
+            if (!_debugSessions.TryGetValue(source.StepConfig.Id, out var session)
+                || session.State is not (DebugNodeState.Success or DebugNodeState.Supplied))
+                continue;
+            if (!string.IsNullOrEmpty(session.ActivePortId)
+                && !string.Equals(session.ActivePortId, ((PortModel)link.Source.Model).Id, StringComparison.OrdinalIgnoreCase))
+            {
+                // The Branch took the other port: keep its skipped edge visible but clearly dimmed.
+                link.Color = "#94a3b8";
+                link.Width = 1.5;
+                continue;
+            }
+
+            link.Color = "#6366f1";
+            link.Width = 4;
+        }
+    }
+
+    private async Task FocusDebugBranchAsync(Guid branchId)
+    {
+        var branch = Diagram.Nodes.OfType<IntegrationNodeModel>().FirstOrDefault(node => node.StepConfig.Id == branchId);
+        if (branch == null) return;
+
+        var related = new List<IntegrationNodeModel> { branch };
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            if ((link.Source.Model as PortModel)?.Parent is not IntegrationNodeModel source
+                || source.StepConfig.Id != branchId
+                || (link.Target.Model as PortModel)?.Parent is not IntegrationNodeModel target)
+                continue;
+            if (!related.Contains(target)) related.Add(target);
+        }
+
+        var viewport = await GetCanvasViewportAsync();
+        if (viewport is not { Length: >= 2 } || viewport[0] <= 0 || viewport[1] <= 0) return;
+
+        double Width(IntegrationNodeModel node) => node.Size is { Width: > 0 } ? node.Size.Width : 220;
+        double Height(IntegrationNodeModel node) => node.Size is { Height: > 0 } ? node.Size.Height : 100;
+        var minX = related.Min(node => node.Position.X);
+        var minY = related.Min(node => node.Position.Y);
+        var contentWidth = Math.Max(1, related.Max(node => node.Position.X + Width(node)) - minX);
+        var contentHeight = Math.Max(1, related.Max(node => node.Position.Y + Height(node)) - minY);
+
+        var topInset = viewport.Length > 2 && viewport[2] > 0 ? viewport[2] + 24 : 80;
+        var leftInset = viewport.Length > 3 && viewport[3] > 0 ? viewport[3] + 18 : 20;
+        var availableWidth = Math.Max(180, viewport[0] - leftInset - 24);
+        var availableHeight = Math.Max(160, viewport[1] - topInset - 24);
+        var zoom = Math.Clamp(Math.Min(availableWidth / contentWidth, availableHeight / contentHeight), 0.35, 0.55);
+
+        Diagram.SetZoom(zoom);
+        Diagram.SetPan(
+            leftInset + Math.Max(0, (availableWidth - contentWidth * zoom) / 2) - minX * zoom,
+            topInset + Math.Max(0, (availableHeight - contentHeight * zoom) / 2) - minY * zoom);
+        Diagram.SelectModel(branch, true);
+    }
+
+    private static string DebugNodeLabel(IntegrationNodeModel node) =>
+        string.IsNullOrWhiteSpace(node.StepConfig.NodeName) ? node.StepConfig.StepType : node.StepConfig.NodeName;
+
+    private async Task RunDebugNodeAsync(IntegrationNodeModel node)
+    {
+        if (!_debugMode || _debugBusy || _debugGraph == null)
+        {
+            return;
+        }
+
+        var flow = FlowState.Value.CurrentFlow;
+        var session = _debugSessions[node.StepConfig.Id];
+        if (flow == null || flow.Id == Guid.Empty || session.State == DebugNodeState.Running)
+        {
+            return;
+        }
+
+        // Re-running an upstream card invalidates everything below it so a downstream card can never
+        // be run against output the operator has already replaced.
+        InvalidateDownstream(node.StepConfig.Id);
+
+        session.State = DebugNodeState.Running;
+        session.Input = null;
+        session.Output = null;
+        session.Error = null;
+        session.ActivePortId = null;
+        _debugBusy = true;
+        RefreshDebugRunnability();
+        StateHasChanged();
+
+        await Task.Yield();
+
+        try
+        {
+            var response = await Http.PostAsJsonAsync(
+                $"api/integrationflow/{flow.Id}/debug/{node.StepConfig.Id}",
+                new DebugNodeRunRequestDto
+                {
+                    FlowStateJson = BuildDebugFlowState(node.StepConfig.Id),
+                    PersistedStateJson = _debugPersistedStateJson
+                });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                session.State = DebugNodeState.Error;
+                session.Error = string.IsNullOrWhiteSpace(await response.Content.ReadAsStringAsync())
+                    ? "The step could not be executed."
+                    : await response.Content.ReadAsStringAsync();
+            }
+            else
+            {
+                var result = await response.Content.ReadFromJsonAsync<DebugNodeRunResultDto>();
+                if (result == null)
+                {
+                    session.State = DebugNodeState.Error;
+                    session.Error = "The API returned an empty result.";
+                }
+                else
+                {
+                    session.State = string.Equals(result.Status, "Success", StringComparison.OrdinalIgnoreCase)
+                        ? DebugNodeState.Success
+                        : DebugNodeState.Error;
+                    session.Input = result.Input;
+                    session.Output = result.Output;
+                    session.Error = string.IsNullOrWhiteSpace(result.Error) ? null : result.Error;
+                    session.DurationMs = result.DurationMs;
+                    session.ExecutionId = result.ExecutionId;
+                    session.StepExecutionId = result.StepExecutionId;
+                    session.ActivePortId = node.StepConfig.StepType == "Branch"
+                        ? BranchPort(result.BranchResult)
+                        : node.StepConfig.StepType == "HttpAction" && result.ErrorPort ? "error" : null;
+                    if (node.StepConfig.StepType == "PersistedState" && !string.IsNullOrWhiteSpace(result.Output))
+                        _debugPersistedStateJson = result.Output;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            session.State = DebugNodeState.Error;
+            session.Error = "Could not reach the API to run this step.";
+        }
+        finally
+        {
+            session.CompletedAtUtc = DateTime.UtcNow;
+            session.Sequence = ++_debugSequence;
+            _debugBusy = false;
+        }
+
+        RefreshDebugRunnability();
+        if (_debugInspectorNodeId == node.StepConfig.Id)
+        {
+            LoadDebugInspectorLogsAsync();
+        }
+
+        StateHasChanged();
+    }
+
+    private static string BranchPort(bool branchResult) => branchResult ? "true" : "false";
+
+    private void InvalidateDownstream(Guid nodeId)
+    {
+        if (_debugGraph == null)
+        {
+            return;
+        }
+
+        foreach (var descendantId in _debugGraph.Descendants(nodeId))
+        {
+            if (!_debugSessions.TryGetValue(descendantId, out var session))
+            {
+                continue;
+            }
+
+            session.State = DebugNodeState.Idle;
+            session.Input = null;
+            session.Output = null;
+            session.Error = null;
+            session.DurationMs = 0;
+            session.ExecutionId = null;
+            session.StepExecutionId = null;
+            session.ActivePortId = null;
+        }
+    }
+
+    // Only executed, not-yet-invalidated cards contribute their output. A card is keyed by its node
+    // name, exactly like the production executor writes flowStateContext.
+    private string BuildDebugFlowState(Guid currentNodeId)
+    {
+        var state = new Dictionary<string, object?>();
+        foreach (var session in DebugStateOrdering.Ordered(_debugSessions.Values, currentNodeId))
+            state[session.NodeName] = ParsePayload(session.Output!);
+        return JsonSerializer.Serialize(state, DebugJsonOptions);
+    }
+
+    private static readonly JsonSerializerOptions DebugJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    private string BuildDebugStateSnapshot()
+    {
+        var state = new Dictionary<string, object?>();
+        foreach (var session in DebugStateOrdering.Ordered(_debugSessions.Values))
+            state[session.NodeName] = ParsePayload(session.Output!);
+        return JsonSerializer.Serialize(state, DebugJsonOptions);
+    }
+
+    private static object? ParsePayload(string payload)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<JsonElement>(payload);
+        }
+        catch (JsonException)
+        {
+            return payload;
+        }
+    }
+
+    private static string PrettyJson(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return "{}";
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+        }
+        catch (JsonException)
+        {
+            return payload;
+        }
+    }
+
+    private string DebugSupplyStepType =>
+        _debugSupplyNodeId is Guid nodeId
+            ? FlowState.Value.CurrentFlow?.Nodes.FirstOrDefault(node => node.Id == nodeId)?.StepType ?? string.Empty
+            : string.Empty;
+
+    private Task OpenDebugSupplyAsync(IntegrationNodeModel node)
+    {
+        _debugSupplyNodeId = node.StepConfig.Id;
+        _debugSupplyNodeName = DebugNodeLabel(node);
+        _debugSupplyError = null;
+        _debugSupplyBranchResult = !_debugSessions.TryGetValue(node.StepConfig.Id, out var existing)
+            || !string.Equals(existing.ActivePortId, "false", StringComparison.OrdinalIgnoreCase);
+        _debugSupplyHttpError = node.StepConfig.StepType == "HttpAction"
+            && node.StepConfig.HttpErrorMode == "Continue"
+            && string.Equals(existing?.ActivePortId, "error", StringComparison.OrdinalIgnoreCase);
+        _debugSupplyJson = _debugSupplyHttpError
+            ? BuildHttpErrorSupplyEnvelope()
+            : !string.IsNullOrWhiteSpace(existing?.Output)
+                ? PrettyJson(existing.Output)
+                : node.StepConfig.StepType is "ForEach" or "FanOut" ? "[]" : "{}";
+        _showDebugSupplyModal = true;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private void OnDebugSupplyJsonChanged(string value) => _debugSupplyJson = value;
+
+    private void SetDebugSupplyHttpMode(bool error)
+    {
+        _debugSupplyHttpError = error;
+        _debugSupplyJson = error ? BuildHttpErrorSupplyEnvelope() : "{}";
+        _debugSupplyError = null;
+    }
+
+    private static string BuildHttpErrorSupplyEnvelope() =>
+        """{"ok":false,"statusCode":400,"error":"HTTP request failed with status code 400","body":{},"headers":{}}""";
+
+    private void CloseDebugSupply()
+    {
+        _showDebugSupplyModal = false;
+        _debugSupplyError = null;
+        StateHasChanged();
+    }
+
+    private async Task ConfirmDebugSupplyAsync()
+    {
+        if (_debugSupplyNodeId is not Guid nodeId) return;
+        var node = Diagram.Nodes.OfType<IntegrationNodeModel>().FirstOrDefault(item => item.StepConfig.Id == nodeId);
+        if (node == null) return;
+
+        string output;
+        if (node.StepConfig.StepType == "Branch")
+        {
+            output = _debugSupplyBranchResult ? "true" : "false";
+        }
+        else
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(_debugSupplyJson) ? "{}" : _debugSupplyJson);
+                if (node.StepConfig.StepType is "ForEach" or "FanOut" && document.RootElement.ValueKind != JsonValueKind.Array)
+                {
+                    _debugSupplyError = $"{node.StepConfig.StepType} needs a JSON array.";
+                    return;
+                }
+                output = JsonSerializer.Serialize(document.RootElement);
+            }
+            catch (JsonException ex)
+            {
+                _debugSupplyError = $"Invalid JSON: {ex.Message}";
+                return;
+            }
+        }
+
+        InvalidateDownstream(nodeId);
+        if (!_debugSessions.TryGetValue(nodeId, out var session))
+        {
+            session = new DebugNodeSession { NodeId = nodeId, NodeName = DebugNodeLabel(node) };
+            _debugSessions[nodeId] = session;
+        }
+        session.State = DebugNodeState.Supplied;
+        session.Output = output;
+        session.Error = null;
+        session.DurationMs = 0;
+        session.ExecutionId = null;
+        session.StepExecutionId = null;
+        session.CompletedAtUtc = DateTime.UtcNow;
+        session.ActivePortId = node.StepConfig.StepType == "Branch"
+            ? BranchPort(_debugSupplyBranchResult)
+            : node.StepConfig.StepType == "HttpAction" && _debugSupplyHttpError ? "error" : null;
+        session.Sequence = ++_debugSequence;
+        if (node.StepConfig.StepType == "PersistedState")
+            _debugPersistedStateJson = output;
+
+        _showDebugSupplyModal = false;
+        _debugSupplyError = null;
+        RefreshDebugRunnability();
+        if (node.StepConfig.StepType == "Branch")
+            await FocusDebugBranchAsync(nodeId);
+        if (_debugInspectorNodeId == nodeId)
+            await OpenDebugInspectorAsync(node);
+        StateHasChanged();
+    }
+
+    private Task OpenDebugInspectorAsync(IntegrationNodeModel node)
+    {
+        _debugInspectorNodeId = node.StepConfig.Id;
+        _debugInspectorNodeName = DebugNodeLabel(node);
+        _debugInspectorStepType = node.StepConfig.StepType;
+        _debugInspectorLogs = new();
+        _debugInspectorLogsError = null;
+        LoadDebugInspectorLogsAsync();
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void CloseDebugInspector()
+    {
+        _debugInspectorNodeId = null;
+        _debugInspectorLogs = new();
+        _debugInspectorLogsError = null;
+        StateHasChanged();
+    }
+
+    private Task RefreshDebugInspectorLogsAsync()
+    {
+        LoadDebugInspectorLogsAsync();
+        return Task.CompletedTask;
+    }
+
+    // The inspector shows the row's own console trail: every log line the executor wrote while this
+    // card ran is tagged with the step execution id, so no timestamp heuristics are needed.
+    private async void LoadDebugInspectorLogsAsync()
+    {
+        var nodeId = _debugInspectorNodeId;
+        if (nodeId is not Guid inspectedId || !_debugSessions.TryGetValue(inspectedId, out var session))
+        {
+            return;
+        }
+
+        if (session.StepExecutionId is not Guid stepExecutionId)
+        {
+            _debugInspectorLogs = new();
+            _debugInspectorLogsError = "Logs are unavailable until this step has run.";
+            StateHasChanged();
+            return;
+        }
+
+        _debugInspectorLogsLoading = true;
+        _debugInspectorLogsError = null;
+        StateHasChanged();
+
+        try
+        {
+            var page = await Http.GetFromJsonAsync<LogPageDto>(
+                $"api/logs?stepExecutionId={stepExecutionId}&pageSize=200");
+            _debugInspectorLogs = page?.Items ?? new List<AppLogEntryDto>();
+        }
+        catch (Exception)
+        {
+            _debugInspectorLogs = new();
+            _debugInspectorLogsError = "Could not load the logs for this step.";
+        }
+        finally
+        {
+            _debugInspectorLogsLoading = false;
+            StateHasChanged();
+        }
     }
 
     private void ClearResult()
@@ -553,8 +2736,199 @@
         return IntegrationIdQuery;
     }
 
+    private const int FitMargin = 80;
+    private const double FitPadding = 40d;
+    private const double MaxFitZoom = 1.25d;
+    private const double OverlayGap = 16d;
+    private const int TidyColumnGap = 120;
+    private const int TidyRowGap = 72;
+
     private void ZoomIn() => Diagram.SetZoom(Diagram.Zoom * 1.2);
     private void ZoomOut() => Diagram.SetZoom(Diagram.Zoom / 1.2);
+
+    /// <summary>
+    /// Fits the whole flow in view with an even margin. The diagram library's own ZoomToFit clips
+    /// wide graphs and leaves them off-centre, so the content box is measured here and the zoom and
+    /// pan are set directly: centred when there is slack, padded when there is not.
+    /// </summary>
+    private async Task FitToScreenAsync()
+    {
+        var nodes = Diagram.Nodes.ToList();
+        if (nodes.Count == 0)
+        {
+            TryZoomToFit();
+            return;
+        }
+
+        // The diagram library does not populate Model.Size for every custom node in this build.
+        // Fall back to the rendered card size so Fit still works instead of silently doing nothing.
+        double NodeWidth(NodeModel node) =>
+            node.Size is { Width: > 0 } ? node.Size.Width : (_testMode ? 210d : 300d);
+        double NodeHeight(NodeModel node) =>
+            node.Size is { Height: > 0 } ? node.Size.Height : (_testMode ? 90d : 200d);
+
+        var minX = nodes.Min(node => node.Position.X);
+        var minY = nodes.Min(node => node.Position.Y);
+        var contentWidth = Math.Max(1d, nodes.Max(node => node.Position.X + NodeWidth(node)) - minX);
+        var contentHeight = Math.Max(1d, nodes.Max(node => node.Position.Y + NodeHeight(node)) - minY);
+
+        var viewport = await GetCanvasViewportAsync();
+        if (viewport is not { Length: >= 2 } || viewport[0] <= 0 || viewport[1] <= 0)
+        {
+            TryZoomToFit();
+            return;
+        }
+
+        // The palette and the zoom stack float over the canvas: fit into what is left of it, so no
+        // card ends up hidden behind them.
+        var topInset = viewport.Length > 2 && viewport[2] > 0 ? viewport[2] + OverlayGap : FitPadding;
+        // Test mode adds a taller toolbar (scenario controls + status row). Leave room for the
+        // card badges above the top row instead of hiding them behind the floating bar.
+        if (_testMode) topInset += 40;
+        var leftInset = viewport.Length > 3 && viewport[3] > 0 ? viewport[3] + OverlayGap : FitPadding;
+        var availableWidth = Math.Max(160d, viewport[0] - leftInset - FitPadding);
+        var availableHeight = Math.Max(160d, viewport[1] - topInset - FitPadding);
+
+        var zoom = Math.Min(availableWidth / contentWidth, availableHeight / contentHeight);
+        if (!double.IsFinite(zoom) || zoom <= 0) return;
+        zoom = Math.Min(zoom, MaxFitZoom);
+
+        Diagram.SetZoom(zoom);
+        Diagram.SetPan(
+            leftInset + Math.Max(0d, (availableWidth - (contentWidth * zoom)) / 2d) - (minX * zoom),
+            topInset + Math.Max(0d, (availableHeight - (contentHeight * zoom)) / 2d) - (minY * zoom));
+    }
+
+    private void TryZoomToFit()
+    {
+        try
+        {
+            Diagram.ZoomToFit((int)FitMargin);
+            if (Diagram.Zoom > MaxFitZoom) Diagram.SetZoom(MaxFitZoom);
+        }
+        catch (ArgumentException)
+        {
+            // The canvas may not have been measured yet.
+        }
+    }
+
+    private async Task<double[]?> GetCanvasViewportAsync()
+    {
+        try
+        {
+            return await JSRuntime.InvokeAsync<double[]?>("simpleIPaaSDesigner.viewport", ".diagram-canvas");
+        }
+        catch (JSException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Arranges the cards in evenly spaced columns: one column per graph depth, stacked with the
+    /// measured card height (so tall cards such as the scheduler cannot collide), centred against
+    /// the tallest column. Positions are only persisted when the flow is saved, so this stays a
+    /// preview until then.
+    /// </summary>
+    private async Task TidyLayoutAsync()
+    {
+        var nodes = Diagram.Nodes.ToList();
+        if (nodes.Count == 0)
+        {
+            return;
+        }
+
+        // Depth = longest path from a root. Relaxation instead of recursion keeps a malformed graph
+        // (a cycle can only reach the designer from hand-edited JSON) from blowing the stack.
+        // Use the live canvas links first; saved flow edges only fill in links that could not
+        // be rendered (a missing port, for example).
+        var nodeByStepId = nodes.OfType<IntegrationNodeModel>().ToDictionary(node => node.StepConfig.Id, node => node);
+        var edges = FlowState.Value.CurrentFlow?.Edges ?? new List<IntegrationEdgeDto>();
+
+        // Prefer the live diagram links. CurrentFlow.Edges is only refreshed on save, so a new
+        // connection made in the canvas would otherwise leave every node at depth 0 and Tidy
+        // would stack the whole flow in one vertical column.
+        var graphEdges = new HashSet<(Guid Source, Guid Target)>();
+        foreach (var link in Diagram.Links.OfType<LinkModel>())
+        {
+            if (link.Source.Model is not PortModel sourcePort ||
+                link.Target.Model is not PortModel targetPort ||
+                sourcePort.Parent is not IntegrationNodeModel sourceNode ||
+                targetPort.Parent is not IntegrationNodeModel targetNode)
+            {
+                continue;
+            }
+
+            graphEdges.Add((sourceNode.StepConfig.Id, targetNode.StepConfig.Id));
+        }
+
+        // Keep saved edges as a fallback for links that could not be rendered.
+        foreach (var edge in edges)
+        {
+            graphEdges.Add((edge.SourceNodeId, edge.TargetNodeId));
+        }
+
+        var depth = nodes.ToDictionary(node => node, _ => 0);
+        for (var pass = 0; pass < nodes.Count; pass++)
+        {
+            var changed = false;
+            foreach (var edge in graphEdges)
+            {
+                if (!nodeByStepId.TryGetValue(edge.Source, out var source) ||
+                    !nodeByStepId.TryGetValue(edge.Target, out var target))
+                {
+                    continue;
+                }
+
+                if (depth[target] <= depth[source])
+                {
+                    depth[target] = depth[source] + 1;
+                    changed = true;
+                }
+            }
+
+            if (!changed)
+            {
+                break;
+            }
+        }
+
+        var columns = nodes
+            .GroupBy(node => depth[node])
+            .OrderBy(column => column.Key)
+            .Select(column => column.OrderBy(node => node.Position.Y).ToList())
+            .ToList();
+
+        double Width(NodeModel node) => node.Size is { Width: > 0 } size ? size.Width : 320d;
+        double Height(NodeModel node) => node.Size is { Height: > 0 } size ? size.Height : 220d;
+
+        // Column x positions: each column is as wide as its widest card plus a fixed gap.
+        var columnX = new List<double>();
+        var x = 0d;
+        foreach (var column in columns)
+        {
+            columnX.Add(x);
+            x += column.Max(Width) + TidyColumnGap;
+        }
+
+        var columnHeights = columns
+            .Select(column => column.Sum(Height) + (TidyRowGap * (column.Count - 1)))
+            .ToList();
+        var tallest = columnHeights.Count == 0 ? 0d : columnHeights.Max();
+
+        for (var index = 0; index < columns.Count; index++)
+        {
+            var column = columns[index];
+            var y = Math.Max(0d, (tallest - columnHeights[index]) / 2d);
+            foreach (var node in column)
+            {
+                node.SetPosition(columnX[index], y);
+                y += Height(node) + TidyRowGap;
+            }
+        }
+
+        await FitToScreenAsync();
+    }
 
     private void ToggleToolbar()
     {
@@ -603,6 +2977,7 @@
 
     private void DeleteSelectedNodes()
     {
+        if (_testMode) return;
         var selectedNodes = Diagram.Nodes.OfType<IntegrationNodeModel>().Where(node => node.Selected).ToList();
         foreach (var node in selectedNodes)
         {
@@ -615,6 +2990,12 @@
             }
 
             Diagram.Nodes.Remove(node);
+        }
+
+        if (_debugMode && selectedNodes.Count > 0)
+        {
+            ResetDebugSession();
+            StateHasChanged();
         }
     }
 
@@ -706,10 +3087,7 @@
 
     private void OpenFlowTests()
     {
-        if (FlowState.Value.CurrentFlow?.Id is Guid flowId && flowId != Guid.Empty)
-        {
-            NavigationManager.NavigateTo($"flow-tests/{flowId}");
-        }
+        _ = ToggleTestModeAsync();
     }
 
     private void OpenFlowLogs()
@@ -723,29 +3101,123 @@
         NavigationManager.NavigateTo($"/logs?flowId={flow.Id}");
     }
 
+    private async Task ToggleScheduleAsync()
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null || flow.Id == Guid.Empty || !CanToggleSchedule) return;
+
+        _scheduleBusy = true;
+        _validationErrors.Clear();
+        try
+        {
+            var action = IsScheduleActive ? "pause" : "start";
+            using var response = await Http.PostAsync($"api/integrationflow/{flow.Id}/schedule/{action}", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                _validationErrors = new List<string>
+                {
+                    string.IsNullOrWhiteSpace(body) ? "The schedule could not be updated." : body
+                };
+                return;
+            }
+
+            var updated = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+            if (updated != null)
+            {
+                Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = updated });
+            }
+        }
+        catch (Exception)
+        {
+            _validationErrors = new List<string> { "Could not reach the API to update the schedule." };
+        }
+        finally
+        {
+            _scheduleBusy = false;
+            StateHasChanged();
+        }
+    }
+
     private async Task PublishFlowAsync()
     {
         var flow = FlowState.Value.CurrentFlow;
-        if (flow == null || flow.Id == Guid.Empty)
+        if (_publishBusy || flow == null || flow.Id == Guid.Empty)
         {
             return;
         }
 
-        var response = await Http.PostAsJsonAsync(
-            $"api/integrationflow/{flow.Id}/publish",
-            new FlowVersionActionDto { ChangeNote = "Published from Flow Designer" });
-
-        if (!response.IsSuccessStatusCode)
+        var status = await LoadTestStatusAsync();
+        if (status != null && status.RequiredTests.Any(test => test.State != "Passed"))
         {
-            _validationErrors = new List<string> { "The draft could not be published. Review the flow and try again." };
+            await EnsurePublishSessionAsync();
+            if (_testSession != null) await _testSession.LoadStatusAsync();
+            _showPublishTests = true;
+            StateHasChanged();
             return;
         }
 
-        var published = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
-        if (published != null)
+        await PublishFlowCoreAsync("Published from Flow Designer");
+    }
+
+    private async Task PublishFlowCoreAsync(string changeNote)
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (_publishBusy || flow == null || flow.Id == Guid.Empty)
         {
-            Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = published });
-            await OpenVersionHistoryAsync();
+            return;
+        }
+
+        // Publishing appends a version server-side, so a second click while the first request is
+        // still in flight would create a duplicate "Published from Flow Designer" row.
+        _publishBusy = true;
+        _validationErrors.Clear();
+
+        var unconnectedErrorPorts = flow.Nodes
+            .Where(node => node.StepType == "HttpAction" && node.HttpErrorMode == "Continue"
+                && !flow.Edges.Any(edge => edge.SourceNodeId == node.Id
+                    && string.Equals(edge.SourcePortId, "error", StringComparison.OrdinalIgnoreCase)))
+            .Select(node => node.NodeName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToList();
+        if (unconnectedErrorPorts.Count > 0)
+        {
+            Dispatcher.Dispatch(new ShowToastAction
+            {
+                Message = $"Error port not connected for {string.Join(", ", unconnectedErrorPorts)} — errors will be ignored.",
+                Level = "warning"
+            });
+        }
+        StateHasChanged();
+
+        try
+        {
+            var response = await Http.PostAsJsonAsync(
+                $"api/integrationflow/{flow.Id}/publish",
+                new FlowVersionActionDto { ChangeNote = changeNote });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _validationErrors = new List<string> { "The draft could not be published. Review the flow and try again." };
+                return;
+            }
+
+            var published = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+            if (published != null)
+            {
+                Dispatcher.Dispatch(new UpdateFlowStateAction { Flow = published });
+                await LoadTestStatusAsync();
+                await OpenVersionHistoryAsync();
+            }
+        }
+        catch (Exception)
+        {
+            _validationErrors = new List<string> { "Could not reach the API to publish this flow." };
+        }
+        finally
+        {
+            _publishBusy = false;
+            StateHasChanged();
         }
     }
 
@@ -820,6 +3292,18 @@
         {
             _showFlowSettings = false;
         }
+    }
+
+    private void OnDefaultDeadLetterResyncNodeChanged(ChangeEventArgs args)
+    {
+        var flow = FlowState.Value.CurrentFlow;
+        if (flow == null)
+        {
+            return;
+        }
+        flow.DefaultDeadLetterResyncStepId = Guid.TryParse(args.Value?.ToString(), out var selectedNodeId)
+            ? selectedNodeId
+            : null;
     }
 
     private async Task OnTriggerTypeChanged(ChangeEventArgs args)
@@ -950,6 +3434,20 @@
 
     private bool HasScheduleNode => ScheduleStep != null;
 
+    private bool HasSchedule =>
+        HasScheduleNode ||
+        string.Equals(FlowState.Value.CurrentFlow?.TriggerType, "Cron", StringComparison.OrdinalIgnoreCase) ||
+        FlowState.Value.CurrentFlow?.RunAt != null;
+
+    private bool IsScheduleActive =>
+        string.Equals(FlowState.Value.CurrentFlow?.Status, "Active", StringComparison.OrdinalIgnoreCase);
+
+    private bool CanToggleSchedule =>
+        FlowState.Value.CurrentFlow is { Id: var id, PublishedVersion: not null } &&
+        id != Guid.Empty &&
+        (IsScheduleActive ||
+         string.Equals(FlowState.Value.CurrentFlow.Status, "Paused", StringComparison.OrdinalIgnoreCase));
+
     private string ScheduleNodeSummary
     {
         get
@@ -1034,11 +3532,28 @@
         Schedule,
          CrossReferenceStore,
         CrossReferenceFilter,
-        ForEach
+        ForEach,
+        FanOut,
+        AddIdentifier,
+        Error,
+        Success,
+        Email
     }
+
+    private void OnAiBuildChanged() => _ = InvokeAsync(StateHasChanged);
 
     public void Dispose()
     {
+        AiBuild.Changed -= OnAiBuildChanged;
+        _locationChangingRegistration?.Dispose();
+        _locationChangingRegistration = null;
+        try { _ = JSRuntime.InvokeVoidAsync("simpleIPaaSDesigner.unobserveCanvas"); } catch (JSException) { }
+        if (_testSession != null)
+        {
+            _testSession.Changed -= OnTestSessionChanged;
+            _testSession.StopPolling();
+            _ = _testSession.DisposeAsync();
+        }
         _dotnetHelper?.Dispose();
         _dotnetHelper = null;
     }

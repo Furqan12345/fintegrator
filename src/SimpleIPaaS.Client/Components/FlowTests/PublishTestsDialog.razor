@@ -1,0 +1,187 @@
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+
+<div class="modal-overlay" @onclick="Close">
+    <div class="modal-container confirm-modal test-publish-dialog" @onclick:stopPropagation="true">
+        <div class="modal-header">
+            <div>
+                <div class="test-eyebrow">PUBLISH CHECK</div>
+                <h3 class="modal-title">Required tests are not ready</h3>
+                <p class="modal-subtitle">Run the required scenarios against the current draft before publishing.</p>
+            </div>
+            <button class="modal-close-btn" @onclick="Close">×</button>
+        </div>
+        <div class="modal-body">
+            @foreach (var test in Session.Status.RequiredTests)
+            {
+                <div class="test-required-row">
+                    <span class="status-badge @StateClass(test.State)">@test.State</span>
+                    <strong>@test.Name</strong>
+                </div>
+            }
+
+            @if (_suite != null)
+            {
+                <div class="test-publish-progress">
+                    @foreach (var scenario in _suite.Scenarios)
+                    {
+                        <div class="test-publish-progress-row">
+                            <span class="test-status-dot @SuiteState(scenario.Status)"></span>
+                            <strong>@scenario.Name</strong>
+                            <span>@scenario.Status</span>
+                            @if (!string.IsNullOrWhiteSpace(scenario.Headline))
+                            {
+                                <small>@scenario.Headline</small>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <div class="test-error-box">@_error</div>
+            }
+
+            @if (_failed.Any())
+            {
+                <div class="test-failed-tests">
+                    <strong>Some required tests failed:</strong>
+                    @foreach (var scenario in _failed)
+                    {
+                        <div>@scenario.Name — @scenario.Headline</div>
+                    }
+                </div>
+            }
+
+            <label class="test-field">
+                <span>Change note</span>
+                <input class="form-control" value="@_changeNote" @onchange="e => _changeNote = e.Value?.ToString() ?? string.Empty" placeholder="Optional change note" />
+            </label>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" @onclick="Close" disabled="@_busy">Cancel</button>
+            @if (_failed.Any())
+            {
+                <button class="btn btn-soft-danger" @onclick="OpenTestMode" disabled="@_busy">Open results</button>
+            }
+            <button class="btn btn-outline" @onclick="OpenTestMode" disabled="@_busy">Open test mode</button>
+            <button class="btn btn-primary" @onclick="RunAndPublishAsync" disabled="@_busy">
+                @(_busy ? "Running required tests…" : "Run required tests and publish")
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FlowTestSession Session { get; set; } = null!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<Guid?> OnOpenTestMode { get; set; }
+    [Parameter] public EventCallback<IntegrationFlowDto> OnPublished { get; set; }
+
+    private bool _busy;
+    private string _changeNote = "Published from Flow Designer";
+    private string? _error;
+    private FlowTestSuiteRunDto? _suite;
+    private List<FlowTestSuiteScenarioDto> _failed = new();
+
+    private async Task RunAndPublishAsync()
+    {
+        _busy = true;
+        _error = null;
+        _failed.Clear();
+        try
+        {
+            var startResponse = await Http.PostAsJsonAsync(
+                $"api/integrationflow/{Session.FlowId}/test-suite/run",
+                new FlowTestSuiteRunRequestDto { RequiredOnly = true });
+            if (!startResponse.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(startResponse);
+                return;
+            }
+
+            var start = await startResponse.Content.ReadFromJsonAsync<FlowTestSuiteStartDto>();
+            if (start == null)
+            {
+                _error = "The API did not return a suite run.";
+                return;
+            }
+
+            while (start.TestRunIds.Count > 0)
+            {
+                _suite = await Http.GetFromJsonAsync<FlowTestSuiteRunDto>(
+                    $"api/integrationflow/{Session.FlowId}/test-suite/runs/{start.SuiteRunId}");
+                if (_suite == null) { _error = "The suite could not be loaded."; return; }
+                if (_suite.Status != "Running") break;
+                await Task.Delay(750);
+            }
+
+            if (_suite?.Status != "Passed")
+            {
+                _failed = _suite?.Scenarios.Where(item => item.Status != "Passed").ToList() ?? new();
+                _error = "Some required tests failed. Nothing was published.";
+                return;
+            }
+
+            var publishResponse = await Http.PostAsJsonAsync(
+                $"api/integrationflow/{Session.FlowId}/publish",
+                new FlowVersionActionDto { ChangeNote = _changeNote });
+            if (!publishResponse.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(publishResponse);
+                return;
+            }
+
+            var published = await publishResponse.Content.ReadFromJsonAsync<IntegrationFlowDto>();
+            if (published != null) await OnPublished.InvokeAsync(published);
+            await OnClose.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private Task OpenTestMode() => OnOpenTestMode.InvokeAsync(_suite?.SuiteRunId);
+
+    private Task Close() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private static string StateClass(string state) => state switch
+    {
+        "Passed" => "success",
+        "Failed" => "failed",
+        "Stale" => "warning",
+        _ => "queued"
+    };
+
+    private static string SuiteState(string status) => status switch
+    {
+        "Passed" => "passed",
+        "Failed" => "failed",
+        "Queued" or "Running" => "running",
+        _ => "never"
+    };
+
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(body)) return $"Request failed ({(int)response.StatusCode}).";
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.TryGetProperty("detail", out var detail)) return detail.GetString() ?? body;
+            if (document.RootElement.TryGetProperty("message", out var message)) return message.GetString() ?? body;
+            if (document.RootElement.TryGetProperty("title", out var title)) return title.GetString() ?? body;
+        }
+        catch (JsonException) { }
+        return body;
+    }
+}

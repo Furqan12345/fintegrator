@@ -1,0 +1,107 @@
+/* Integrations catalog: a scannable list of integration containers.
+   Shared utilities (.sr-only, .row-attention, .cell-desc, .panel-skeleton) live in app.css. */
+
+.error-text { color: var(--danger); }
+
+.int-table td {
+    vertical-align: middle;
+}
+
+.int-table td:first-child {
+    min-width: 260px;
+}
+
+/* The whole row opens the integration: one link, one tab stop, a large hit area. */
+.int-table tbody tr {
+    position: relative;
+}
+
+.int-table .row-link {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-decoration: none;
+}
+
+.int-table .row-link::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+}
+
+.int-table .row-link:hover {
+    color: var(--primary-contrast);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.int-table .row-link:focus-visible {
+    outline: 2px dashed var(--primary);
+    outline-offset: 3px;
+    border-radius: var(--radius-xs);
+}
+
+.int-table .cell-actions,
+.int-table .col-open {
+    position: relative;
+    z-index: var(--z-raised);
+}
+
+.int-name-cell {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+.int-name-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.int-flows-cell {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.int-flows-cell .chip-row {
+    gap: var(--space-1);
+}
+
+.int-table .status-badge.no-dot {
+    font-size: 0.7rem;
+}
+
+.row-chevron {
+    display: inline-flex;
+    color: var(--text-faint);
+    transition: transform var(--dur-fast) var(--ease-out), color var(--dur-fast) ease;
+}
+
+.int-table tbody tr:hover .row-chevron {
+    color: var(--primary);
+    transform: translateX(2px);
+}
+
+@media (max-width: 1100px) {
+    .int-table .col-updated {
+        display: none;
+    }
+}
+
+@media (max-width: 900px) {
+    .int-table .col-steps {
+        display: none;
+    }
+
+    .int-table .cell-desc {
+        max-width: 34ch;
+    }
+
+    .int-table td:first-child {
+        min-width: 200px;
+    }
+}

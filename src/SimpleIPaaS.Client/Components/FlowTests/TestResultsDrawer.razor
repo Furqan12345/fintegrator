@@ -1,0 +1,279 @@
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Shared.Models
+
+<section class="test-results-drawer @(Collapsed ? "is-collapsed" : "")" style="--test-drawer-height:@(Height)px">
+    <input class="test-drawer-resizer" type="range" min="190" max="520" step="10" value="@Height"
+           @onchange="HandleHeightChanged" title="Resize results drawer" />
+
+    <div class="test-drawer-head">
+        <div class="test-drawer-headline">
+            @if (Session.SuiteMode && Session.Suite != null)
+            {
+                <span class="test-headline-icon @(Session.Suite.Status == "Failed" ? "failed" : Session.Suite.Status == "Running" ? "running" : "passed")">
+                    @(Session.Suite.Status == "Failed" ? "✗" : Session.Suite.Status == "Running" ? "…" : "✓")
+                </span>
+                <div class="test-drawer-heading-copy">
+                    <strong class="test-drawer-title" title="@(Session.Suite.Status == "Running" ? "Running all scenarios…" : $"Suite {Session.Suite.Status.ToLowerInvariant()}")">@(Session.Suite.Status == "Running" ? "Running all scenarios…" : $"Suite {Session.Suite.Status.ToLowerInvariant()}")</strong>
+                    <span class="test-drawer-meta">@Session.Suite.Passed passed · @Session.Suite.Failed failed · @Session.Suite.Running running</span>
+                </div>
+            }
+            else
+            {
+                var evaluation = Session.Evaluation;
+                <span class="test-headline-icon @(Session.IsRunning ? "running" : evaluation?.Passed == true ? "passed" : "failed")">
+                    @(Session.IsRunning ? "…" : evaluation?.Passed == true ? "✓" : "✗")
+                </span>
+                <div class="test-drawer-heading-copy">
+                    <strong class="test-drawer-title" title="@(Session.IsRunning ? "Running…" : evaluation?.Headline ?? Session.Error ?? "No result yet")">@(Session.IsRunning ? "Running…" : evaluation?.Headline ?? Session.Error ?? "No result yet")</strong>
+                    <span class="test-drawer-meta">@RunMeta(evaluation)</span>
+                </div>
+            }
+        </div>
+        <div class="test-drawer-actions">
+            @if (Session.Evaluation?.FailedCardId is Guid failedCardId)
+            {
+                <button class="btn btn-soft-danger btn-sm" @onclick="() => ShowFailedCard(failedCardId)">
+                    @(Session.Evaluation?.Passed == true && Session.Evaluation.ExecutionStatus != "Success" ? "Show error card" : "Show failed card")
+                </button>
+            }
+            @if (Session.Runs.Count > 0 && !Session.SuiteMode)
+            {
+                <select class="form-control test-run-select" value="@Session.CurrentRun?.Id"
+                        @onchange="OnRunSelected" title="Run history">
+                    @foreach (var run in Session.Runs.OrderByDescending(item => item.StartedAt))
+                    {
+                        <option value="@run.Id">@run.Status · @run.StartedAt.ToLocalTime().ToString("g")</option>
+                    }
+                </select>
+            }
+            <button class="btn btn-ghost btn-sm" @onclick="ToggleCollapsed">
+                @(Collapsed ? "Expand" : "Collapse")
+            </button>
+            <button class="test-icon-button" @onclick="Close" title="Close results">×</button>
+        </div>
+    </div>
+
+    @if (!Collapsed)
+    {
+        <div class="test-drawer-body">
+            @if (!string.IsNullOrWhiteSpace(Session.Error))
+            {
+                <div class="test-runner-error">
+                    <AppIcon Name="x-circle" Class="icon icon-sm" />
+                    <span>@Session.Error</span>
+                </div>
+            }
+
+            @if (Session.IsRunning)
+            {
+                var running = Session.Detail?.Progress.FirstOrDefault(item => item.Status == "InProgress");
+                <div class="test-progress">
+                    <div class="test-progress-bar"><span></span></div>
+                    <small>@(running == null ? "Starting run…" : $"Running {running.CardName}…")</small>
+                </div>
+            }
+
+            @if (Session.SuiteMode && Session.Suite != null)
+            {
+                <div class="test-suite-list">
+                    @foreach (var scenario in Session.Suite.Scenarios)
+                    {
+                        <button class="test-suite-row" @onclick="() => OpenSuiteScenario(scenario)">
+                            <span class="test-status-dot @SuiteState(scenario.Status)"></span>
+                            <span class="test-suite-copy">
+                                <strong>@scenario.Name</strong>
+                                <small>@(string.IsNullOrWhiteSpace(scenario.Headline) ? scenario.Status : scenario.Headline)</small>
+                                @if (!string.IsNullOrWhiteSpace(scenario.Error))
+                                {
+                                    <small class="text-danger">@scenario.Error</small>
+                                }
+                            </span>
+                            <span class="status-badge @scenario.Status.ToLowerInvariant()">@scenario.Status</span>
+                        </button>
+                    }
+                </div>
+            }
+            else if (Session.Evaluation != null)
+            {
+                var cards = Session.Evaluation.Cards.OrderBy(card => card.Order).ToList();
+                <div class="test-timeline">
+                    @foreach (var card in cards)
+                    {
+                        var checks = Session.Evaluation.Checks
+                            .Where(check => check.CardId == card.CardId)
+                            .ToList();
+                        <div class="test-timeline-row @CardClass(card)" role="button" tabindex="0" @onclick="() => SelectCard(card.CardId, card.CardName)">
+                            <span class="test-timeline-state @CardClass(card)">
+                                @if (card.Status == "Failed")
+                                {
+                                    <AppIcon Name="x-circle" Class="icon icon-xs" />
+                                }
+                                else if (card.Status == "NotReached")
+                                {
+                                    <span class="test-icon-dash">–</span>
+                                }
+                                else if (card.Status == "Supplied")
+                                {
+                                    <AppIcon Name="copy" Class="icon icon-xs" />
+                                }
+                                else if (card.Status == "Fixture")
+                                {
+                                    <AppIcon Name="external" Class="icon icon-xs" />
+                                }
+                                else
+                                {
+                                    <AppIcon Name="check-circle" Class="icon icon-xs" />
+                                }
+                            </span>
+                            <span class="test-timeline-copy">
+                                <strong>@card.CardName</strong>
+                                <small>@CardType(card.CardId) @if (card.HttpStatusCode is int httpCode) { <text> · HTTP @httpCode</text> } @if (card.InvocationCount > 1) { <text> · @card.InvocationCount invocations</text> } @if (card.DurationMs > 0) { <text> · @card.DurationMs ms</text> }</small>
+                                @if (!string.IsNullOrWhiteSpace(card.ErrorMessage))
+                                {
+                                    <details class="test-timeline-error" @onclick:stopPropagation="true">
+                                        <summary title="@card.ErrorMessage">@FirstLine(card.ErrorMessage)</summary>
+                                        <CopyButton Text="@card.ErrorMessage" />
+                                        <pre>@card.ErrorMessage</pre>
+                                    </details>
+                                }
+                            </span>
+                            <span class="test-timeline-checks">
+                                @if (checks.Count > 0)
+                                {
+                                    <text>✓@checks.Count(check => check.Status == "Passed") ✗@checks.Count(check => check.Status == "Failed")</text>
+                                }
+                            </span>
+                        </div>
+                    }
+                </div>
+
+                <div class="test-drawer-columns">
+                    <div class="test-checks-list">
+                        <div class="test-drawer-subhead">Checks</div>
+                        @foreach (var check in Session.Evaluation.Checks.OrderBy(check => check.Status == "Failed" ? 0 : 1).ThenBy(check => check.CheckIndex))
+                        {
+                            <div class="test-check-result @check.Status.ToLowerInvariant()" role="button" tabindex="0"
+                                    @onclick="() => SelectCheck(check)">
+                                <span>@(check.Status == "Passed" ? "✓" : "✗")</span>
+                                <span class="test-check-result-copy">
+                                    <strong>@check.Description</strong>
+                                    <small>@check.FailureReason</small>
+                                    @if (check.IsJsonComparison)
+                                    {
+                                        <small class="text-muted">Expected @ShortValue(check.ExpectedValue) · actual @ShortValue(check.ActualValue)</small>
+                                        <CopyButton Text="@($"Expected: {check.ExpectedValue}{Environment.NewLine}Actual: {check.ActualValue}")" Label="Copy expected/actual" />
+                                    }
+                                </span>
+                            </div>
+                        }
+                    </div>
+                    <div class="test-history-panel">
+                        <div class="test-drawer-subhead">Run history</div>
+                        @foreach (var run in Session.Runs.OrderByDescending(item => item.StartedAt).Take(20))
+                        {
+                            <button class="test-history-row @(run.Id == Session.CurrentRun?.Id ? "is-current" : "")"
+                                    @onclick="() => Session.SelectRunAsync(run.Id)">
+                                <span class="status-badge @run.Status.ToLowerInvariant()">@run.Status</span>
+                                <span>@run.StartedAt.ToLocalTime().ToString("g")</span>
+                                @if (run == Session.Runs.OrderByDescending(item => item.StartedAt).First())
+                                {
+                                    <small>Latest</small>
+                                }
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="debug-inspector-empty">Run the scenario to see the path, card results and checks.</div>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public FlowTestSession Session { get; set; } = null!;
+    [Parameter] public int Height { get; set; } = 240;
+    [Parameter] public bool Collapsed { get; set; }
+    [Parameter] public EventCallback<int> OnHeightChanged { get; set; }
+    [Parameter] public EventCallback OnToggleCollapsed { get; set; }
+    [Parameter] public EventCallback<Guid> OnShowCard { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private async Task HandleHeightChanged(ChangeEventArgs args)
+    {
+        if (int.TryParse(args.Value?.ToString(), out var height))
+            await OnHeightChanged.InvokeAsync(height);
+    }
+
+    private Task ToggleCollapsed() => OnToggleCollapsed.InvokeAsync();
+
+    private string RunMeta(FlowTestEvaluationDto? evaluation)
+    {
+        var parts = new List<string>();
+        if (Session.CurrentRun != null)
+        {
+            parts.Add(Session.CurrentRun.StartedAt.ToLocalTime().ToString("g"));
+            if (Session.CurrentRun.CompletedAt != null)
+                parts.Add($"{Math.Max(0, (Session.CurrentRun.CompletedAt.Value - Session.CurrentRun.StartedAt).TotalSeconds):0.0}s");
+        }
+        if (evaluation != null)
+            parts.Add($"{evaluation.Checks.Count(check => check.Status == "Passed")} of {evaluation.Checks.Count} checks passed");
+        return parts.Count == 0 ? "Not run" : string.Join(" · ", parts);
+    }
+
+    private Task OnRunSelected(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var id)) return Session.SelectRunAsync(id);
+        return Task.CompletedTask;
+    }
+
+    private void ShowFailedCard(Guid cardId)
+    {
+        var card = Session.Evaluation?.Cards.FirstOrDefault(item => item.CardId == cardId);
+        SelectCard(cardId, card?.CardName ?? string.Empty);
+        _ = OnShowCard.InvokeAsync(cardId);
+    }
+
+    private void SelectCard(Guid cardId, string cardName)
+    {
+        Session.SelectCard(cardId, cardName);
+        _ = OnShowCard.InvokeAsync(cardId);
+    }
+
+    private void SelectCheck(FlowTestCheckResultDto check)
+    {
+        if (check.CardId is Guid cardId) SelectCard(cardId, check.CardName);
+    }
+
+    private async Task OpenSuiteScenario(FlowTestSuiteScenarioDto scenario)
+    {
+        await Session.SelectRunAsync(scenario.TestRunId);
+    }
+
+    private string CardType(Guid cardId) =>
+        Session.Flow.Nodes.FirstOrDefault(node => node.Id == cardId)?.StepType ?? "Card";
+
+    private static string CardClass(FlowTestCardResultDto card) => card.Status switch
+    {
+        "Failed" => "failed",
+        "NotReached" => "notreached",
+        "Supplied" => "supplied",
+        "Fixture" => "fixture",
+        _ => "passed"
+    };
+
+    private static string SuiteState(string status) => status switch
+    {
+        "Passed" => "passed",
+        "Failed" => "failed",
+        "Queued" or "Running" => "running",
+        _ => "never"
+    };
+
+    private static string FirstLine(string value) => value.Split('\n')[0];
+    private static string ShortValue(string value) => value.Length > 90 ? value[..90] + "…" : value;
+
+    private Task Close() => OnClose.InvokeAsync();
+}

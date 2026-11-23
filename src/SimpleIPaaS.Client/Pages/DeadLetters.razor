@@ -1,33 +1,93 @@
 @page "/deadletters"
+@using System.Net.Http.Json
+@using System.Text.Json
 @using SimpleIPaaS.Client.Store
 @using SimpleIPaaS.Shared.Models
-@inherits Fluxor.Blazor.Web.Components.FluxorComponent
-@inject IState<DeadLetterState> DeadLetterState
-@inject IDispatcher Dispatcher
+@inject HttpClient Http
 @inject NavigationManager NavigationManager
+@inject IDispatcher Dispatcher
 
-<PageTitle>Dead Letters — SimpleIPaaS</PageTitle>
+<PageTitle>Dead Letters — fusetor.com</PageTitle>
 
-<div class="page-scroll">
+<div class="page-scroll dead-letters-page">
     <div class="page-header">
         <div class="header-left">
             <p class="page-eyebrow"><AppIcon Name="deadletters" Class="icon icon-xs" /> Recovery queue</p>
-            <h2>Dead letters <span class="header-count">@PendingCount</span></h2>
-            <p class="subtitle">Messages a step could not deliver. Automatic retries are disabled — each one waits here until you retry or discard it.</p>
+            <h2>Dead letters <span class="header-count">@_items.Count</span></h2>
+            <p class="subtitle">Messages a step could not deliver. Inspect exactly what was sent and received, then retry or resync without re-running the whole flow.</p>
         </div>
         <div class="header-right">
-            <label class="filter-field">
-                <span class="filter-label">Status</span>
-                <select class="form-control filter-select-sm" value="@_statusFilter" @onchange="OnStatusFilterChanged">
+            <button class="btn btn-outline" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Refreshing…" : "Refresh")</button>
+        </div>
+    </div>
+
+    <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFilters" CssClass="dl-filter-panel">
+        <Actions>
+            @if (HasActiveFilters)
+            {
+                <button class="btn btn-outline btn-sm" @onclick="ClearFilters" title="Reset the filters to their defaults">
+                    <AppIcon Name="x-circle" Class="icon icon-sm" /> Clear
+                </button>
+            }
+            <div class="filter-summary">Showing @_items.Count of the last @HoursFilterLabel</div>
+        </Actions>
+        <Chips>
+            @if (!string.IsNullOrWhiteSpace(_search))
+            {
+                <FilterChip Label="@($"Search: {_search}")" Title="@_search" OnRemove="ClearSearch" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_statusFilter))
+            {
+                <FilterChip Label="@($"Status: {_statusFilter}")" OnRemove="ClearStatusFilter" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_flowFilter))
+            {
+                <FilterChip Label="@($"Flow: {FlowFilterLabel}")" OnRemove="ClearFlowFilter" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_integrationFilter))
+            {
+                <FilterChip Label="@($"Integration: {IntegrationFilterLabel}")" OnRemove="ClearIntegrationFilter" />
+            }
+            @if (_hoursFilter != DefaultHoursFilter)
+            {
+                <FilterChip Label="@($"Window: {HoursFilterLabel}")" OnRemove="ClearHoursFilter" />
+            }
+        </Chips>
+        <ChildContent>
+            <div class="dl-filters">
+                <input type="search" class="form-control dl-filter-search" placeholder="Search node, flow, integration or error…"
+                       aria-label="Search dead letters by node, flow, integration or error"
+                       @bind="_search" @bind:event="oninput" @onkeyup="OnFilterKeyUp" />
+                <select class="form-control dl-filter-select" aria-label="Filter by status" @bind="_statusFilter" @bind:after="ApplyFiltersAsync">
                     <option value="">All statuses</option>
                     <option value="Pending">Pending</option>
                     <option value="Retrying">Retrying</option>
                     <option value="Resolved">Resolved</option>
                     <option value="Discarded">Discarded</option>
                 </select>
-            </label>
-        </div>
-    </div>
+                <select class="form-control dl-filter-select" aria-label="Filter by flow" @bind="_flowFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="">All flows</option>
+                    @foreach (var flow in _flows)
+                    {
+                        <option value="@flow.Id">@flow.Name</option>
+                    }
+                </select>
+                <select class="form-control dl-filter-select" aria-label="Filter by integration" @bind="_integrationFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="">All integrations</option>
+                    @foreach (var integration in _integrations)
+                    {
+                        <option value="@integration.Id">@integration.Name</option>
+                    }
+                </select>
+                <select class="form-control dl-filter-select" aria-label="Filter by time window" @bind="_hoursFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="24">Last 24 hours</option>
+                    <option value="168">Last 7 days</option>
+                    <option value="720">Last 30 days</option>
+                    <option value="">All time</option>
+                </select>
+            </div>
+        </ChildContent>
+    </FilterPanel>
 
     @if (ExecutionId.HasValue)
     {
@@ -38,72 +98,302 @@
         </div>
     }
 
-    <div class="activity-log-container">
-        @if (DeadLetterState.Value.IsLoading && !DeadLetterState.Value.DeadLetters.Any())
-        {
-            <div class="loading-state">Loading dead letters…</div>
-        }
-        else if (!VisibleEntries.Any())
-        {
-            <div class="empty-state empty-state-hero">
-                <span class="empty-icon"><AppIcon Name="check-circle" Class="icon icon-lg" /></span>
-                <h3>Nothing waiting for recovery</h3>
-                <p>When a step exhausts its retries, the failing payload is parked here so you can replay or discard it without re-running the whole flow.</p>
-                <a class="btn btn-outline" href="activity">Open activity log</a>
-            </div>
-        }
-        else
-        {
-            <div class="table-wrap">
-                <div class="table-scroll">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>Flow</th>
-                                <th>Node</th>
-                                <th>Error</th>
-                                <th>Retries</th>
-                                <th>Status</th>
-                                <th>Created</th>
-                                <th class="cell-actions">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach (var entry in VisibleEntries)
-                            {
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="alert alert-error" role="alert">@_error</div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_notice))
+    {
+        <div class="dl-notice" role="status">
+            <span>@_notice</span>
+            <button class="btn btn-sm btn-outline" @onclick="() => _notice = string.Empty">Dismiss</button>
+        </div>
+    }
+
+    <div class="dl-layout">
+        <div class="card dl-list-card">
+            @if (SelectedCount > 0 || FlowFilterActive || ExecutionId.HasValue)
+            {
+                <div class="dl-bulk-toolbar">
+                    @if (SelectedCount > 0)
+                    {
+                        <span class="text-muted">@SelectedCount selected</span>
+                        <button class="btn btn-primary btn-sm" @onclick="() => StartBulkReplayAsync(false)" disabled="@_bulkBusy">
+                            @(_bulkBusy ? "Checking…" : $"Replay selected ({SelectedCount})")
+                        </button>
+                    }
+                    @if (FlowFilterActive || ExecutionId.HasValue)
+                    {
+                        <button class="btn btn-soft btn-sm" @onclick="() => StartBulkReplayAsync(true)" disabled="@_bulkBusy">
+                            @(_bulkBusy ? "Checking…" : "Replay all matching")
+                        </button>
+                    }
+                </div>
+            }
+
+            @if (_loading && _items.Count == 0)
+            {
+                <p class="text-muted dl-empty">Loading dead letters…</p>
+            }
+            else if (_items.Count == 0)
+            {
+                <div class="empty-state empty-state-hero">
+                    <span class="empty-icon"><AppIcon Name="check-circle" Class="icon icon-lg" /></span>
+                    <h3>Nothing waiting for recovery</h3>
+                    <p>When a step fails, the failing payload is parked here so you can replay or discard it without re-running the whole flow.</p>
+                </div>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <div class="table-scroll">
+                        <table class="table">
+                            <thead>
                                 <tr>
-                                    <td>
-                                        <span class="cell-primary">@ResolveFlowName(entry)</span>
-                                        @if (!string.IsNullOrWhiteSpace(entry.IntegrationName))
-                                        {
-                                            <span class="text-muted">@entry.IntegrationName</span>
-                                        }
-                                    </td>
-                                    <td><span class="chip">@ResolveNodeName(entry)</span></td>
-                                    <td class="cell-error" title="@entry.ErrorMessage">@Truncate(entry.ErrorMessage, 72)</td>
-                                    <td class="cell-num">
-                                        @entry.RetryCount/@MaxRetries
-                                        @if (entry.RetryCount >= MaxRetries)
-                                        {
-                                            <span class="status-badge warning" title="Maximum retries reached">max</span>
-                                        }
-                                    </td>
-                                    <td><span class="status-badge @(entry.Status.ToLowerInvariant())">@entry.Status</span></td>
-                                    <td>
-                                        <span class="cell-num">@entry.CreatedAt.ToLocalTime().ToString("MMM d, h:mm tt")</span>
-                                        <span class="text-muted">@RelativeTime(entry.CreatedAt)</span>
-                                    </td>
-                                    <td class="cell-actions">
-                                        <span class="inline-actions">
-                                            <button class="btn btn-sm btn-soft" @onclick="() => Retry(entry)" disabled="@DeadLetterState.Value.IsLoading">Retry</button>
-                                            <button class="btn btn-sm btn-outline" @onclick="() => ViewExecution(entry.FlowExecutionId)">Execution</button>
-                                            <button class="btn btn-sm btn-soft-danger" @onclick="() => AskDiscard(entry)" disabled="@DeadLetterState.Value.IsLoading">Discard</button>
-                                        </span>
-                                    </td>
+                                    <th class="dl-check">
+                                        <input type="checkbox" checked="@AllPendingSelected" @onchange="ToggleSelectAll"
+                                               disabled="@(!HasPendingItems)" aria-label="Select all replayable entries on this page" />
+                                    </th>
+                                    <th>Created</th>
+                                    <th>Flow / Node</th>
+                                    <th>Error</th>
+                                    <th>Attempts</th>
+                                    <th>Status</th>
+                                    <th class="cell-actions">Actions</th>
                                 </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in _items)
+                                {
+                                    <tr class="@(_selected?.Id == item.Id ? "is-selected" : string.Empty)">
+                                        <td class="dl-check">
+                                            @if (item.Status == "Pending" && !item.ReplayQueued)
+                                            {
+                                                <input type="checkbox" checked="@_selectedIds.Contains(item.Id)"
+                                                       @onchange="args => ToggleSelection(item.Id, args.Value is bool value && value)"
+                                                       aria-label="@($"Select {item.NodeName}")" />
+                                            }
+                                        </td>
+                                        <td class="dl-time">@item.CreatedAt.ToLocalTime().ToString("MMM d, h:mm tt")</td>
+                                        <td>
+                                            <div class="dl-flow-name">@item.FlowName</div>
+                                            <div class="dl-node-name">@item.NodeName@(string.IsNullOrWhiteSpace(item.IntegrationName) ? string.Empty : $" · {item.IntegrationName}")</div>
+                                        </td>
+                                        <td class="dl-error-cell"><span title="@item.ErrorMessage">@Truncate(item.ErrorMessage, 90)</span></td>
+                                        <td class="cell-num">@item.RetryCount / @item.MaxAttempts</td>
+                                        <td><span class="dl-status @StatusClass(item.Status)">@item.Status@(item.ReplayQueued ? " · queued" : string.Empty)</span></td>
+                                        <td class="cell-actions">
+                                            <span class="inline-actions">
+                                                @if (item.Status is "Pending" or "Retrying")
+                                                {
+                                                    <button class="btn btn-soft btn-sm"
+                                                            disabled="@(_resyncingId.HasValue || item.ReplayQueued)"
+                                                            title="Resync from the flow's default node, or the failed node when no default is configured"
+                                                            @onclick="() => ResyncFromDefaultAsync(item)">
+                                                        @(_resyncingId == item.Id ? "Queueing…" : item.ReplayQueued ? "Queued" : "Resync")
+                                                    </button>
+                                                }
+                                                <button class="btn btn-outline btn-sm" @onclick="() => SelectAsync(item)">Inspect</button>
+                                            </span>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @if (_selected != null)
+        {
+            <div class="modal-overlay" @onclick="CloseDetail" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+                <div class="modal-container dl-detail-modal" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true" role="dialog" aria-modal="true" aria-labelledby="dl-detail-title">
+                    <div class="modal-header">
+                        <div class="dl-detail-title">
+                            <h2 class="modal-title" id="dl-detail-title">@(_selected?.NodeName ?? "Dead letter")</h2>
+                            <p class="text-muted">@(_selected?.FlowName) · created @(_selected?.CreatedAt.ToLocalTime().ToString("g"))</p>
+                        </div>
+                        <div class="modal-header-actions">
+                            <span class="dl-status @StatusClass(_detail?.Status ?? _selected?.Status ?? "Pending")">@(_detail?.Status ?? _selected?.Status ?? "Pending")</span>
+                            <button class="modal-close-btn" @onclick="CloseDetail" aria-label="Close">✕</button>
+                        </div>
+                    </div>
+                    <div class="modal-body dl-detail-body">
+                @if (_detail == null && string.IsNullOrWhiteSpace(_detailError))
+                {
+                    <p class="text-muted dl-empty">Loading diagnostics…</p>
+                }
+                else if (!string.IsNullOrWhiteSpace(_detailError))
+                {
+                    <div class="alert alert-error" role="alert">@_detailError</div>
+                }
+                else if (_detail != null)
+                {
+
+                    @if (_detail.Status is "Pending" or "Retrying")
+                    {
+                        <div class="dl-actions">
+                            <button class="btn btn-outline btn-sm" disabled="@_actionBusy" @onclick="() => _discardTarget = _detail">Discard</button>
+                        </div>
+
+                        <div class="dl-resync-box">
+                            @if (_resyncOptions.Count > 0)
+                            {
+                                <label class="node-label" for="dl-resync-node">Start from node</label>
+                                <select id="dl-resync-node" class="form-control" @bind="_resyncStartStepId">
+                                    @foreach (var option in _resyncOptions)
+                                    {
+                                        <option value="@option.StepId">@ResyncOptionLabel(option)</option>
+                                    }
+                                </select>
+                                <p class="dl-resync-hint">
+                                    The flow default is preselected. Completed upstream nodes only; nodes inside a loop body are
+                                    excluded — pick the loop card so every iteration re-runs. The output of the selected node and
+                                    every node after it is cleared before the replay.
+                                </p>
+                                <button class="btn btn-primary btn-sm"
+                                        disabled="@(_actionBusy || string.IsNullOrEmpty(_resyncStartStepId) || !string.IsNullOrWhiteSpace(_flowStateError))"
+                                        @onclick="ResyncAsync">Resync from selected node</button>
                             }
-                        </tbody>
-                    </table>
+                            else
+                            {
+                                <p class="node-label">Resync from node</p>
+                                <p class="text-muted dl-resync-hint">
+                                    @(_resyncOptionsLoading
+                                        ? "Loading eligible nodes…"
+                                        : string.IsNullOrWhiteSpace(_resyncOptionsError)
+                                            ? "No eligible resync node is available for this failure."
+                                            : _resyncOptionsError)
+                                </p>
+                            }
+                        </div>
+
+                        <section class="dl-section">
+                            <div class="dl-section-head">
+                                <h4>Flow state (editable)</h4>
+                                @if (FlowStateDirty)
+                                {
+                                    <button class="btn btn-ghost btn-sm" @onclick="ResetFlowStateEdit">Reset</button>
+                                }
+                            </div>
+                            <p class="dl-attempt-meta">
+                                Edit the captured flow state before queueing. This exact JSON is sent with the resync; values for
+                                the selected node and everything downstream are overwritten as they re-run.
+                            </p>
+                            <textarea class="form-control dl-state-editor"
+                                      rows="14"
+                                      spellcheck="false"
+                                      aria-label="Flow state JSON used for the resync"
+                                      @bind="_flowStateEdit"
+                                      @bind:event="oninput"
+                                      @onblur="ValidateFlowState"></textarea>
+                            @if (!string.IsNullOrWhiteSpace(_flowStateError))
+                            {
+                                <p class="dl-state-error" role="alert">@_flowStateError</p>
+                            }
+                            else if (FlowStateDirty)
+                            {
+                                <p class="dl-state-hint">Valid JSON object. The edit is saved when the resync is queued.</p>
+                            }
+                        </section>
+                    }
+
+                    <section class="dl-section">
+                        <h4>Root cause</h4>
+                        <div class="dl-error-box">@_detail.ErrorMessage</div>
+                        <div class="dl-facts">
+                            <span class="meta-item"><span class="meta-label">Attempts</span><span class="meta-value">@_detail.RetryCount / @_detail.MaxAttempts</span></span>
+                            <span class="meta-item"><span class="meta-label">Last retry</span><span class="meta-value">@(_detail.LastRetriedAt?.ToLocalTime().ToString("g") ?? "—")</span></span>
+                            <span class="meta-item"><span class="meta-label">Resolved</span><span class="meta-value">@(_detail.ResolvedAt?.ToLocalTime().ToString("g") ?? "—")</span></span>
+                        </div>
+                    </section>
+
+                    @if (_detail.Attempts.Count > 0)
+                    {
+                        <section class="dl-section">
+                            <h4>Attempt history</h4>
+                            <ol class="dl-attempts">
+                                @foreach (var attempt in _detail.Attempts)
+                                {
+                                    <li class="dl-attempt @(attempt.Kind == "Blocked" ? "is-blocked" : string.Empty)">
+                                        <div class="dl-attempt-head">
+                                            <strong>@(attempt.Attempt == 0 ? "Original failure" : $"Attempt {attempt.Attempt}")</strong>
+                                            <span class="dl-attempt-meta">@attempt.Kind@(string.IsNullOrWhiteSpace(attempt.NodeName) ? string.Empty : $" · {attempt.NodeName}")@(attempt.StatusCode.HasValue ? $" · HTTP {attempt.StatusCode}" : string.Empty) · @attempt.At.ToLocalTime().ToString("g")</span>
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(attempt.Error))
+                                        {
+                                            <div class="dl-attempt-error">@attempt.Error</div>
+                                        }
+                                    </li>
+                                }
+                            </ol>
+                        </section>
+                    }
+
+                    @if (_detail.FailedStep != null)
+                    {
+                        <section class="dl-section">
+                            <h4>What the step received</h4>
+                            <pre class="dl-code">@Pretty(_detail.FailedStep.ReceivedInput)</pre>
+                            <h4>What the step sent</h4>
+                            <pre class="dl-code">@Pretty(_detail.FailedStep.RequestPayload)</pre>
+                            <h4>What came back</h4>
+                            <pre class="dl-code">@Pretty(_detail.FailedStep.ResponsePayload)</pre>
+                        </section>
+                    }
+
+                    @if (_detail.Packets.Count > 0)
+                    {
+                        <section class="dl-section">
+                            <h4>HTTP calls on the failed step</h4>
+                            <div class="dl-packets">
+                                @foreach (var packet in _detail.Packets)
+                                {
+                                    <div class="dl-packet">
+                                        <div><strong>@packet.HttpMethod</strong> <span class="dl-packet-url" title="@packet.RequestUrl">@packet.RequestUrl</span></div>
+                                        <div class="dl-attempt-meta">HTTP @(packet.StatusCode?.ToString() ?? "—") · @(packet.DurationMs.HasValue ? $"{packet.DurationMs} ms" : "—")@(packet.PageNumber.HasValue ? $" · page {packet.PageNumber}" : string.Empty)</div>
+                                        @if (!string.IsNullOrWhiteSpace(packet.Error))
+                                        {
+                                            <div class="dl-attempt-error">@packet.Error</div>
+                                        }
+                                        <a class="btn btn-outline btn-sm" href="@($"/packet-logs/{packet.PacketId}")">Open packet log</a>
+                                    </div>
+                                }
+                            </div>
+                        </section>
+                    }
+
+                    <section class="dl-section">
+                        <h4>Trigger</h4>
+                        <p class="dl-attempt-meta">@(_detail.TriggerSource.Length == 0 ? "—" : _detail.TriggerSource)</p>
+                        <pre class="dl-code">@Pretty(_detail.TriggerPayloadJson)</pre>
+                    </section>
+
+                    @if (_detail.Status is not "Pending" and not "Retrying")
+                    {
+                        <details class="dl-section">
+                            <summary>Captured flow state</summary>
+                            <pre class="dl-code">@Pretty(_detail.FlowStateJson)</pre>
+                        </details>
+                    }
+
+                    <details class="dl-section">
+                        <summary>Captured persisted state</summary>
+                        <pre class="dl-code">@Pretty(_detail.PersistedStateJson)</pre>
+                    </details>
+
+                    <div class="dl-links">
+                        <a class="btn btn-outline btn-sm" href="@($"/transaction-history/{_detail.FlowExecutionId}")">Open transaction</a>
+                        <a class="btn btn-outline btn-sm" href="@($"/packet-logs?flowExecutionId={_detail.FlowExecutionId}")">Open packet logs</a>
+                        @if (_detail.FlowId != Guid.Empty)
+                        {
+                            <a class="btn btn-outline btn-sm" href="@($"/flow/{_detail.FlowId}")">Open flow</a>
+                        }
+                    </div>
+                }
+                    </div>
                 </div>
             </div>
         }
@@ -112,17 +402,52 @@
 
 @if (_discardTarget != null)
 {
-    <div class="modal-overlay" @onclick="CancelDiscard">
+    <div class="modal-overlay" @onclick="() => _discardTarget = null">
         <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
             <div class="modal-header">
                 <h2 class="modal-title">Discard dead letter</h2>
-                <button class="modal-close-btn" @onclick="CancelDiscard">✕</button>
+                <button class="modal-close-btn" @onclick="() => _discardTarget = null">✕</button>
             </div>
             <div class="modal-body">
-                <p>Discard this dead letter from <strong>@ResolveFlowName(_discardTarget)</strong> (node @ResolveNodeName(_discardTarget))? It will no longer be retried.</p>
+                <p>Discard this dead letter from <strong>@_discardTarget.FlowName</strong> (node @_discardTarget.NodeName)? It will no longer be retried.</p>
                 <div class="modal-actions">
-                    <button class="btn btn-outline" @onclick="CancelDiscard">Cancel</button>
-                    <button class="btn btn-danger" @onclick="ConfirmDiscard">Discard</button>
+                    <button class="btn btn-outline" @onclick="() => _discardTarget = null">Cancel</button>
+                    <button class="btn btn-danger" @onclick="DiscardAsync">Discard</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_bulkDryRun != null && _bulkConfirmRequest != null)
+{
+    <div class="modal-overlay" @onclick="CancelBulkReplay">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2 class="modal-title">Replay failed orders</h2>
+                <button class="modal-close-btn" @onclick="CancelBulkReplay">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>@BulkConfirmSummary()</p>
+                @if (_bulkDryRun.Skips.Count > 0)
+                {
+                    <ul class="dl-bulk-skips">
+                        @foreach (var skip in _bulkDryRun.Skips.Take(5))
+                        {
+                            <li><strong>@(string.IsNullOrWhiteSpace(skip.NodeName) ? "Entry" : skip.NodeName)</strong> — @skip.Reason</li>
+                        }
+                        @if (_bulkDryRun.Skipped > 5)
+                        {
+                            <li>…and @(_bulkDryRun.Skipped - 5) more.</li>
+                        }
+                    </ul>
+                }
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CancelBulkReplay">Cancel</button>
+                    <button class="btn btn-primary" @onclick="ConfirmBulkReplayAsync"
+                            disabled="@(_bulkConfirmBusy || _bulkDryRun.Queued == 0)">
+                        @(_bulkConfirmBusy ? "Queueing…" : "Replay")
+                    </button>
                 </div>
             </div>
         </div>
@@ -130,7 +455,8 @@
 }
 
 @code {
-    private const int MaxRetries = 5;
+    /// <summary>The page opens on the last seven days, so that window is the "no filter" state.</summary>
+    private const string DefaultHoursFilter = "168";
 
     [SupplyParameterFromQuery(Name = "executionId")]
     public Guid? ExecutionId { get; set; }
@@ -138,95 +464,717 @@
     [SupplyParameterFromQuery(Name = "stepId")]
     public Guid? StepId { get; set; }
 
-    private string _statusFilter = string.Empty;
-    private DeadLetterDto? _discardTarget;
+    [SupplyParameterFromQuery(Name = "id")]
+    public Guid? Id { get; set; }
 
-    private IEnumerable<DeadLetterDto> VisibleEntries
+    [SupplyParameterFromQuery(Name = "flowId")]
+    public Guid? FlowId { get; set; }
+
+    private List<DeadLetterDto> _items = new();
+    private List<IntegrationFlowDto> _flows = new();
+    private List<IntegrationDto> _integrations = new();
+    private DeadLetterDto? _selected;
+    private DeadLetterDetailDto? _detail;
+    private string _detailError = string.Empty;
+    private DeadLetterDetailDto? _discardTarget;
+    private List<ResyncNodeOptionDto> _resyncOptions = new();
+    private string _resyncStartStepId = string.Empty;
+    private string _resyncOptionsError = string.Empty;
+    private bool _resyncOptionsLoading;
+    private string _flowStateEdit = "{}";
+    private string _flowStateOriginal = "{}";
+    private string _flowStateError = string.Empty;
+    private string _search = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _flowFilter = string.Empty;
+    private string _integrationFilter = string.Empty;
+    private string _hoursFilter = DefaultHoursFilter;
+    private string _error = string.Empty;
+    private string _notice = string.Empty;
+    private Guid? _resyncingId;
+    private bool _loading;
+    private bool _actionBusy;
+    private bool _filtersOpen;
+
+    private readonly HashSet<Guid> _selectedIds = new();
+    private BulkRetryDeadLettersRequestDto? _bulkConfirmRequest;
+    private BulkRetryDeadLettersResultDto? _bulkDryRun;
+    private bool _bulkBusy;
+    private bool _bulkConfirmBusy;
+
+    /// <summary>Drives the filter disclosure badge and the collapsed summary.</summary>
+    private int ActiveFilterCount =>
+        (!string.IsNullOrWhiteSpace(_search) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_statusFilter) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_flowFilter) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_integrationFilter) ? 1 : 0) +
+        (_hoursFilter != DefaultHoursFilter ? 1 : 0);
+
+    private bool HasActiveFilters => ActiveFilterCount > 0;
+
+    private bool HasPendingItems => _items.Any(item => item.Status == "Pending" && !item.ReplayQueued);
+
+    private bool AllPendingSelected
     {
         get
         {
-            var entries = DeadLetterState.Value.DeadLetters.AsEnumerable();
-            if (ExecutionId.HasValue)
-            {
-                entries = entries.Where(entry => entry.FlowExecutionId == ExecutionId.Value);
-            }
-
-            if (StepId.HasValue)
-            {
-                entries = entries.Where(entry => entry.StepId == StepId.Value);
-            }
-
-            return entries.OrderByDescending(entry => entry.CreatedAt);
+            var pending = _items.Where(item => item.Status == "Pending" && !item.ReplayQueued).ToList();
+            return pending.Count > 0 && pending.All(item => _selectedIds.Contains(item.Id));
         }
+    }
+
+    private int SelectedCount => _selectedIds.Count(id =>
+        _items.Any(item => item.Id == id && item.Status == "Pending" && !item.ReplayQueued));
+
+    private bool FlowFilterActive => Guid.TryParse(_flowFilter, out var flowId) && flowId != Guid.Empty;
+
+    private bool FlowStateDirty => !string.Equals(_flowStateEdit, _flowStateOriginal, StringComparison.Ordinal);
+
+    private string FlowFilterLabel =>
+        _flows.FirstOrDefault(flow => flow.Id.ToString() == _flowFilter)?.Name ?? "Selected flow";
+
+    private string IntegrationFilterLabel =>
+        _integrations.FirstOrDefault(integration => integration.Id.ToString() == _integrationFilter)?.Name
+        ?? "Selected integration";
+
+    private string HoursFilterLabel => _hoursFilter switch
+    {
+        "24" => "24 hours",
+        "168" => "7 days",
+        "720" => "30 days",
+        _ => "all time"
+    };
+
+    // Per-chip removals from the collapsed summary.
+    private async Task ClearSearch()
+    {
+        _search = string.Empty;
+        await LoadAsync();
+    }
+
+    private async Task ClearStatusFilter()
+    {
+        _statusFilter = string.Empty;
+        await LoadAsync();
+    }
+
+    private async Task ClearFlowFilter()
+    {
+        _flowFilter = string.Empty;
+        await LoadAsync();
+    }
+
+    private async Task ClearIntegrationFilter()
+    {
+        _integrationFilter = string.Empty;
+        await LoadAsync();
+    }
+
+    private async Task ClearHoursFilter()
+    {
+        _hoursFilter = DefaultHoursFilter;
+        await LoadAsync();
+    }
+
+    /// <summary>Back to the page's default view: no search, no scope, last seven days.</summary>
+    private async Task ClearFilters()
+    {
+        _search = string.Empty;
+        _statusFilter = string.Empty;
+        _flowFilter = string.Empty;
+        _integrationFilter = string.Empty;
+        _hoursFilter = DefaultHoursFilter;
+        await LoadAsync();
+    }
+
+    private void ToggleSelection(Guid id, bool selected)
+    {
+        if (selected)
+        {
+            _selectedIds.Add(id);
+        }
+        else
+        {
+            _selectedIds.Remove(id);
+        }
+    }
+
+    private void ToggleSelectAll(ChangeEventArgs args)
+    {
+        var select = args.Value is bool value && value;
+        foreach (var item in _items.Where(item => item.Status == "Pending" && !item.ReplayQueued))
+        {
+            if (select)
+            {
+                _selectedIds.Add(item.Id);
+            }
+            else
+            {
+                _selectedIds.Remove(item.Id);
+            }
+        }
+    }
+
+    private async Task StartBulkReplayAsync(bool allMatching)
+    {
+        _bulkBusy = true;
+        _error = string.Empty;
+        _notice = string.Empty;
+
+        try
+        {
+            BulkRetryDeadLettersRequestDto request;
+
+            if (allMatching)
+            {
+                if (!FlowFilterActive && !ExecutionId.HasValue)
+                {
+                    _error = "Choose a flow filter or open an execution scope before replaying all matching entries.";
+                    return;
+                }
+
+                request = new BulkRetryDeadLettersRequestDto
+                {
+                    FlowId = FlowFilterActive ? Guid.Parse(_flowFilter) : null,
+                    ExecutionId = ExecutionId,
+                    StepId = StepId,
+                    Search = string.IsNullOrWhiteSpace(_search) ? null : _search.Trim(),
+                    Hours = int.TryParse(_hoursFilter, out var hours) ? hours : null,
+                    DryRun = true
+                };
+            }
+            else
+            {
+                var ids = _selectedIds
+                    .Where(id => _items.Any(item =>
+                        item.Id == id && item.Status == "Pending" && !item.ReplayQueued))
+                    .ToList();
+                if (ids.Count == 0)
+                {
+                    _error = "Select at least one replayable entry.";
+                    return;
+                }
+
+                request = new BulkRetryDeadLettersRequestDto { Ids = ids, DryRun = true };
+            }
+
+            using var response = await Http.PostAsJsonAsync("api/deadletters/bulk-retry", request);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not check the bulk replay.");
+                return;
+            }
+
+            var dryRun = await response.Content.ReadFromJsonAsync<BulkRetryDeadLettersResultDto>();
+            if (dryRun == null)
+            {
+                _error = "The API returned no bulk replay summary.";
+                return;
+            }
+
+            request.DryRun = false;
+            _bulkConfirmRequest = request;
+            _bulkDryRun = dryRun;
+        }
+        catch (Exception)
+        {
+            _error = "Could not check the bulk replay.";
+        }
+        finally
+        {
+            _bulkBusy = false;
+        }
+    }
+
+    private void CancelBulkReplay()
+    {
+        _bulkConfirmRequest = null;
+        _bulkDryRun = null;
+    }
+
+    private async Task ConfirmBulkReplayAsync()
+    {
+        if (_bulkConfirmRequest == null)
+        {
+            return;
+        }
+
+        _bulkConfirmBusy = true;
+        _error = string.Empty;
+
+        try
+        {
+            using var response = await Http.PostAsJsonAsync("api/deadletters/bulk-retry", _bulkConfirmRequest);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not queue the selected replays.");
+                _bulkConfirmRequest = null;
+                _bulkDryRun = null;
+                return;
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<BulkRetryDeadLettersResultDto>();
+            _bulkConfirmRequest = null;
+            _bulkDryRun = null;
+            _selectedIds.Clear();
+
+            if (result != null)
+            {
+                var message = $"Bulk replay: {result.Queued} of {result.TotalMatched} queued, {result.AlreadyQueued} already queued, {result.Skipped} skipped.";
+                if (result.Truncated)
+                {
+                    message += " The 5,000-entry cap was hit; run again for the rest.";
+                }
+
+                _notice = message;
+                Dispatcher.Dispatch(new ShowToastAction
+                {
+                    Message = message,
+                    Level = result.Skipped > 0 ? "warning" : "success"
+                });
+            }
+
+            await LoadAsync();
+        }
+        catch (Exception)
+        {
+            _error = "Could not queue the selected replays.";
+            _bulkConfirmRequest = null;
+            _bulkDryRun = null;
+        }
+        finally
+        {
+            _bulkConfirmBusy = false;
+        }
+    }
+
+    private string BulkConfirmSummary()
+    {
+        if (_bulkDryRun == null)
+        {
+            return string.Empty;
+        }
+
+        var total = _bulkDryRun.TotalMatched > 0 ? _bulkDryRun.TotalMatched : _bulkDryRun.Matched;
+        var text = $"Replay {_bulkDryRun.Queued} of {total} matching failed order(s) from their failed step?";
+        if (_bulkDryRun.AlreadyQueued > 0)
+        {
+            text += $" {_bulkDryRun.AlreadyQueued} already queued.";
+        }
+
+        if (_bulkDryRun.Skipped > 0)
+        {
+            var reasons = string.Join("; ", _bulkDryRun.Skips
+                .Select(skip => skip.Reason)
+                .Where(reason => !string.IsNullOrWhiteSpace(reason))
+                .Distinct()
+                .Take(3));
+            text += $" {_bulkDryRun.Skipped} will be skipped" +
+                    (string.IsNullOrWhiteSpace(reasons) ? "." : $": {reasons}.");
+        }
+
+        if (_bulkDryRun.Truncated)
+        {
+            text += " The 5,000-entry cap was hit; run again for the rest.";
+        }
+
+        return text;
     }
 
     protected override async Task OnInitializedAsync()
     {
-        await base.OnInitializedAsync();
-        Dispatcher.Dispatch(new LoadDeadLettersAction { Status = _statusFilter });
-    }
-
-    private void OnStatusFilterChanged(ChangeEventArgs args)
-    {
-        _statusFilter = args.Value?.ToString() ?? string.Empty;
-        Dispatcher.Dispatch(new LoadDeadLettersAction { Status = _statusFilter });
-    }
-
-    private void ClearScopeFilter()
-    {
-        NavigationManager.NavigateTo("/deadletters");
-    }
-
-    private void Retry(DeadLetterDto entry)
-    {
-        Dispatcher.Dispatch(new RetryDeadLetterAction { Id = entry.Id, StatusFilter = _statusFilter });
-    }
-
-    private void AskDiscard(DeadLetterDto entry)
-    {
-        _discardTarget = entry;
-    }
-
-    private void CancelDiscard()
-    {
-        _discardTarget = null;
-    }
-
-    private void ConfirmDiscard()
-    {
-        if (_discardTarget != null)
+        if (FlowId.HasValue && !FlowFilterActive)
         {
-            Dispatcher.Dispatch(new DiscardDeadLetterAction { Id = _discardTarget.Id, StatusFilter = _statusFilter });
+            _flowFilter = FlowId.Value.ToString();
         }
 
-        _discardTarget = null;
+        try
+        {
+            _flows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+        }
+        catch (Exception)
+        {
+        }
+
+        await LoadAsync();
+
+        // Deep link from a failure alert: open that entry even when it sits outside the
+        // current status/time filter.
+        if (Id.HasValue)
+        {
+            await OpenByIdAsync(Id.Value);
+        }
     }
 
-    private void ViewExecution(Guid executionId)
+    private async Task ApplyFiltersAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
     {
-        NavigationManager.NavigateTo($"/execution/{executionId}");
+        _loading = true;
+        _error = string.Empty;
+        try
+        {
+            var parameters = new List<string> { "page=1", "pageSize=100" };
+            if (!string.IsNullOrWhiteSpace(_statusFilter)) parameters.Add($"status={_statusFilter}");
+            if (Guid.TryParse(_flowFilter, out var flowId)) parameters.Add($"flowId={flowId}");
+            if (Guid.TryParse(_integrationFilter, out var integrationId)) parameters.Add($"integrationId={integrationId}");
+            if (int.TryParse(_hoursFilter, out var hours)) parameters.Add($"hours={hours}");
+            if (!string.IsNullOrWhiteSpace(_search)) parameters.Add($"search={Uri.EscapeDataString(_search.Trim())}");
+            if (ExecutionId.HasValue) parameters.Add($"executionId={ExecutionId.Value}");
+            if (StepId.HasValue) parameters.Add($"stepId={StepId.Value}");
+
+            _items = await Http.GetFromJsonAsync<List<DeadLetterDto>>("api/deadletters?" + string.Join("&", parameters)) ?? new List<DeadLetterDto>();
+
+            // Selection only applies to rows that are still visible and replayable.
+            _selectedIds.IntersectWith(_items
+                .Where(item => item.Status == "Pending" && !item.ReplayQueued)
+                .Select(item => item.Id));
+        }
+        catch (Exception)
+        {
+            _error = "Could not load dead letters. Refresh the page and try again.";
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 
-    private static string ResolveFlowName(DeadLetterDto entry) =>
-        string.IsNullOrWhiteSpace(entry.FlowName) ? ShortId(entry.FlowExecutionId) : entry.FlowName;
+    private async Task SelectAsync(DeadLetterDto item)
+    {
+        _selected = item;
+        await LoadDetailAsync(item.Id);
+    }
 
-    private static string ResolveNodeName(DeadLetterDto entry) =>
-        string.IsNullOrWhiteSpace(entry.NodeName) ? ShortId(entry.StepId) : entry.NodeName;
+    private async Task OpenByIdAsync(Guid id)
+    {
+        _selected = _items.FirstOrDefault(item => item.Id == id) ?? new DeadLetterDto { Id = id };
+        await LoadDetailAsync(id);
+    }
+
+    private async Task LoadDetailAsync(Guid id)
+    {
+        _detail = null;
+        _detailError = string.Empty;
+        _resyncOptions = new List<ResyncNodeOptionDto>();
+        _resyncStartStepId = string.Empty;
+        _resyncOptionsError = string.Empty;
+        _flowStateEdit = "{}";
+        _flowStateOriginal = "{}";
+        _flowStateError = string.Empty;
+        _error = string.Empty;
+
+        try
+        {
+            _detail = await Http.GetFromJsonAsync<DeadLetterDetailDto>($"api/deadletters/{id}");
+        }
+        catch (Exception)
+        {
+            _detailError = "Could not load diagnostics for this dead letter.";
+            return;
+        }
+
+        if (_detail == null)
+        {
+            _detailError = "No diagnostics were returned for this dead letter.";
+            return;
+        }
+
+        // The detail carries the flow name, node and timestamps the modal header needs,
+        // including when the entry was opened by id and is outside the current list.
+        _selected = _detail;
+        _flowStateOriginal = FormatFlowStateForEditing(_detail.FlowStateJson);
+        _flowStateEdit = _flowStateOriginal;
+        ValidateFlowState();
+
+        if (_detail.Status is "Pending" or "Retrying")
+        {
+            await LoadResyncNodesAsync();
+        }
+    }
+
+    private void CloseDetail()
+    {
+        _selected = null;
+        _detail = null;
+        _detailError = string.Empty;
+    }
+
+    /// <summary>
+    /// One-click resync from the list: the flow's configured default node wins, and the
+    /// backend's IsDefault resolution already falls back to the failed node (or its loop)
+    /// when no default is configured. The captured flow state is used unchanged.
+    /// </summary>
+    private async Task ResyncFromDefaultAsync(DeadLetterDto item)
+    {
+        if (_resyncingId.HasValue || item.ReplayQueued) return;
+
+        _resyncingId = item.Id;
+        _error = string.Empty;
+        _notice = string.Empty;
+        try
+        {
+            using var nodesResponse = await Http.GetAsync($"api/deadletters/{item.Id}/resync-nodes");
+            if (!nodesResponse.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(nodesResponse, "Resync is not available for this entry.");
+                return;
+            }
+
+            var options = await nodesResponse.Content.ReadFromJsonAsync<List<ResyncNodeOptionDto>>()
+                ?? new List<ResyncNodeOptionDto>();
+            var option = options.FirstOrDefault(candidate => candidate.IsDefault)
+                ?? options.FirstOrDefault(candidate => candidate.IsFailedNode)
+                ?? options.FirstOrDefault(candidate => candidate.ContainsFailedNode)
+                ?? options.FirstOrDefault();
+            if (option == null)
+            {
+                _error = "No eligible resync node is available for this failure.";
+                return;
+            }
+
+            using var response = await Http.PostAsJsonAsync($"api/deadletters/{item.Id}/retry",
+                new ResyncDeadLetterRequestDto { StartStepId = option.StepId });
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not queue the resync.");
+                return;
+            }
+
+            await LoadAsync();
+            if (string.IsNullOrWhiteSpace(_error))
+            {
+                _notice = $"Resync queued from {option.NodeName}.";
+            }
+        }
+        catch (Exception)
+        {
+            _error = "Could not queue the resync.";
+        }
+        finally
+        {
+            _resyncingId = null;
+        }
+    }
+
+    private async Task LoadResyncNodesAsync()
+    {
+        if (_selected == null) return;
+        _resyncOptionsLoading = true;
+        _resyncOptionsError = string.Empty;
+        _resyncOptions = new List<ResyncNodeOptionDto>();
+        _resyncStartStepId = string.Empty;
+        try
+        {
+            var response = await Http.GetAsync($"api/deadletters/{_selected.Id}/resync-nodes");
+            if (!response.IsSuccessStatusCode)
+            {
+                _resyncOptionsError = await ReadErrorAsync(response, "Resync is not available for this entry.");
+                return;
+            }
+            _resyncOptions = await response.Content.ReadFromJsonAsync<List<ResyncNodeOptionDto>>() ?? new List<ResyncNodeOptionDto>();
+            _resyncStartStepId = _resyncOptions.FirstOrDefault(option => option.IsDefault)?.StepId.ToString()
+                ?? _resyncOptions.FirstOrDefault(option => option.IsFailedNode)?.StepId.ToString()
+                ?? _resyncOptions.FirstOrDefault(option => option.ContainsFailedNode)?.StepId.ToString()
+                ?? _resyncOptions.FirstOrDefault()?.StepId.ToString()
+                ?? string.Empty;
+        }
+        catch (Exception)
+        {
+            _resyncOptionsError = "Could not load resync nodes.";
+        }
+        finally
+        {
+            _resyncOptionsLoading = false;
+        }
+    }
+
+    private async Task ResyncAsync()
+    {
+        if (_selected == null || !Guid.TryParse(_resyncStartStepId, out var startStepId)) return;
+        await PostResyncAsync(startStepId);
+    }
+
+    private async Task PostResyncAsync(Guid? startStepId)
+    {
+        if (_selected == null) return;
+        ValidateFlowState();
+        if (!string.IsNullOrWhiteSpace(_flowStateError))
+        {
+            _error = "Fix the flow state JSON before resyncing.";
+            return;
+        }
+
+        _actionBusy = true;
+        _error = string.Empty;
+        try
+        {
+            var selectedId = _selected.Id;
+            var response = await Http.PostAsJsonAsync($"api/deadletters/{selectedId}/retry", new ResyncDeadLetterRequestDto
+            {
+                StartStepId = startStepId,
+                FlowStateJson = _flowStateEdit
+            });
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not queue the resync.");
+                return;
+            }
+            _resyncOptions = new List<ResyncNodeOptionDto>();
+            await LoadAsync();
+            _selected = _items.FirstOrDefault(item => item.Id == selectedId);
+            if (_selected != null) await SelectAsync(_selected);
+        }
+        catch (Exception)
+        {
+            _error = "Could not queue the resync.";
+        }
+        finally
+        {
+            _actionBusy = false;
+        }
+    }
+
+    private async Task DiscardAsync()
+    {
+        var target = _discardTarget ?? _detail;
+        _discardTarget = null;
+        if (target == null) return;
+        _actionBusy = true;
+        _error = string.Empty;
+        try
+        {
+            var response = await Http.PostAsync($"api/deadletters/{target.Id}/discard", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not discard this dead letter.");
+                return;
+            }
+            await LoadAsync();
+            _selected = _items.FirstOrDefault(item => item.Id == target.Id);
+            if (_selected != null) await SelectAsync(_selected);
+        }
+        catch (Exception)
+        {
+            _error = "Could not discard this dead letter.";
+        }
+        finally
+        {
+            _actionBusy = false;
+        }
+    }
+
+    private void ClearScopeFilter() => NavigationManager.NavigateTo("/deadletters");
+
+    private async Task OnFilterKeyUp(KeyboardEventArgs args)
+    {
+        if (args.Key != "Enter") return;
+        await ApplyFiltersAsync();
+    }
+
+    private static string ResyncOptionLabel(ResyncNodeOptionDto option)
+    {
+        var label = $"{option.NodeName} ({option.StepType})";
+        var tags = new List<string>();
+        if (option.ContainsFailedNode) tags.Add("loop containing the failure");
+        else if (option.IsFailedNode) tags.Add("failed node");
+        if (option.IsDefault) tags.Add("flow default");
+        return tags.Count == 0 ? label : $"{label} — {string.Join(", ", tags)}";
+    }
+
+    private void ValidateFlowState()
+    {
+        if (string.IsNullOrWhiteSpace(_flowStateEdit))
+        {
+            _flowStateError = "Flow state must be a JSON object.";
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(_flowStateEdit);
+            _flowStateError = document.RootElement.ValueKind == JsonValueKind.Object
+                ? string.Empty
+                : "Flow state must be a JSON object.";
+        }
+        catch (JsonException ex)
+        {
+            _flowStateError = "Invalid JSON: " + ex.Message;
+        }
+    }
+
+    private void ResetFlowStateEdit()
+    {
+        _flowStateEdit = _flowStateOriginal;
+        ValidateFlowState();
+    }
+
+    private static string FormatFlowStateForEditing(string value)
+    {
+        var text = value?.Trim() ?? string.Empty;
+        if (text.Length == 0) return "{}";
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true })
+                : text;
+        }
+        catch (JsonException)
+        {
+            return text;
+        }
+    }
+
+    private static string StatusClass(string status) => status switch
+    {
+        "Resolved" => "is-ok",
+        "Discarded" => "is-muted",
+        "Retrying" => "is-warn",
+        _ => "is-pending"
+    };
 
     private static string ShortId(Guid id) => id == Guid.Empty ? "-" : $"{id.ToString()[..8]}…";
 
     private static string Truncate(string value, int maxLength) =>
-        string.IsNullOrEmpty(value) || value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
+        string.IsNullOrEmpty(value) || value.Length <= maxLength ? value : value[..maxLength] + "…";
 
-    private int PendingCount => VisibleEntries.Count();
-
-    private static string RelativeTime(DateTime utc)
+    private static string Pretty(string value)
     {
-        var delta = DateTime.UtcNow - DateTime.SpecifyKind(utc, DateTimeKind.Utc);
-        if (delta.TotalSeconds < 60) return "just now";
-        if (delta.TotalMinutes < 60) return $"{(int)delta.TotalMinutes}m ago";
-        if (delta.TotalHours < 24) return $"{(int)delta.TotalHours}h ago";
-        if (delta.TotalDays < 30) return $"{(int)delta.TotalDays}d ago";
-        return utc.ToLocalTime().ToString("MMM d, yyyy");
+        var text = value?.Trim() ?? string.Empty;
+        if (text.Length == 0) return "(empty)";
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return text;
+        }
+    }
+
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage response, string fallback)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(body)) return fallback;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            string? message = null;
+            if (root.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String)
+                message = detail.GetString();
+            else if (root.TryGetProperty("title", out var title) && title.ValueKind == JsonValueKind.String)
+                message = title.GetString();
+            else if (root.TryGetProperty("message", out var plain) && plain.ValueKind == JsonValueKind.String)
+                message = plain.GetString();
+            return string.IsNullOrWhiteSpace(message) ? fallback : message;
+        }
+        catch (JsonException)
+        {
+            return fallback;
+        }
     }
 }

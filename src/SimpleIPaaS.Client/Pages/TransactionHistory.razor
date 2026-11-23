@@ -7,10 +7,11 @@
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
 @inject HttpClient Http
+@inject IJSRuntime JS
 
-<PageTitle>Transaction History - SimpleIPaaS</PageTitle>
+<PageTitle>Transaction History - fusetor.com</PageTitle>
 
-<div class="page-scroll">
+<div class="page-scroll tx-page">
     <div class="page-header">
         <div class="header-left">
             <p class="page-eyebrow"><AppIcon Name="transactions" Class="icon icon-xs" /> Payload audit</p>
@@ -24,33 +25,105 @@
         </div>
     </div>
 
-    <div class="filter-bar">
-        <div class="filter-bar-group">
-            <label class="filter-field">
-                <span class="filter-label">Integration</span>
-                <select class="form-control filter-select" value="@_integrationFilter" @onchange="OnIntegrationFilterChanged">
-                    <option value="">All integrations</option>
-                    @foreach (var integration in _integrations)
-                    {
-                        <option value="@integration.Id">@integration.Name</option>
-                    }
-                </select>
-            </label>
-            <label class="filter-field">
-                <span class="filter-label">Flow</span>
-                <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
-                    <option value="">All flows</option>
-                    @foreach (var flow in FilteredFlows)
-                    {
-                        <option value="@flow.Id">@flow.Name</option>
-                    }
-                </select>
-            </label>
-        </div>
-        <div class="filter-summary">@ExecutionState.Value.Executions.Count transaction@(ExecutionState.Value.Executions.Count == 1 ? "" : "s")</div>
-    </div>
+    @* Filters are collapsed on load: the runs are the point of the page. The panel reports
+       the active count and the chips keep every applied filter visible while it is closed. *@
+    <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFilters" CssClass="filter-panel--flush">
+        <Actions>
+            @if (HasActiveFilters)
+            {
+                <button class="btn btn-outline btn-sm" @onclick="ClearFilters" title="Reset all filters">
+                    <AppIcon Name="x-circle" Class="icon icon-sm" /> Clear
+                </button>
+            }
+            <div class="filter-summary">@ExecutionState.Value.Executions.Count transaction@(ExecutionState.Value.Executions.Count == 1 ? "" : "s") · page @_page</div>
+        </Actions>
+        <Chips>
+            @if (!string.IsNullOrEmpty(_integrationFilter))
+            {
+                <FilterChip Label="@($"Integration: {IntegrationFilterLabel}")" OnRemove="ClearIntegrationFilter" />
+            }
+            @if (!string.IsNullOrEmpty(_flowFilter))
+            {
+                <FilterChip Label="@($"Flow: {FlowFilterLabel}")" OnRemove="ClearFlowFilter" />
+            }
+            @if (!string.IsNullOrEmpty(_statusFilter))
+            {
+                <FilterChip Label="@($"Status: {_statusFilter}")" OnRemove="ClearStatusFilter" />
+            }
+            @if (!string.IsNullOrEmpty(_fromDate))
+            {
+                <FilterChip Label="@($"From: {_fromDate}")" OnRemove="ClearFromDate" />
+            }
+            @if (!string.IsNullOrEmpty(_toDate))
+            {
+                <FilterChip Label="@($"To: {_toDate}")" OnRemove="ClearToDate" />
+            }
+            @if (!string.IsNullOrEmpty(_searchFilter))
+            {
+                <FilterChip Label="@($"Search: {_searchFilter}")" Title="@_searchFilter" OnRemove="ClearSearchFilter" />
+            }
+        </Chips>
+        <ChildContent>
+            <div class="filter-bar-group">
+                <label class="filter-field">
+                    <span class="filter-label">Integration</span>
+                    <select class="form-control filter-select" value="@_integrationFilter" @onchange="OnIntegrationFilterChanged">
+                        <option value="">All integrations</option>
+                        @foreach (var integration in _integrations)
+                        {
+                            <option value="@integration.Id">@integration.Name</option>
+                        }
+                    </select>
+                </label>
+                <label class="filter-field">
+                    <span class="filter-label">Flow</span>
+                    <select class="form-control filter-select" value="@_flowFilter" @onchange="OnFlowFilterChanged">
+                        <option value="">All flows</option>
+                        @foreach (var flow in FilteredFlows)
+                        {
+                            <option value="@flow.Id">@flow.Name</option>
+                        }
+                    </select>
+                </label>
+                <label class="filter-field">
+                    <span class="filter-label">Status</span>
+                    <select class="form-control filter-select-sm" value="@_statusFilter" @onchange="OnStatusFilterChanged">
+                        <option value="">All statuses</option>
+                        <option value="Queued">Queued</option>
+                        <option value="InProgress">Running</option>
+                        <option value="Success">Success</option>
+                        <option value="PartialSuccess">Partial Success</option>
+                        <option value="Failed">Failed</option>
+                        <option value="Recovered">Recovered</option>
+                        <option value="Cancelled">Cancelled</option>
+                    </select>
+                </label>
+                <label class="filter-field">
+                    <span class="filter-label">From</span>
+                    <input type="date" class="form-control filter-select-sm filter-date" value="@_fromDate" @onchange="OnFromDateChanged" title="Show transactions started on or after this date" />
+                </label>
+                <label class="filter-field">
+                    <span class="filter-label">To</span>
+                    <input type="date" class="form-control filter-select-sm filter-date" value="@_toDate" @onchange="OnToDateChanged" title="Show transactions started on or before this date" />
+                </label>
+                <label class="filter-field filter-field-search">
+                    <span class="filter-label">Search</span>
+                    <input type="search" class="form-control filter-search" placeholder="Identifier, message, flow, error, or id"
+                           value="@_searchFilter" @oninput="OnSearchChanged" @onkeydown="OnSearchKeyDown"
+                           title="Matches the identifier, message, flow name, error, or a full transaction id" />
+                </label>
+                <label class="filter-field test-filter-field">
+                    <span class="filter-label">Tests</span>
+                    <span class="test-filter-checkbox">
+                        <input type="checkbox" checked="@_includeTests" @onchange="OnIncludeTestsChanged" />
+                        Include test runs
+                    </span>
+                </label>
+            </div>
+        </ChildContent>
+    </FilterPanel>
 
-    <div class="activity-log-container">
+    <div class="activity-log-container tx-page">
         @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
         {
             <div class="loading-state">Loading transaction history…</div>
@@ -59,56 +132,94 @@
         {
             <div class="empty-state empty-state-hero">
                 <span class="empty-icon"><AppIcon Name="transactions" Class="icon icon-lg" /></span>
-                <h3>No transactions captured</h3>
-                <p>Once a flow runs, every card it touches records the payload it received and the response it produced — all inspectable here.</p>
-                <a class="btn btn-outline" href="">Back to dashboard</a>
+                @if (HasActiveFilters)
+                {
+                    <h3>No transactions match these filters</h3>
+                    <p>Try widening the date range, clearing the search, or picking a different status.</p>
+                    <button class="btn btn-outline" @onclick="ClearFilters">Clear filters</button>
+                }
+                else
+                {
+                    <h3>No transactions captured</h3>
+                    <p>Once a flow runs, every card it touches records the payload it received and the response it produced — all inspectable here.</p>
+                    <a class="btn btn-outline" href="">Back to dashboard</a>
+                }
             </div>
         }
         else
         {
-            <div class="table-wrap">
-                <div class="table-scroll">
-                    <table class="table table-hover">
+            <div class="table-wrap tx-table-wrap">
+                @* Keyboard-scrollable: the horizontal scroll container takes focus so a keyboard
+                   user can pan a table that is wider than the content area. *@
+                <div class="table-scroll tx-table-scroll" tabindex="0" role="region" aria-label="Transaction table — scroll horizontally to reach every column">
+                    <table class="table table-hover tx-table" id="transaction-table" @ref="TableElement">
+                        <colgroup class="tx-colgroup">
+                            <col class="col-tx-id" />
+                            <col class="col-flow" />
+                            <col class="col-identifier" />
+                            <col class="col-message" />
+                            <col class="col-status" />
+                            <col class="col-run-at" />
+                            <col class="col-actions" />
+                        </colgroup>
                         <thead>
                             <tr>
-                                <th>Transaction</th>
-                                <th>Flow</th>
-                                <th>Status</th>
-                                <th>Run at</th>
-                                <th>Cards</th>
-                                <th>Result</th>
-                                <th class="cell-actions">Action</th>
+                                <th scope="col">Transaction<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
+                                <th scope="col">Flow<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
+                                <th scope="col" class="col-identifier">Identifier<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
+                                <th scope="col" class="col-message">Message<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
+                                <th scope="col">Status<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
+                                <th scope="col">Run at<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
+                                <th scope="col" class="cell-actions">Action</th>
                             </tr>
                         </thead>
                         <tbody>
                             @foreach (var transaction in ExecutionState.Value.Executions.OrderByDescending(e => e.StartedAt))
                             {
                                 <tr>
-                                    <td class="cell-mono">@ShortId(transaction.Id)</td>
+                                    <td class="cell-id">
+                                        @* The whole id is in the cell; the column is wide enough for it, and
+                                           the tooltip plus the copy button cover the narrow cases. *@
+                                        <span class="tx-id">
+                                            <span class="tx-id-text" title="@transaction.Id">@transaction.Id</span>
+                                            <button type="button" class="tx-id-copy"
+                                                    title="Copy the full transaction id"
+                                                    aria-label="@($"Copy transaction id {transaction.Id}")"
+                                                    @onclick="() => CopyIdAsync(transaction.Id)">
+                                                <AppIcon Name="copy" Class="icon icon-xs" />
+                                            </button>
+                                        </span>
+                                    </td>
                                     <td>
                                         <span class="cell-primary">@ResolveFlowName(transaction)</span>
+                                            @if (transaction.FanOutItemIndex.HasValue)
+                                            {
+                                                <span class="text-muted">Fan-out item @transaction.FanOutItemIndex of @transaction.FanOutItemCount from @transaction.FanOutNodeName</span>
+                                            }
                                         @if (!string.IsNullOrWhiteSpace(transaction.IntegrationName))
                                         {
                                             <span class="text-muted">@transaction.IntegrationName</span>
                                         }
+                                        @if (transaction.IsTest)
+                                        {
+                                            <span class="status-badge no-dot test-row-badge">Test</span>
+                                        }
                                     </td>
+                                    <td class="tx-note-cell col-identifier" title="@transaction.Identifier">@transaction.Identifier</td>
+                                    <td class="tx-note-cell col-message" title="@transaction.Message">@transaction.Message</td>
                                     <td><span class="status-badge @(transaction.Status.ToLowerInvariant())">@transaction.Status</span></td>
-                                    <td>
+                                    <td class="cell-age" title="@StartTimestampTooltip(transaction)">
                                         <span class="cell-num">@transaction.StartedAt.ToLocalTime().ToString("MMM d, yyyy")</span>
                                         <span class="text-muted">@transaction.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</span>
                                     </td>
-                                    <td class="cell-num">@CardCount(transaction)</td>
-                                    <td>
-                                        <span class="inline-actions">
-                                            <span class="chip chip-success">@transaction.SuccessRecords ok</span>
-                                            @if (transaction.FailedRecords > 0)
-                                            {
-                                                <span class="chip chip-danger">@transaction.FailedRecords failed</span>
-                                            }
-                                        </span>
-                                    </td>
                                     <td class="cell-actions">
-                                        <button class="btn btn-sm btn-outline" @onclick="() => CheckTransaction(transaction.Id)">Inspect</button>
+                                        <span class="inline-actions">
+                                            @if (IsActive(transaction))
+                                            {
+                                                <button class="btn btn-sm btn-soft-danger" @onclick="() => CancelExecution(transaction.Id)" title="Stop this run">Cancel</button>
+                                            }
+                                            <button class="btn btn-sm btn-outline" @onclick="() => CheckTransaction(transaction.Id)">Inspect</button>
+                                        </span>
                                     </td>
                                 </tr>
                             }
@@ -116,26 +227,124 @@
                     </table>
                 </div>
             </div>
+
+            <div class="table-pagination">
+                <button class="btn btn-sm btn-outline" @onclick="PreviousPage" disabled="@(_page <= 1)">← Previous</button>
+                <span class="text-muted">Page @_page</span>
+                <button class="btn btn-sm btn-outline" @onclick="NextPage" disabled="@(ExecutionState.Value.Executions.Count < PageSize)">Next →</button>
+            </div>
         }
     </div>
 </div>
 
 @code {
+    private const int PageSize = 50;
+
+    /// <summary>Deep links from an integration's page seed the filters (see /integrations/{id}).</summary>
+    [SupplyParameterFromQuery(Name = "integrationId")]
+    public Guid? IntegrationIdParam { get; set; }
+
+    [SupplyParameterFromQuery(Name = "flowId")]
+    public Guid? FlowIdParam { get; set; }
+
     private string _flowFilter = string.Empty;
     private string _integrationFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _searchFilter = string.Empty;
+    private string _fromDate = string.Empty;
+    private string _toDate = string.Empty;
+    private bool _includeTests;
+    private int _page = 1;
+    private bool _filtersOpen;
     private List<IntegrationDto> _integrations = new();
+    private CancellationTokenSource? _searchDebounce;
+    private System.Threading.Timer? _refreshTimer;
+    private ElementReference TableElement;
+    private string? _initializedTableElementId;
+
+    private bool HasActiveFilters =>
+        !string.IsNullOrEmpty(_integrationFilter) ||
+        !string.IsNullOrEmpty(_flowFilter) ||
+        !string.IsNullOrEmpty(_statusFilter) ||
+        !string.IsNullOrEmpty(_searchFilter) ||
+        !string.IsNullOrEmpty(_fromDate) ||
+        !string.IsNullOrEmpty(_toDate);
+
+    /// <summary>Drives the filter disclosure badge and the collapsed summary.</summary>
+    private int ActiveFilterCount =>
+        (!string.IsNullOrEmpty(_integrationFilter) ? 1 : 0) +
+        (!string.IsNullOrEmpty(_flowFilter) ? 1 : 0) +
+        (!string.IsNullOrEmpty(_statusFilter) ? 1 : 0) +
+        (!string.IsNullOrEmpty(_searchFilter) ? 1 : 0) +
+        (!string.IsNullOrEmpty(_fromDate) ? 1 : 0) +
+        (!string.IsNullOrEmpty(_toDate) ? 1 : 0);
+
+    private string IntegrationFilterLabel =>
+        _integrations.FirstOrDefault(integration => integration.Id.ToString() == _integrationFilter)?.Name
+        ?? "Selected integration";
+
+    private string FlowFilterLabel =>
+        FlowState.Value.Flows.FirstOrDefault(flow => flow.Id.ToString() == _flowFilter)?.Name
+        ?? "Selected flow";
+
+    /// <summary>Exact start time, both zones, for the hover title on the run-at column.</summary>
+    private static string StartTimestampTooltip(FlowExecutionDto transaction) =>
+        $"{transaction.StartedAt.ToUniversalTime():yyyy-MM-dd HH:mm:ss} UTC · "
+        + $"{transaction.StartedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss} local · "
+        + UiFormat.RelativeTime(transaction.StartedAt);
 
     protected override void OnInitialized()
     {
         base.OnInitialized();
+
+        if (IntegrationIdParam is Guid integrationId)
+        {
+            _integrationFilter = integrationId.ToString();
+        }
+
+        if (FlowIdParam is Guid flowId)
+        {
+            _flowFilter = flowId.ToString();
+        }
+
         Dispatcher.Dispatch(new LoadFlowsAction());
         LoadExecutions();
+        _refreshTimer = new System.Threading.Timer(_ => InvokeAsync(RefreshIfActive), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+    }
+
+    private void RefreshIfActive()
+    {
+        if (ExecutionState.Value.Executions.Any(IsActive))
+        {
+            LoadExecutions();
+        }
     }
 
     protected override async Task OnInitializedAsync()
     {
         await base.OnInitializedAsync();
         _integrations = await SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations", Dispatcher, "integrations") ?? new();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Init only when the table element instance changes. The 10-second refresh and
+        // ordinary re-renders must not re-apply widths or reset the scroll position.
+        if (!ExecutionState.Value.Executions.Any())
+        {
+            _initializedTableElementId = null;
+            return;
+        }
+
+        var elementId = TableElement.Id;
+        if (string.IsNullOrEmpty(elementId)
+            || string.Equals(elementId, _initializedTableElementId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _initializedTableElementId = elementId;
+        await JS.InvokeVoidAsync("simpleIPaaSTableColumns.init", "transaction-table", "simpleipaas-transaction-column-widths");
     }
 
     private IEnumerable<IntegrationFlowDto> FilteredFlows =>
@@ -147,26 +356,222 @@
 
     private Guid? ParsedIntegrationId => Guid.TryParse(_integrationFilter, out var id) ? id : null;
 
+    private DateTime? SinceUtc => ParseLocalStartOfDay(_fromDate);
+
+    private DateTime? UntilUtc => ParseLocalStartOfDay(_toDate)?.AddDays(1);
+
+    private static DateTime? ParseLocalStartOfDay(string value) =>
+        DateTime.TryParse(value, out var parsed)
+            ? DateTime.SpecifyKind(parsed.Date, DateTimeKind.Local).ToUniversalTime()
+            : null;
+
     private void LoadExecutions()
     {
         Dispatcher.Dispatch(new LoadExecutionsAction
         {
             FlowId = ParsedFlowId,
-            IntegrationId = ParsedIntegrationId
+            IntegrationId = ParsedIntegrationId,
+            Status = _statusFilter,
+            Search = _searchFilter,
+            SinceUtc = SinceUtc,
+            UntilUtc = UntilUtc,
+            Page = _page,
+            PageSize = PageSize,
+            IncludeTests = _includeTests
         });
+    }
+
+    private void OnIncludeTestsChanged(ChangeEventArgs args)
+    {
+        _includeTests = args.Value is true;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private bool IsActive(FlowExecutionDto transaction) =>
+        transaction.Status.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
+        transaction.Status.Equals("InProgress", StringComparison.OrdinalIgnoreCase) ||
+        transaction.Status.Equals("Running", StringComparison.OrdinalIgnoreCase);
+
+    private void CancelExecution(Guid transactionId)
+    {
+        Dispatcher.Dispatch(new CancelExecutionAction
+        {
+            Id = transactionId,
+            FlowId = ParsedFlowId,
+            IntegrationId = ParsedIntegrationId,
+            Status = _statusFilter,
+            Search = _searchFilter,
+            SinceUtc = SinceUtc,
+            UntilUtc = UntilUtc,
+            Page = _page,
+            PageSize = PageSize,
+            IncludeTests = _includeTests
+        });
+    }
+
+    private void PreviousPage()
+    {
+        if (_page <= 1) return;
+        _page--;
+        LoadExecutions();
+    }
+
+    private void NextPage()
+    {
+        _page++;
+        LoadExecutions();
     }
 
     private void OnIntegrationFilterChanged(ChangeEventArgs args)
     {
         _integrationFilter = args.Value?.ToString() ?? string.Empty;
         _flowFilter = string.Empty;
+        _page = 1;
         LoadExecutions();
     }
 
     private void OnFlowFilterChanged(ChangeEventArgs args)
     {
         _flowFilter = args.Value?.ToString() ?? string.Empty;
+        _page = 1;
         LoadExecutions();
+    }
+
+    private void OnStatusFilterChanged(ChangeEventArgs args)
+    {
+        _statusFilter = args.Value?.ToString() ?? string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void OnFromDateChanged(ChangeEventArgs args)
+    {
+        _fromDate = args.Value?.ToString() ?? string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void OnToDateChanged(ChangeEventArgs args)
+    {
+        _toDate = args.Value?.ToString() ?? string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void OnSearchChanged(ChangeEventArgs args)
+    {
+        _searchFilter = args.Value?.ToString() ?? string.Empty;
+        _page = 1;
+        DebouncedReload();
+    }
+
+    private void OnSearchKeyDown(KeyboardEventArgs args)
+    {
+        if (!string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase)) return;
+        _searchDebounce?.Cancel();
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void DebouncedReload()
+    {
+        _searchDebounce?.Cancel();
+        var source = new CancellationTokenSource();
+        _searchDebounce = source;
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await Task.Delay(350, source.Token);
+            }
+            catch (TaskCanceledException)
+            {
+                return;
+            }
+
+            if (!source.IsCancellationRequested)
+            {
+                LoadExecutions();
+            }
+        });
+    }
+
+    private void ClearFilters()
+    {
+        _searchDebounce?.Cancel();
+        _integrationFilter = string.Empty;
+        _flowFilter = string.Empty;
+        _statusFilter = string.Empty;
+        _searchFilter = string.Empty;
+        _fromDate = string.Empty;
+        _toDate = string.Empty;
+        _includeTests = false;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    // Per-chip removals from the collapsed summary. Each one keeps the filter semantics of the
+    // matching control (clearing the integration also clears the flow it scoped).
+    private void ClearIntegrationFilter()
+    {
+        _integrationFilter = string.Empty;
+        _flowFilter = string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void ClearFlowFilter()
+    {
+        _flowFilter = string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void ClearStatusFilter()
+    {
+        _statusFilter = string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void ClearFromDate()
+    {
+        _fromDate = string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void ClearToDate()
+    {
+        _toDate = string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private void ClearSearchFilter()
+    {
+        _searchDebounce?.Cancel();
+        _searchFilter = string.Empty;
+        _page = 1;
+        LoadExecutions();
+    }
+
+    private async Task CopyIdAsync(Guid transactionId)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", transactionId.ToString());
+            Dispatcher.Dispatch(new ShowToastAction { Message = "Transaction id copied." });
+        }
+        catch (JSException)
+        {
+            Dispatcher.Dispatch(new ShowToastAction
+            {
+                Level = "error",
+                Message = "The browser blocked clipboard access. Select the id and copy it manually."
+            });
+        }
     }
 
     private void CheckTransaction(Guid transactionId)
@@ -174,13 +579,38 @@
         NavigationManager.NavigateTo($"/transaction-history/{transactionId}");
     }
 
-    private static string ShortId(Guid id) => $"{id.ToString()[..8]}...";
+    private static string ShortId(Guid id) => id == Guid.Empty ? "—" : $"{id.ToString()[..8]}...";
 
     private static string ResolveFlowName(FlowExecutionDto transaction) =>
-        string.IsNullOrWhiteSpace(transaction.FlowName) ? ShortId(transaction.FlowId) : transaction.FlowName;
+        string.IsNullOrWhiteSpace(transaction.FlowName)
+            ? (transaction.FlowId == Guid.Empty ? "Unknown flow" : ShortId(transaction.FlowId))
+            : transaction.FlowName;
 
-    private static int CardCount(FlowExecutionDto transaction)
+    protected override async ValueTask DisposeAsyncCore(bool disposing)
     {
-        return transaction.SuccessRecords + transaction.FailedRecords;
+        if (disposing)
+        {
+            _refreshTimer?.Dispose();
+            _refreshTimer = null;
+            _searchDebounce?.Cancel();
+            _searchDebounce?.Dispose();
+            _searchDebounce = null;
+            _initializedTableElementId = null;
+            await DisposeTableColumnsAsync();
+        }
+
+        await base.DisposeAsyncCore(disposing);
+    }
+
+    private async Task DisposeTableColumnsAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("simpleIPaaSTableColumns.dispose", "transaction-table");
+        }
+        catch
+        {
+            // The JS runtime may already be gone during teardown.
+        }
     }
 }

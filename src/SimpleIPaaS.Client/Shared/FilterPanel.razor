@@ -1,0 +1,94 @@
+@* One disclosure pattern for every filter row in the app.
+   Presentation only: the page owns the filter values and reports how many are applied.
+   Collapsed on load so the data is what the page opens with; when a filter is applied while
+   the panel is closed, the button carries the count and the summary row keeps the active
+   filters (and their own remove buttons) visible, so a filtered result is never silent. *@
+<div class="filter-panel @CssClass @(Expanded ? "is-open" : "is-collapsed")">
+    <div class="filter-panel-toolbar">
+        <button type="button"
+                class="btn btn-outline filter-panel-toggle"
+                aria-expanded="@(Expanded ? "true" : "false")"
+                aria-controls="@_panelId"
+                @onclick="Toggle">
+            <AppIcon Name="filter" Class="icon icon-sm" />
+            <span class="filter-panel-label">@Label</span>
+            @if (ActiveCount > 0)
+            {
+                <span class="filter-panel-count">· @ActiveCount</span>
+            }
+            <span class="filter-panel-chevron" aria-hidden="true"><AppIcon Name="chevron-right" Class="icon icon-xs" /></span>
+        </button>
+
+        @if (Actions is not null)
+        {
+            <div class="filter-panel-actions">@Actions</div>
+        }
+    </div>
+
+    @* The body stays in the DOM so the open/close transition can run; `inert` keeps the
+       collapsed controls out of the tab order and away from assistive technology. *@
+    <div id="@_panelId" class="filter-panel-body" inert="@(!Expanded ? "inert" : null)">
+        <div class="filter-panel-content">@ChildContent</div>
+    </div>
+
+    @if (!Expanded && ActiveCount > 0)
+    {
+        <div class="filter-panel-summary">
+            <span class="filter-panel-summary-label">Filtered by</span>
+            <div class="filter-panel-chips">
+                @if (Chips is not null)
+                {
+                    @Chips
+                }
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm filter-panel-clear" @onclick="ClearAllAsync">
+                <AppIcon Name="x-circle" Class="icon icon-xs" /> Clear all
+            </button>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly string _panelId = $"filter-panel-{Guid.NewGuid():N}";
+
+    /// <summary>Open state. Bind with <c>@bind-Expanded</c>; pages keep it false on load.</summary>
+    [Parameter]
+    public bool Expanded { get; set; }
+
+    [Parameter]
+    public EventCallback<bool> ExpandedChanged { get; set; }
+
+    /// <summary>How many filters the page currently applies. Zero hides the badge and the summary.</summary>
+    [Parameter]
+    public int ActiveCount { get; set; }
+
+    /// <summary>Resets every filter the page owns.</summary>
+    [Parameter]
+    public EventCallback OnClearAll { get; set; }
+
+    /// <summary>Page actions shown at the right of the toolbar row.</summary>
+    [Parameter]
+    public RenderFragment? Actions { get; set; }
+
+    /// <summary>One <see cref="FilterChip"/> per active filter, used by the collapsed summary.</summary>
+    [Parameter]
+    public RenderFragment? Chips { get; set; }
+
+    [Parameter]
+    public string Label { get; set; } = "Filters";
+
+    /// <summary>Extra classes, e.g. <c>filter-panel--flush</c> for a bar under a page header.</summary>
+    [Parameter]
+    public string? CssClass { get; set; }
+
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    private async Task Toggle()
+    {
+        Expanded = !Expanded;
+        await ExpandedChanged.InvokeAsync(Expanded);
+    }
+
+    private async Task ClearAllAsync() => await OnClearAll.InvokeAsync();
+}

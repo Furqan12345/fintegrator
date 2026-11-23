@@ -1,0 +1,199 @@
+/* Storage & retention page. Layout only — colours, radii and spacing come from the tokens in
+   app.css so this page follows the theme (light and dark) like the rest of the console. */
+
+.settings-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+/* The page is also the scroll container, so its children must keep their natural height
+   instead of shrinking to fit the viewport (which clipped the panels to their headers). */
+.settings-page > * {
+    flex-shrink: 0;
+}
+
+.notice-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+    background: var(--success-soft);
+    font-size: 0.85rem;
+}
+
+/* --- per-dataset backend and retention matrix --- */
+
+.dataset-card {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    margin-bottom: var(--space-3);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--bg-card);
+}
+
+.dataset-card:last-of-type {
+    margin-bottom: 0;
+}
+
+.dataset-card.is-elasticsearch {
+    border-left-color: var(--primary);
+    background: color-mix(in srgb, var(--primary-soft) 40%, var(--bg-card));
+}
+
+.dataset-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+}
+
+.dataset-identity h4 {
+    margin: 0 0 2px;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+
+.dataset-identity p {
+    margin: 0;
+    max-width: 68ch;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.dataset-backend {
+    min-width: 190px;
+}
+
+.dataset-card-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: var(--space-3) var(--space-4);
+    align-items: start;
+}
+
+.dataset-card-body .form-group {
+    margin: 0;
+}
+
+.switch-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: 0.8rem;
+    font-weight: 640;
+}
+
+/* --- index and retention status --- */
+
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: var(--space-3);
+}
+
+.status-card {
+    display: grid;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--bg-subtle);
+}
+
+.status-card header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+}
+
+.status-card h4 {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+.status-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--space-2) var(--space-4);
+    margin: 0;
+}
+
+.status-meta div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.status-meta dt {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+
+.status-meta dd {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+.index-table {
+    font-size: 0.78rem;
+}
+
+.index-table th,
+.index-table td {
+    padding: var(--space-1) var(--space-2);
+}
+
+.apply-outcomes,
+.retention-report ul {
+    display: grid;
+    gap: var(--space-1);
+    margin: var(--space-2) 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.8rem;
+}
+
+.apply-outcomes li,
+.retention-report li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+.retention-report {
+    margin-top: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-inset);
+}
+
+.retention-report h4 {
+    margin: 0;
+    font-size: 0.85rem;
+}
+
+@media (max-width: 720px) {
+    .dataset-card-head {
+        flex-direction: column;
+    }
+
+    .dataset-backend {
+        width: 100%;
+    }
+}

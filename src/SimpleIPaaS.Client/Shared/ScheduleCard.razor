@@ -5,7 +5,7 @@
 @using SimpleIPaaS.Shared.Models
 @inject HttpClient Http
 
-<MinimizableNodeCard Title="Schedule" NodeColorClass="node-header-violet">
+<MinimizableNodeCard Title="Schedule" NodeName="@Step.NodeName" NodeColorClass="node-header-violet">
     <div class="node-field">
         <label class="node-label">Node Name</label>
         <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. NightlyRun" />

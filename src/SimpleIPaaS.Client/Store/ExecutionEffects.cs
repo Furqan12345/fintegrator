@@ -21,7 +21,7 @@ public class ExecutionEffects
     {
         var executions = await SafeFetch.GetAsync<FlowExecutionDto[]>(
             _http,
-            BuildExecutionsUrl(action.FlowId, action.IntegrationId, action.Status, action.Page, action.PageSize),
+            BuildExecutionsUrl(action),
             dispatcher,
             "executions");
         if (executions != null)
@@ -48,28 +48,53 @@ public class ExecutionEffects
         dispatcher.Dispatch(new LoadExecutionsAction
         {
             FlowId = action.FlowId,
+            IntegrationId = action.IntegrationId,
             Status = action.Status,
+            Search = action.Search,
+            SinceUtc = action.SinceUtc,
+            UntilUtc = action.UntilUtc,
             Page = action.Page,
-            PageSize = action.PageSize
+            PageSize = action.PageSize,
+            IncludeTests = action.IncludeTests
         });
     }
 
-    private static string BuildExecutionsUrl(System.Guid? flowId, System.Guid? integrationId, string status, int page, int pageSize)
+    private static string BuildExecutionsUrl(LoadExecutionsAction action)
     {
-        var query = new List<string> { $"page={page}", $"pageSize={pageSize}" };
-        if (flowId.HasValue)
+        var query = new List<string> { $"page={action.Page}", $"pageSize={action.PageSize}" };
+        if (action.FlowId.HasValue)
         {
-            query.Add($"flowId={flowId.Value}");
+            query.Add($"flowId={action.FlowId.Value}");
         }
 
-        if (integrationId.HasValue)
+        if (action.IntegrationId.HasValue)
         {
-            query.Add($"integrationId={integrationId.Value}");
+            query.Add($"integrationId={action.IntegrationId.Value}");
         }
 
-        if (!string.IsNullOrWhiteSpace(status))
+        if (!string.IsNullOrWhiteSpace(action.Status))
         {
-            query.Add($"status={status}");
+            query.Add($"status={System.Uri.EscapeDataString(action.Status)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(action.Search))
+        {
+            query.Add($"search={System.Uri.EscapeDataString(action.Search.Trim())}");
+        }
+
+        if (action.SinceUtc.HasValue)
+        {
+            query.Add($"sinceUtc={System.Uri.EscapeDataString(action.SinceUtc.Value.ToUniversalTime().ToString("o"))}");
+        }
+
+        if (action.UntilUtc.HasValue)
+        {
+            query.Add($"untilUtc={System.Uri.EscapeDataString(action.UntilUtc.Value.ToUniversalTime().ToString("o"))}");
+        }
+
+        if (action.IncludeTests)
+        {
+            query.Add("includeTests=true");
         }
 
         return $"api/executions?{string.Join("&", query)}";

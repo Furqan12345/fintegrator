@@ -7,7 +7,7 @@
 @inject NavigationManager NavigationManager
 @inject HttpClient Http
 
-<PageTitle>Dashboard — SimpleIPaaS</PageTitle>
+<PageTitle>Dashboard — fusetor.com</PageTitle>
 
 <div class="page-scroll dashboard-page">
     <div class="page-header dashboard-hero">
@@ -45,7 +45,7 @@
                     }
                     @if (FailedRecently > 0)
                     {
-                        <a class="btn btn-sm btn-outline" href="activity">Open activity log</a>
+                        <a class="btn btn-sm btn-outline" href="transaction-history">Open transactions</a>
                     }
                 </div>
             </div>
@@ -114,7 +114,7 @@
                     <span class="stat-sub">
                         @if (FailedRecently > 0)
                         {
-                            <a class="stat-link" href="activity">Investigate <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
+                            <a class="stat-link" href="transaction-history">Investigate <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
                         }
                         else
                         {
@@ -173,7 +173,10 @@
                             <h3 class="panel-heading"><AppIcon Name="integrations" Class="icon icon-sm" /> Integrations <span class="header-count">@_integrations.Count</span></h3>
                             <p class="panel-sub">Grouped pipelines and the flows inside them.</p>
                         </div>
-                        <button class="btn btn-sm btn-soft" @onclick="OpenCreateIntegration"><AppIcon Name="plus" Class="icon icon-xs" /> New</button>
+                        <div class="inline-actions">
+                            <a class="btn btn-sm btn-outline" href="integrations">View all <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
+                            <button class="btn btn-sm btn-soft" @onclick="OpenCreateIntegration"><AppIcon Name="plus" Class="icon icon-xs" /> New</button>
+                        </div>
                     </div>
                     <div class="panel-content">
                         @if (!_integrations.Any())
@@ -199,7 +202,7 @@
                                             <div class="card-headline">
                                                 <span class="card-avatar @AvatarTone(integration.Name)">@Monogram(integration.Name)</span>
                                                 <div class="card-headline-text">
-                                                    <h3 class="card-title">@integration.Name</h3>
+                                                    <h3 class="card-title"><a class="card-title-link" href="@($"integrations/{integration.Id}")" title="Open this integration">@integration.Name</a></h3>
                                                     <p class="card-subtitle">@integration.Flows.Count flow@(integration.Flows.Count == 1 ? "" : "s") · updated @integration.UpdatedAt.ToLocalTime().ToString("MMM d")</p>
                                                 </div>
                                             </div>
@@ -367,7 +370,7 @@
                     </div>
                     <div class="panel-foot">
                         <span class="text-muted">Showing @Math.Min(9, _recentExecutions.Count) of @_recentExecutions.Count</span>
-                        <a class="btn btn-sm btn-outline" href="activity">View all <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
+                        <a class="btn btn-sm btn-outline" href="transaction-history">View all <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
                     </div>
                 </aside>
             </div>
@@ -514,7 +517,7 @@
 
     private string AttentionDetail => PendingDeadLetters > 0
         ? "Automatic retries are disabled, so these stay queued until you retry or discard them."
-        : "Open the activity log to inspect the failing step and its payload.";
+        : "Open the transactions page to inspect the failing step and its payload.";
 
     private string SuccessMeterClass => SuccessRate >= 90 ? "is-success" : SuccessRate >= 60 ? "is-warning" : "is-danger";
 

@@ -1,0 +1,227 @@
+@page "/admin/ai-settings"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@using System.Net.Http.Json
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject IDispatcher Dispatcher
+@inject NavigationManager NavigationManager
+
+<PageTitle>AI Settings · fusetor.com</PageTitle>
+
+<div class="page-scroll">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="sparkline" Class="icon icon-xs" /> System</p>
+            <h2>AI build budgets</h2>
+            <p class="subtitle">
+                Control how much research, repair, context and output the Build with AI agent may use.
+                Changes apply to the next build without restarting the API.
+            </p>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick='() => NavigationManager.NavigateTo("/ai-providers")'>← AI providers</button>
+            <button class="btn btn-outline" @onclick="StageDefaults" disabled="@_saving">Restore defaults</button>
+            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(_loading || _saving)">
+                @(_saving ? "Saving…" : "Save settings")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="page-body">
+            <div class="validation-banner" role="alert">@_error</div>
+        </div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_notice))
+    {
+        <div class="page-body">
+            <div class="notice-banner" role="status">
+                <span>@_notice</span>
+                <button class="btn btn-sm btn-outline" @onclick="() => _notice = string.Empty">Dismiss</button>
+            </div>
+        </div>
+    }
+
+    @if (_loading)
+    {
+        <div class="loading-state">Loading AI build budgets…</div>
+    }
+    else if (_settings != null)
+    {
+        <div class="page-body">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h3 class="panel-heading">Agent and draft limits</h3>
+                        <p class="panel-sub">These are host-wide safeguards for every AI build session.</p>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label for="ai-max-tools">Max tool calls</label>
+                            <input id="ai-max-tools" type="number" min="8" max="200" class="form-control" @bind="_settings.MaxToolCalls" />
+                            <small class="field-hint">Research and validation calls combined. Parallel calls each count.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-max-rounds">Max chat rounds</label>
+                            <input id="ai-max-rounds" type="number" min="10" max="200" class="form-control" @bind="_settings.MaxChatRounds" />
+                            <small class="field-hint">Model round trips allowed before the build is stopped.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-max-repairs">Max draft repairs</label>
+                            <input id="ai-max-repairs" type="number" min="0" max="10" class="form-control" @bind="_settings.MaxDraftRepairs" />
+                            <small class="field-hint">Automatic correction attempts after an invalid draft.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-max-minutes">Build timeout (minutes)</label>
+                            <input id="ai-max-minutes" type="number" min="5" max="180" class="form-control" @bind="_settings.MaxBuildMinutes" />
+                            <small class="field-hint">Wall-clock limit for one build, including research and repairs.</small>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h3 class="panel-heading">Context and output</h3>
+                        <p class="panel-sub">Bounds for the transcript, flow shape and model response size.</p>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label for="ai-max-context">Context limit (characters)</label>
+                            <input id="ai-max-context" type="number" min="10000" max="500000" class="form-control" @bind="_settings.MaxContextChars" />
+                            <small class="field-hint">Older tool outputs and draft attempts are compacted above this size.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-max-output">Flow-build output tokens</label>
+                            <input id="ai-max-output" type="number" min="1024" max="262144" class="form-control" @bind="_settings.MaxOutputTokens" />
+                            <small class="field-hint">Must not exceed the selected model's maximum output. GPT-4.1 is 32,768.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-max-nodes">Max nodes</label>
+                            <input id="ai-max-nodes" type="number" min="1" max="250" class="form-control" @bind="_settings.MaxNodes" />
+                            <small class="field-hint">Upper bound for a generated or edited draft.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-max-edges">Max edges</label>
+                            <input id="ai-max-edges" type="number" min="0" max="500" class="form-control" @bind="_settings.MaxEdges" />
+                            <small class="field-hint">Upper bound for connections in a generated or edited draft.</small>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h3 class="panel-heading">Prompts and conversation history</h3>
+                        <p class="panel-sub">Limits that protect the provider context window and request cost.</p>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label for="ai-max-prompt">Request limit (characters)</label>
+                            <input id="ai-max-prompt" type="number" min="5000" max="200000" class="form-control" @bind="_settings.MaxPromptChars" />
+                            <small class="field-hint">Maximum size of the user's build instruction.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-max-flow-prompt">Current-flow prompt limit</label>
+                            <input id="ai-max-flow-prompt" type="number" min="5000" max="300000" class="form-control" @bind="_settings.MaxFlowPromptChars" />
+                            <small class="field-hint">Maximum serialized current-flow snapshot sent to the model.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-history-turns">History turns</label>
+                            <input id="ai-history-turns" type="number" min="1" max="50" class="form-control" @bind="_settings.MaxHistoryTurns" />
+                            <small class="field-hint">Recent conversation turns included in a draft request.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ai-history-chars">History characters per turn</label>
+                            <input id="ai-history-chars" type="number" min="500" max="20000" class="form-control" @bind="_settings.MaxHistoryCharsPerTurn" />
+                            <small class="field-hint">Longer turns are truncated before being sent.</small>
+                        </div>
+                    </div>
+                    <p class="field-hint">
+                        Last saved: @(_settings.UpdatedAt?.ToLocalTime().ToString("g") ?? "defaults not yet saved") ·
+                        Server validation rejects values outside the accepted ranges.
+                    </p>
+                </div>
+            </section>
+        </div>
+    }
+</div>
+
+@code {
+    private AiBuildSettingsDto? _settings;
+    private bool _loading = true;
+    private bool _saving;
+    private string _error = string.Empty;
+    private string _notice = string.Empty;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = string.Empty;
+        try
+        {
+            using var response = await Http.GetAsync("api/ai/settings");
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "Could not load AI build budgets.");
+                return;
+            }
+            _settings = await response.Content.ReadFromJsonAsync<AiBuildSettingsDto>();
+        }
+        catch (Exception)
+        {
+            _error = "Could not reach the API to load AI build budgets.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void StageDefaults()
+    {
+        _settings = new AiBuildSettingsDto();
+        _notice = "Defaults staged. Save settings to apply them.";
+        _error = string.Empty;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_settings == null || _saving) return;
+        _saving = true;
+        _error = string.Empty;
+        _notice = string.Empty;
+        try
+        {
+            using var response = await Http.PutAsJsonAsync("api/ai/settings", _settings);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "Could not save AI build budgets.");
+                return;
+            }
+            var saved = await response.Content.ReadFromJsonAsync<AiBuildSettingsDto>();
+            if (saved != null) _settings = saved;
+            _notice = "AI build budgets saved. They apply to the next build.";
+        }
+        catch (Exception)
+        {
+            _error = "Could not reach the API to save AI build budgets.";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

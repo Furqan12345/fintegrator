@@ -1,0 +1,303 @@
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Shared.Models
+
+<aside class="test-scenario-panel @(Collapsed ? "is-rail" : "")">
+    @if (Collapsed)
+    {
+        <button class="test-rail-toggle" @onclick="OnToggle" title="Show scenarios">
+            <AppIcon Name="menu" Class="icon icon-sm" />
+            <strong>@Session.Scenarios.Count</strong>
+            <span>Scenarios</span>
+        </button>
+    }
+    else
+    {
+    <div class="test-panel-head">
+        <div>
+            <span class="test-eyebrow">SCENARIOS</span>
+            <h2>@Session.Scenarios.Count</h2>
+        </div>
+        <button class="test-icon-button" @onclick="OnToggle" title="Hide scenarios">×</button>
+    </div>
+
+    <div class="test-scenario-actions">
+        <button class="btn btn-outline btn-sm" @onclick="OnNew"><AppIcon Name="plus" Class="icon icon-xs" /> New</button>
+        <button class="btn btn-outline btn-sm" @onclick="OnDuplicate" disabled="@(Session.SelectedTest == null)">
+            <AppIcon Name="copy" Class="icon icon-xs" /> Duplicate
+        </button>
+    </div>
+
+    <input class="form-control test-scenario-search" value="@Session.ScenarioSearch"
+           @oninput="OnSearch" placeholder="Search scenarios" />
+
+    <div class="test-scenario-list">
+        @foreach (var test in Session.FilteredScenarios)
+        {
+            <div class="test-scenario-row @(test.Id == Session.SelectedId ? "is-selected" : "")">
+                <button class="test-scenario-main" @onclick="() => RequestSelect(test)">
+                    <span class="test-status-dot @Session.ScenarioState(test)"></span>
+                    <span class="test-scenario-copy">
+                        <strong>@test.Name @if (test.RequiredForPublish) { <span class="test-required-badge">Required</span> }</strong>
+                        <small>@FlowTestSession.RelativeTime(test.LastRunAt) · @(test.Definition?.Assertions?.Count ?? 0) checks</small>
+                    </span>
+                </button>
+                <label class="test-enable-toggle" title="@(test.Enabled ? "Disable scenario" : "Enable scenario")" @onclick:stopPropagation="true">
+                    <input type="checkbox" checked="@test.Enabled" @onchange="e => ToggleEnabled(test, e)" />
+                    <span></span>
+                </label>
+                <button class="test-scenario-menu-btn" title="Scenario actions" @onclick:stopPropagation="true" @onclick="() => ToggleMenu(test.Id)">⋯</button>
+                @if (_menuId == test.Id)
+                {
+                    <div class="test-scenario-menu">
+                        <button @onclick="() => DuplicateFromMenu(test)">Duplicate</button>
+                        <button @onclick="() => OpenTransactions(test)">Create from transaction…</button>
+                        <button class="danger" @onclick="() => _deleteId = test.Id">Delete…</button>
+                    </div>
+                }
+                @if (_deleteId == test.Id)
+                {
+                    <div class="test-inline-confirm">
+                        <strong>Delete “@test.Name”?</strong>
+                        <small>Its runs and test transactions are deleted too.</small>
+                        <span>
+                            <button class="btn btn-soft-danger btn-sm" @onclick="() => DeleteAsync(test)">Delete</button>
+                            <button class="btn btn-ghost btn-sm" @onclick="() => _deleteId = null">Cancel</button>
+                        </span>
+                    </div>
+                }
+            </div>
+        }
+        @if (!Session.FilteredScenarios.Any())
+        {
+            <div class="test-panel-empty">No scenarios match this search.</div>
+        }
+    </div>
+
+    @if (_pendingSelect != null)
+    {
+        <div class="test-inline-confirm test-discard-confirm">
+            <strong>Discard unsaved changes?</strong>
+            <small>“@Session.ScenarioName” has not been saved.</small>
+            <span>
+                <button class="btn btn-soft-danger btn-sm" @onclick="DiscardAndSelect">Discard and switch</button>
+                <button class="btn btn-ghost btn-sm" @onclick="() => _pendingSelect = null">Stay</button>
+            </span>
+        </div>
+    }
+
+    <div class="test-scenario-fields">
+        <label class="test-field">
+            <span>Name</span>
+            <input class="form-control" value="@Session.ScenarioName" @onchange="e => Session.SetScenarioName(e.Value?.ToString() ?? string.Empty)" />
+        </label>
+        <label class="test-field">
+            <span>Description</span>
+            <textarea class="form-control" rows="2" value="@Session.ScenarioDescription"
+                      @onchange="e => Session.SetDescription(e.Value?.ToString() ?? string.Empty)"></textarea>
+        </label>
+        <label class="test-field">
+            <span>Expected run result</span>
+            <select class="form-control" value="@Session.ExpectedRunResult"
+                    @onchange="OnExpectedRunResultChanged">
+                <option value="Success">Success</option>
+                <option value="Failed">Failed</option>
+                <option value="Any">Any</option>
+            </select>
+        </label>
+        <label class="test-check-row">
+            <input type="checkbox" checked="@Session.RequiredForPublish" @onchange="e => Session.SetRequired(e.Value is true)" />
+            <span>Required before publish</span>
+        </label>
+        <label class="test-check-row">
+            <input type="checkbox" checked="@Session.ScenarioEnabled" @onchange="e => Session.SetEnabled(e.Value is true)" />
+            <span>Enabled</span>
+        </label>
+        @if (Session.IsDirty)
+        {
+            <span class="test-unsaved-note"><span class="test-unsaved-dot"></span> Unsaved changes</span>
+        }
+        @if (Session.Warnings.Any())
+        {
+            <div class="test-warnings">
+                <strong>Draft warnings</strong>
+                @foreach (var warning in Session.Warnings) { <div>@warning</div> }
+            </div>
+        }
+    </div>
+
+    <div class="test-panel-foot"><span class="test-status-dot passed"></span> Isolated data and mocked responses</div>
+    }
+
+    @if (Session.InputsOpen)
+    {
+        <div class="modal-overlay test-inputs-overlay" @onclick="() => Session.SetInputsOpen(false)">
+            <div class="modal-container test-inputs-modal" @onclick:stopPropagation="true">
+                <div class="modal-header">
+                    <div>
+                        <div class="test-eyebrow">SCENARIO INPUTS</div>
+                        <h3 class="modal-title">Controlled inputs</h3>
+                        <p class="modal-subtitle">Isolated to this scenario. Variables use {{name}}.</p>
+                    </div>
+                    <button class="modal-close-btn" @onclick="() => Session.SetInputsOpen(false)">×</button>
+                </div>
+                <div class="modal-body modal-body-scroll">
+                    <label class="test-field">
+                        <span>Trigger payload (JSON)</span>
+                        <textarea class="form-control test-code-field" rows="8" value="@Session.Definition.TriggerPayloadJson"
+                                  @onchange="e => Session.SetTriggerPayload(e.Value?.ToString() ?? string.Empty)"></textarea>
+                    </label>
+
+                    <div class="test-subhead">
+                        <strong>Reusable variables</strong>
+                        <button class="btn btn-ghost btn-sm" @onclick="Session.AddVariable">Add</button>
+                    </div>
+                    @foreach (var variable in Session.Variables)
+                    {
+                        <div class="test-input-row">
+                            <input class="form-control" placeholder="Name" value="@variable.Name" @onchange="e => { variable.Name = e.Value?.ToString() ?? string.Empty; Session.MarkChanged(); }" />
+                            <input class="form-control" placeholder="Value" value="@variable.Value" @onchange="e => { variable.Value = e.Value?.ToString() ?? string.Empty; Session.MarkChanged(); }" />
+                            <button class="btn btn-ghost btn-sm" @onclick="() => { Session.Variables.Remove(variable); Session.MarkChanged(); }">Remove</button>
+                        </div>
+                    }
+
+                    <div class="test-subhead">
+                        <strong>Isolated cross-reference rows</strong>
+                        <button class="btn btn-ghost btn-sm" @onclick="Session.AddCrossReference">Add</button>
+                    </div>
+                    @foreach (var row in Session.Definition.CrossReferenceRows)
+                    {
+                        <div class="test-input-row test-input-row-three">
+                            <input class="form-control" placeholder="List" value="@row.ListName" @onchange="e => { row.ListName = e.Value?.ToString() ?? string.Empty; Session.MarkChanged(); }" />
+                            <input class="form-control" placeholder="Key" value="@row.KeyValue" @onchange="e => { row.KeyValue = e.Value?.ToString() ?? string.Empty; Session.MarkChanged(); }" />
+                            <input class="form-control" placeholder="Value JSON" value="@row.ValueJson" @onchange="e => { row.ValueJson = e.Value?.ToString() ?? string.Empty; Session.MarkChanged(); }" />
+                            <button class="btn btn-ghost btn-sm" @onclick="() => { Session.Definition.CrossReferenceRows.Remove(row); Session.MarkChanged(); }">Remove</button>
+                        </div>
+                    }
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-primary" @onclick="() => Session.SetInputsOpen(false)">Done</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_showTransactions)
+    {
+        <div class="modal-overlay test-inputs-overlay" @onclick="() => _showTransactions = false">
+            <div class="modal-container test-transactions-modal" @onclick:stopPropagation="true">
+                <div class="modal-header">
+                    <div>
+                        <div class="test-eyebrow">FROM TRANSACTION</div>
+                        <h3 class="modal-title">Create a scenario from a real run</h3>
+                        <p class="modal-subtitle">Fixtures are built from the recorded request/response data. Auth headers are redacted.</p>
+                    </div>
+                    <button class="modal-close-btn" @onclick="() => _showTransactions = false">×</button>
+                </div>
+                <div class="modal-body modal-body-scroll">
+                    <div class="test-transaction-filter">
+                        <select class="form-control" value="@_transactionStatus" @onchange="OnTransactionStatusChanged">
+                            <option value="">All statuses</option>
+                            <option value="Success">Success</option>
+                            <option value="Failed">Failed</option>
+                            <option value="Cancelled">Cancelled</option>
+                            <option value="PartialSuccess">Partial success</option>
+                        </select>
+                    </div>
+                    @if (_transactionsLoading) { <div class="test-panel-empty">Loading transactions…</div> }
+                    @foreach (var execution in FilteredTransactions)
+                    {
+                        <button class="test-transaction-row" @onclick="() => CreateFromTransaction(execution)">
+                            <span class="status-badge @execution.Status.ToLowerInvariant()">@execution.Status</span>
+                            <span class="test-transaction-copy">
+                                <strong>@(string.IsNullOrWhiteSpace(execution.Identifier) ? execution.Id.ToString()[..8] : execution.Identifier)</strong>
+                                <small>@execution.StartedAt.ToLocalTime().ToString("g") · @execution.TriggerSource</small>
+                            </span>
+                            <span>›</span>
+                        </button>
+                    }
+                    @if (!_transactionsLoading && !FilteredTransactions.Any())
+                    {
+                        <div class="test-panel-empty">No real transactions match this filter.</div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public FlowTestSession Session { get; set; } = null!;
+    [Parameter] public bool Collapsed { get; set; }
+    [Parameter] public EventCallback OnToggle { get; set; }
+    [Parameter] public EventCallback OnNew { get; set; }
+    [Parameter] public EventCallback OnDuplicate { get; set; }
+
+    private Guid? _menuId;
+    private Guid? _deleteId;
+    private FlowTestCaseDto? _pendingSelect;
+    private bool _showTransactions;
+    private bool _transactionsLoading;
+    private string _transactionStatus = string.Empty;
+    private List<FlowExecutionDto> _transactions = new();
+
+    private IEnumerable<FlowExecutionDto> FilteredTransactions => string.IsNullOrWhiteSpace(_transactionStatus)
+        ? _transactions
+        : _transactions.Where(item => item.Status.Equals(_transactionStatus, StringComparison.OrdinalIgnoreCase));
+
+    private void OnSearch(ChangeEventArgs args) => Session.ScenarioSearch = args.Value?.ToString() ?? string.Empty;
+
+    private void OnExpectedRunResultChanged(ChangeEventArgs args) =>
+        Session.SetExpectedRunResult(args.Value?.ToString() ?? "Success");
+
+    private void ToggleMenu(Guid id) => _menuId = _menuId == id ? null : id;
+
+    private void RequestSelect(FlowTestCaseDto test)
+    {
+        if (Session.IsDirty && test.Id != Session.SelectedId) _pendingSelect = test;
+        else Session.LoadScenario(test);
+        _menuId = null;
+    }
+
+    private void DiscardAndSelect()
+    {
+        if (_pendingSelect != null) Session.LoadScenario(_pendingSelect);
+        _pendingSelect = null;
+    }
+
+    private void DuplicateFromMenu(FlowTestCaseDto test)
+    {
+        _menuId = null;
+        Session.DuplicateScenario(test);
+    }
+
+    private async Task ToggleEnabled(FlowTestCaseDto test, ChangeEventArgs args)
+    {
+        var enabled = args.Value is true;
+        await Session.SetEnabledAsync(test, enabled);
+    }
+
+    private async Task DeleteAsync(FlowTestCaseDto test)
+    {
+        _deleteId = null;
+        _menuId = null;
+        await Session.DeleteScenarioAsync(test);
+    }
+
+    private async Task OpenTransactions(FlowTestCaseDto test)
+    {
+        _menuId = null;
+        _showTransactions = true;
+        _transactionsLoading = true;
+        _transactions = await Session.LoadExecutionCandidatesAsync();
+        _transactionsLoading = false;
+    }
+
+    private void OnTransactionStatusChanged(ChangeEventArgs args) =>
+        _transactionStatus = args.Value?.ToString() ?? string.Empty;
+
+    private async Task CreateFromTransaction(FlowExecutionDto execution)
+    {
+        _showTransactions = false;
+        await Session.StartFromExecutionAsync(execution.Id);
+    }
+}

@@ -5,7 +5,7 @@
 @inject IState<CrossReferenceState> CrossReferenceState
 @inject IDispatcher Dispatcher
 
-<PageTitle>Cross-References — SimpleIPaaS</PageTitle>
+<PageTitle>Cross-References — fusetor.com</PageTitle>
 
 <div class="page-scroll">
     <div class="page-header">
@@ -30,7 +30,6 @@
         <div class="header-right">
             @if (IsListOpen)
             {
-                <input type="text" class="form-control xref-search" placeholder="Search keys or values" value="@_search" @onchange="OnSearchChanged" />
                 <button class="btn btn-outline" @onclick="CloseList">← Back to lists</button>
             }
             else
@@ -39,6 +38,37 @@
             }
         </div>
     </div>
+
+    @* Entries can be searched; the lists themselves have nothing to filter, so the disclosure
+       only appears while a list is open. *@
+    @if (IsListOpen)
+    {
+        <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFilters" CssClass="xref-filter-panel">
+            <Actions>
+                @if (HasActiveFilters)
+                {
+                    <button class="btn btn-outline btn-sm" @onclick="ClearFilters" title="Clear the search">
+                        <AppIcon Name="x-circle" Class="icon icon-sm" /> Clear
+                    </button>
+                }
+                <div class="filter-summary">@CrossReferenceState.Value.TotalCount entries</div>
+            </Actions>
+            <Chips>
+                @if (!string.IsNullOrWhiteSpace(_search))
+                {
+                    <FilterChip Label="@($"Search: {_search}")" Title="@_search" OnRemove="ClearSearch" />
+                }
+            </Chips>
+            <ChildContent>
+                <div class="filter-bar-group">
+                    <label class="filter-field filter-field-search">
+                        <span class="filter-label">Search</span>
+                        <input type="text" class="form-control xref-search" placeholder="Search keys or values" value="@_search" @onchange="OnSearchChanged" />
+                    </label>
+                </div>
+            </ChildContent>
+        </FilterPanel>
+    }
 
     <div class="activity-log-container">
         @if (IsListOpen)
@@ -235,6 +265,7 @@
 
 @code {
     private string _search = string.Empty;
+    private bool _filtersOpen;
     private bool _showCreate;
     private string _newName = string.Empty;
     private string _newDescription = string.Empty;
@@ -269,6 +300,19 @@
     private void OnSearchChanged(ChangeEventArgs args)
     {
         _search = args.Value?.ToString() ?? string.Empty;
+        Reload(1);
+    }
+
+    /// <summary>Drives the filter disclosure badge and the collapsed summary.</summary>
+    private int ActiveFilterCount => string.IsNullOrWhiteSpace(_search) ? 0 : 1;
+
+    private bool HasActiveFilters => ActiveFilterCount > 0;
+
+    private void ClearSearch() => ClearFilters();
+
+    private void ClearFilters()
+    {
+        _search = string.Empty;
         Reload(1);
     }
 

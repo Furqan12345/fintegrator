@@ -10,7 +10,7 @@
 @inject NavigationManager NavigationManager
 @inject HttpClient Http
 
-<PageTitle>Connection Wizard - SimpleIPaaS</PageTitle>
+<PageTitle>Connection Wizard - fusetor.com</PageTitle>
 
 <div class="wizard-container">
     <div class="page-header">
@@ -32,6 +32,10 @@
     </div>
 
     <div class="wizard-form">
+        @if (!string.IsNullOrEmpty(_formError))
+        {
+            <div class="validation-banner" role="alert">@_formError</div>
+        }
         <section class="wizard-section">
             <h3 class="wizard-section-title"><AppIcon Name="connections" Class="icon icon-sm" /> Endpoint</h3>
             <p class="wizard-section-hint">Where requests are sent and how this connection is identified in the designer.</p>
@@ -60,6 +64,7 @@
                     <option value="OAuth2RefreshToken">OAuth 2.0 Refresh Token</option>
                     <option value="OAuth2AuthCode">OAuth 2.0 Authorization Code</option>
                     <option value="AmazonSpApi">Amazon SP-API (LWA + AWS SigV4)</option>
+                    <option value="Shopify">Shopify (Admin API client credentials)</option>
                     <option value="Custom">Custom Headers</option>
                 </select>
             </div>
@@ -175,6 +180,27 @@
                 <input type="password" class="form-control" @bind="_oauthRefreshToken" placeholder="@SecretPlaceholder" />
             </div>
         }
+        else if (_connection.AuthType == "Shopify")
+        {
+            <div class="form-group">
+                <label>Shop Domain</label>
+                <input type="text" class="form-control" @bind="_shopifyShop" placeholder="your-store.myshopify.com" />
+                <small class="field-hint">Use the client store’s myshopify.com domain. The app must be installed on this store and belong to the same Shopify organization.</small>
+            </div>
+            <div class="form-group">
+                <label>Client ID</label>
+                <input type="text" class="form-control" @bind="_shopifyClientId" />
+            </div>
+            <div class="form-group">
+                <label>Client Secret</label>
+                <input type="password" class="form-control" @bind="_shopifyClientSecret" placeholder="@SecretPlaceholder" />
+            </div>
+            <div class="form-group">
+                <label>API Version</label>
+                <input type="text" class="form-control" @bind="_shopifyApiVersion" placeholder="2026-10" />
+                <small class="field-hint">Use the same version in the HTTP card path, for example /admin/api/2026-10/graphql.json.</small>
+            </div>
+        }
         else if (_connection.AuthType == "AmazonSpApi")
         {
             <div class="form-group">
@@ -219,7 +245,7 @@
             </div>
             <div class="form-group">
                 <label>STS Role Session Name</label>
-                <input type="text" class="form-control" @bind="_amazonRoleSessionName" placeholder="fintegrator-sp-api" />
+                <input type="text" class="form-control" @bind="_amazonRoleSessionName" placeholder="fusetor-sp-api" />
             </div>
             <div class="form-group">
                 <label>STS External ID (optional)</label>
@@ -273,6 +299,10 @@
     private string _oauthClientId = string.Empty;
     private string _oauthClientSecret = string.Empty;
     private string _oauthScope = string.Empty;
+    private string _shopifyShop = string.Empty;
+    private string _shopifyClientId = string.Empty;
+    private string _shopifyClientSecret = string.Empty;
+    private string _shopifyApiVersion = "2026-10";
     private string _amazonTokenUrl = "https://api.amazon.com/auth/o2/token";
     private string _amazonClientId = string.Empty;
     private string _amazonClientSecret = string.Empty;
@@ -283,7 +313,7 @@
     private string _amazonRegion = "us-east-1";
     private string _amazonService = "execute-api";
     private string _amazonRoleArn = string.Empty;
-    private string _amazonRoleSessionName = "fintegrator-sp-api";
+    private string _amazonRoleSessionName = "fusetor-sp-api";
     private string _amazonExternalId = string.Empty;
     private string _amazonStsRegion = "us-east-1";
     private string _amazonStsEndpoint = string.Empty;
@@ -293,7 +323,7 @@
     private string _hydratedAmazonRegion = "us-east-1";
     private string _hydratedAmazonService = "execute-api";
     private string _hydratedAmazonRoleArn = string.Empty;
-    private string _hydratedAmazonRoleSessionName = "fintegrator-sp-api";
+    private string _hydratedAmazonRoleSessionName = "fusetor-sp-api";
     private string _hydratedAmazonStsRegion = "us-east-1";
     private string _hydratedAmazonStsEndpoint = string.Empty;
     private int _hydratedAmazonDurationSeconds = 3600;
@@ -302,11 +332,15 @@
     private string _originalAuthType = string.Empty;
     private bool _hadStoredAuthConfig;
     private string? _authError;
+    private string? _formError;
     private string _hydratedApiKeyHeaderName = "X-Api-Key";
     private string _hydratedApiKeyPlacement = "header";
     private string _hydratedTokenUrl = string.Empty;
     private string _hydratedClientId = string.Empty;
     private string _hydratedScope = string.Empty;
+    private string _hydratedShopifyShop = string.Empty;
+    private string _hydratedShopifyClientId = string.Empty;
+    private string _hydratedShopifyApiVersion = "2026-10";
 
     private bool ShowStoredSecretHint =>
         _isEditMode && _hadStoredAuthConfig && _connection.AuthType == _originalAuthType && _connection.AuthType != "None";
@@ -354,7 +388,6 @@
             Name = existing.Name,
             BaseUrl = existing.BaseUrl,
             AuthType = existing.AuthType,
-            TenantId = existing.TenantId,
             AuthConfigJson = existing.AuthConfigJson,
             Status = existing.Status
         };
@@ -370,6 +403,14 @@
     private void SaveConnection()
     {
         _authError = null;
+        _formError = null;
+
+        var validationError = ValidateForm();
+        if (validationError != null)
+        {
+            _formError = validationError;
+            return;
+        }
 
         if (_isEditMode && _hadStoredAuthConfig && !HasAuthInput() && RequiresCredentials(_connection.AuthType))
         {
@@ -386,9 +427,66 @@
             }
         }
 
+        _connection.Name = _connection.Name.Trim();
+        _connection.BaseUrl = _connection.BaseUrl.Trim();
         _connection.AuthConfigJson = ResolveAuthConfigJson();
         Dispatcher.Dispatch(new SaveConnectionAction { Connection = _connection });
         GoBack();
+    }
+
+    // Mirrors the server-side rules (ConnectionValidation) so the operator gets the message
+    // before the request; a blank connection can no longer be saved by clicking Save.
+    private string? ValidateForm()
+    {
+        var name = (_connection.Name ?? string.Empty).Trim();
+        if (name.Length == 0) return "Enter a name for this connection.";
+        if (name.Length > 200) return "Keep the name under 200 characters.";
+
+        var baseUrl = (_connection.BaseUrl ?? string.Empty).Trim();
+        if (baseUrl.Length == 0) return "Enter the base URL this connection should call.";
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return "The base URL must be an absolute http(s) URL, for example https://api.example.com.";
+        }
+
+        // Credentials are required when creating, or when the auth type changed. On an edit with
+        // stored credentials, blank fields mean "keep the stored secret".
+        var needsCredentials = RequiresCredentials(_connection.AuthType) &&
+            (!_isEditMode || !_hadStoredAuthConfig || _connection.AuthType != _originalAuthType);
+        if (needsCredentials && !HasAuthInput())
+        {
+            return "Enter the credentials for this connection, or choose None as the auth type.";
+        }
+
+        if (!HasAuthInput())
+        {
+            return null;
+        }
+
+        return _connection.AuthType switch
+        {
+            "Basic" when string.IsNullOrWhiteSpace(_basicUsername) || string.IsNullOrWhiteSpace(_basicPassword)
+                => "Enter both the username and the password.",
+            "Bearer" when string.IsNullOrWhiteSpace(_bearerToken) => "Enter the bearer token.",
+            "ApiKey" when string.IsNullOrWhiteSpace(_apiKeyHeaderName) => "Enter the header (or parameter) name for the API key.",
+            "ApiKey" when string.IsNullOrWhiteSpace(_apiKeyValue) => "Enter the API key value.",
+            "OAuth2ClientCredentials" when string.IsNullOrWhiteSpace(_oauthTokenUrl) || string.IsNullOrWhiteSpace(_oauthClientId) || string.IsNullOrWhiteSpace(_oauthClientSecret)
+                => "Enter the token URL, client ID and client secret.",
+            "OAuth2RefreshToken" when string.IsNullOrWhiteSpace(_oauthTokenUrl) || string.IsNullOrWhiteSpace(_oauthRefreshToken)
+                => "Enter the token URL and refresh token.",
+            "OAuth2AuthCode" when string.IsNullOrWhiteSpace(_oauthTokenUrl) || string.IsNullOrWhiteSpace(_oauthClientId) || string.IsNullOrWhiteSpace(_oauthClientSecret) || string.IsNullOrWhiteSpace(_oauthAccessToken) || string.IsNullOrWhiteSpace(_oauthRefreshToken)
+                => "Enter the token URL, client ID, client secret, access token and refresh token.",
+            "AmazonSpApi" when string.IsNullOrWhiteSpace(_amazonClientId) || string.IsNullOrWhiteSpace(_amazonClientSecret) || string.IsNullOrWhiteSpace(_amazonRefreshToken) || string.IsNullOrWhiteSpace(_amazonAccessKeyId) || string.IsNullOrWhiteSpace(_amazonSecretAccessKey)
+                => "Enter the LWA client ID, client secret and refresh token, plus the AWS access key ID and secret access key.",
+            "Shopify" when string.IsNullOrWhiteSpace(_shopifyShop) || string.IsNullOrWhiteSpace(_shopifyClientId) || string.IsNullOrWhiteSpace(_shopifyClientSecret)
+                => "Enter the Shopify shop domain, client ID and client secret.",
+            "Shopify" when !System.Text.RegularExpressions.Regex.IsMatch(_shopifyApiVersion?.Trim() ?? string.Empty, @"^\d{4}-\d{2}$")
+                => "Enter the Shopify API version in YYYY-MM format, for example 2026-10.",
+            "Custom" when !_customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name) && !string.IsNullOrWhiteSpace(header.Value))
+                => "Add at least one custom header with a name and a value.",
+            _ => null
+        };
     }
 
     private static bool RequiresCredentials(string authType) =>
@@ -402,6 +500,7 @@
             "OAuth2ClientCredentials" => _oauthTokenUrl != _hydratedTokenUrl || _oauthClientId != _hydratedClientId || _oauthScope != _hydratedScope,
             "OAuth2RefreshToken" or "OAuth2AuthCode" => _oauthTokenUrl != _hydratedTokenUrl || _oauthClientId != _hydratedClientId,
             "AmazonSpApi" => _amazonTokenUrl != _hydratedAmazonTokenUrl || _amazonClientId != _hydratedAmazonClientId || _amazonRegion != _hydratedAmazonRegion || _amazonService != _hydratedAmazonService || _amazonRoleArn != _hydratedAmazonRoleArn || _amazonRoleSessionName != _hydratedAmazonRoleSessionName || _amazonStsRegion != _hydratedAmazonStsRegion || _amazonStsEndpoint != _hydratedAmazonStsEndpoint || _amazonDurationSeconds != _hydratedAmazonDurationSeconds,
+            "Shopify" => _shopifyShop != _hydratedShopifyShop || _shopifyClientId != _hydratedShopifyClientId || _shopifyApiVersion != _hydratedShopifyApiVersion,
             "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
             _ => false
         };
@@ -428,6 +527,7 @@
             "OAuth2RefreshToken" => !string.IsNullOrEmpty(_oauthRefreshToken) || !string.IsNullOrEmpty(_oauthAccessToken) || !string.IsNullOrEmpty(_oauthClientSecret),
             "OAuth2AuthCode" => !string.IsNullOrEmpty(_oauthAccessToken) || !string.IsNullOrEmpty(_oauthRefreshToken) || !string.IsNullOrEmpty(_oauthClientSecret),
             "AmazonSpApi" => !string.IsNullOrEmpty(_amazonClientId) || !string.IsNullOrEmpty(_amazonClientSecret) || !string.IsNullOrEmpty(_amazonRefreshToken) || !string.IsNullOrEmpty(_amazonAccessKeyId) || !string.IsNullOrEmpty(_amazonSecretAccessKey) || !string.IsNullOrEmpty(_amazonSessionToken) || !string.IsNullOrEmpty(_amazonRoleArn) || !string.IsNullOrEmpty(_amazonExternalId),
+            "Shopify" => !string.IsNullOrEmpty(_shopifyShop) || !string.IsNullOrEmpty(_shopifyClientId) || !string.IsNullOrEmpty(_shopifyClientSecret),
             "Custom" => _customHeaders.Any(header => !string.IsNullOrWhiteSpace(header.Name)),
             _ => false
         };
@@ -449,6 +549,7 @@
             "OAuth2RefreshToken" => new { tokenUrl = _oauthTokenUrl, refreshToken = _oauthRefreshToken, accessToken = _oauthAccessToken, clientId = _oauthClientId, clientSecret = _oauthClientSecret },
             "OAuth2AuthCode" => new { tokenUrl = _oauthTokenUrl, clientId = _oauthClientId, clientSecret = _oauthClientSecret, accessToken = _oauthAccessToken, refreshToken = _oauthRefreshToken },
             "AmazonSpApi" => new { tokenUrl = _amazonTokenUrl, clientId = _amazonClientId, clientSecret = _amazonClientSecret, refreshToken = _amazonRefreshToken, accessKeyId = _amazonAccessKeyId, secretAccessKey = _amazonSecretAccessKey, sessionToken = _amazonSessionToken, region = _amazonRegion, service = _amazonService, roleArn = _amazonRoleArn, roleSessionName = _amazonRoleSessionName, externalId = _amazonExternalId, stsRegion = _amazonStsRegion, stsEndpoint = _amazonStsEndpoint, durationSeconds = _amazonDurationSeconds },
+            "Shopify" => new { shop = _shopifyShop, clientId = _shopifyClientId, clientSecret = _shopifyClientSecret, apiVersion = _shopifyApiVersion },
             "Custom" => new { headers = _customHeaders.Where(header => !string.IsNullOrWhiteSpace(header.Name)).Select(header => new { name = header.Name, value = header.Value }).ToList() },
             _ => new { }
         };
@@ -472,6 +573,9 @@
         _hydratedAmazonStsRegion = _amazonStsRegion;
         _hydratedAmazonStsEndpoint = _amazonStsEndpoint;
         _hydratedAmazonDurationSeconds = _amazonDurationSeconds;
+        _hydratedShopifyShop = _shopifyShop;
+        _hydratedShopifyClientId = _shopifyClientId;
+        _hydratedShopifyApiVersion = _shopifyApiVersion;
     }
 
     private void HydrateAuthFields(string authConfigJson)
@@ -504,11 +608,15 @@
         _amazonRegion = root.TryGetProperty("region", out var amazonRegion) ? amazonRegion.GetString() ?? "us-east-1" : "us-east-1";
         _amazonService = root.TryGetProperty("service", out var amazonService) ? amazonService.GetString() ?? "execute-api" : "execute-api";
         _amazonRoleArn = root.TryGetProperty("roleArn", out var roleArn) ? roleArn.GetString() ?? string.Empty : string.Empty;
-        _amazonRoleSessionName = root.TryGetProperty("roleSessionName", out var roleSessionName) ? roleSessionName.GetString() ?? "fintegrator-sp-api" : "fintegrator-sp-api";
+        _amazonRoleSessionName = root.TryGetProperty("roleSessionName", out var roleSessionName) ? roleSessionName.GetString() ?? "fusetor-sp-api" : "fusetor-sp-api";
         _amazonExternalId = root.TryGetProperty("externalId", out var externalId) ? externalId.GetString() ?? string.Empty : string.Empty;
         _amazonStsRegion = root.TryGetProperty("stsRegion", out var stsRegion) ? stsRegion.GetString() ?? "us-east-1" : "us-east-1";
         _amazonStsEndpoint = root.TryGetProperty("stsEndpoint", out var stsEndpoint) ? stsEndpoint.GetString() ?? string.Empty : string.Empty;
         _amazonDurationSeconds = root.TryGetProperty("durationSeconds", out var durationSeconds) ? durationSeconds.GetInt32() : 3600;
+        _shopifyShop = root.TryGetProperty("shop", out var shopifyShop) ? shopifyShop.GetString() ?? string.Empty : string.Empty;
+        _shopifyClientId = root.TryGetProperty("clientId", out var shopifyClientId) ? shopifyClientId.GetString() ?? string.Empty : string.Empty;
+        _shopifyClientSecret = root.TryGetProperty("clientSecret", out var shopifyClientSecret) ? shopifyClientSecret.GetString() ?? string.Empty : string.Empty;
+        _shopifyApiVersion = root.TryGetProperty("apiVersion", out var shopifyApiVersion) ? shopifyApiVersion.GetString() ?? "2026-10" : "2026-10";
 
         if (root.TryGetProperty("headers", out var headers) && headers.ValueKind == JsonValueKind.Array)
         {

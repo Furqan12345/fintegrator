@@ -1,0 +1,109 @@
+/* Integration detail: one integration, its flows and its recent runs.
+   Shared utilities (.sr-only, .row-attention, .cell-desc, .panel-skeleton, .vitals-grid) live in app.css. */
+
+.breadcrumb {
+    margin-bottom: var(--space-2);
+}
+
+.breadcrumb a {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+    margin-left: calc(var(--space-2) * -1);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+
+.breadcrumb a:hover {
+    color: var(--primary-contrast);
+    background: var(--primary-light);
+}
+
+.breadcrumb a:focus-visible {
+    outline: 2px dashed var(--primary);
+    outline-offset: 2px;
+}
+
+.int-title {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-4);
+    padding-top: var(--space-2);
+    min-width: 0;
+}
+
+.int-title-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+}
+
+.int-title-text h2 {
+    margin: 0;
+}
+
+.int-title-text .subtitle {
+    margin: 0;
+}
+
+.int-title .card-avatar {
+    flex-shrink: 0;
+}
+
+.int-flow-table td {
+    vertical-align: middle;
+}
+
+.int-flow-table td:first-child {
+    min-width: 240px;
+}
+
+.flow-name-cell {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+.flow-name {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-decoration: none;
+}
+
+.flow-name:hover {
+    color: var(--primary-contrast);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.flow-name:focus-visible {
+    outline: 2px dashed var(--primary);
+    outline-offset: 3px;
+    border-radius: var(--radius-xs);
+}
+
+.modal-actions-push {
+    margin-right: auto;
+}
+
+@media (max-width: 900px) {
+    .int-flow-table .col-steps {
+        display: none;
+    }
+
+    .int-flow-table td:first-child {
+        min-width: 180px;
+    }
+
+    .int-title {
+        gap: var(--space-3);
+    }
+}

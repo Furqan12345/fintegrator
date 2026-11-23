@@ -1,6 +1,7 @@
 using System;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Fluxor;
 
@@ -70,31 +71,69 @@ public static class SafeFetch
         }
     }
 
+    // The API's own actionable text wins over the caller's generic fallback: StorageSettings uses
+    // { "message": ... }, ProblemDetails uses detail/title, and validation problems carry an errors
+    // map. Dropping that text is how "Could not save the storage settings." hid the real reason.
     public static async Task<string> DescribeFailureAsync(HttpResponseMessage response, string fallback)
     {
         try
         {
-            var problem = await response.Content.ReadFromJsonAsync<ProblemDetailsDto>();
-            if (!string.IsNullOrWhiteSpace(problem?.Detail))
+            var text = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(text))
             {
-                return problem.Detail;
+                return fallback;
             }
 
-            if (!string.IsNullOrWhiteSpace(problem?.Title))
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
             {
-                return problem.Title;
+                return fallback;
             }
+
+            var message =
+                ReadString(root, "message")
+                ?? ReadString(root, "detail")
+                ?? ReadString(root, "title")
+                ?? ReadFirstValidationError(root);
+
+            return string.IsNullOrWhiteSpace(message) ? fallback : message;
         }
         catch
         {
+            // A non-JSON error body (a proxy's HTML page, for instance) keeps the fallback.
         }
 
         return fallback;
     }
 
-    private sealed class ProblemDetailsDto
+    private static string? ReadString(JsonElement root, string property) =>
+        root.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()
+            : null;
+
+    private static string? ReadFirstValidationError(JsonElement root)
     {
-        public string? Title { get; set; }
-        public string? Detail { get; set; }
+        if (!root.TryGetProperty("errors", out var errors) || errors.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var field in errors.EnumerateObject())
+        {
+            if (field.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in field.Value.EnumerateArray())
+                {
+                    var text = entry.ValueKind == JsonValueKind.String ? entry.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return text;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 }

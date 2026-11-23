@@ -1,0 +1,159 @@
+@page "/login"
+@inject AuthSession Auth
+@inject AuthApiClient AuthApi
+@inject NavigationManager Navigation
+
+<PageTitle>Sign in · fusetor.com</PageTitle>
+
+<h1 class="auth-title">Sign in</h1>
+<p class="auth-subtitle">Use your account email and authenticator app.</p>
+
+@if (_setupRequired)
+{
+    <div class="auth-info">
+        First-time setup has not been completed.
+        <a class="auth-link" href="/setup">Create the first administrator</a>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="auth-error" role="alert">@_error</div>
+}
+
+<form class="auth-form" @onsubmit="SubmitAsync" @onsubmit:preventDefault>
+    <label class="form-label" for="login-email">Email</label>
+    <input id="login-email" class="form-control" type="email" autocomplete="username" @bind="Email" disabled="@_busy" />
+
+    <label class="form-label" for="login-password">Password</label>
+    <input id="login-password" class="form-control" type="password" autocomplete="current-password" @bind="Password" disabled="@_busy" />
+
+    @if (_requiresTwoFactor)
+    {
+        <div class="auth-two-factor">
+            <label class="form-label" for="login-code">@(_useRecoveryCode ? "Recovery code" : "Authenticator code")</label>
+            @if (_useRecoveryCode)
+            {
+                <input id="login-code" class="form-control" autocomplete="one-time-code" @bind="RecoveryCode" disabled="@_busy" />
+            }
+            else
+            {
+                <input id="login-code" class="form-control" inputmode="numeric" autocomplete="one-time-code" maxlength="12" @bind="Code" disabled="@_busy" />
+            }
+            <button type="button" class="auth-link-button" @onclick="ToggleRecoveryCode">
+                @(_useRecoveryCode ? "Use an authenticator code" : "Use a recovery code")
+            </button>
+        </div>
+    }
+
+    <button type="submit" class="btn btn-primary auth-submit" disabled="@_busy">
+        @(_busy ? "Signing in…" : _requiresTwoFactor ? "Verify and sign in" : "Sign in")
+    </button>
+</form>
+
+<div class="auth-links">
+    <a class="auth-link" href="/forgot-password">Forgot password?</a>
+</div>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? ReturnUrl { get; set; }
+
+    private string Email { get; set; } = string.Empty;
+    private string Password { get; set; } = string.Empty;
+    private string Code { get; set; } = string.Empty;
+    private string RecoveryCode { get; set; } = string.Empty;
+    private bool _requiresTwoFactor;
+    private bool _useRecoveryCode;
+    private bool _setupRequired;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Auth.IsAuthenticated)
+        {
+            Navigation.NavigateTo(SafeReturnUrl);
+            return;
+        }
+
+        try
+        {
+            var status = await AuthApi.GetSetupStatusAsync();
+            _setupRequired = status.Required;
+        }
+        catch (Exception)
+        {
+            // The login form still works if the status endpoint is temporarily unavailable.
+        }
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _error = null;
+        _busy = true;
+        try
+        {
+            var response = await Auth.LoginAsync(new SimpleIPaaS.Shared.Models.LoginRequest
+            {
+                Email = Email.Trim(),
+                Password = Password,
+                Code = _requiresTwoFactor && !_useRecoveryCode ? Code : null,
+                RecoveryCode = _requiresTwoFactor && _useRecoveryCode ? RecoveryCode : null
+            });
+
+            if (response.RequiresTwoFactor)
+            {
+                _requiresTwoFactor = true;
+                Code = string.Empty;
+                RecoveryCode = string.Empty;
+                return;
+            }
+
+            if (response.RequiresTwoFactorSetup && !string.IsNullOrWhiteSpace(response.SetupToken))
+            {
+                Navigation.NavigateTo($"/setup-2fa?token={Uri.EscapeDataString(response.SetupToken)}");
+                return;
+            }
+
+            if (Auth.IsAuthenticated)
+            {
+                Navigation.NavigateTo(SafeReturnUrl);
+                return;
+            }
+
+            _error = "The server did not return a session. Try again.";
+        }
+        catch (AuthApiException exception)
+        {
+            _error = exception.Message;
+        }
+        catch (Exception)
+        {
+            _error = "The API could not be reached. Try again.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void ToggleRecoveryCode()
+    {
+        _useRecoveryCode = !_useRecoveryCode;
+        Code = string.Empty;
+        RecoveryCode = string.Empty;
+    }
+
+    private string SafeReturnUrl =>
+        !string.IsNullOrWhiteSpace(ReturnUrl) &&
+        ReturnUrl.StartsWith('/') &&
+        !ReturnUrl.StartsWith("//", StringComparison.Ordinal)
+            ? ReturnUrl
+            : "/";
+}

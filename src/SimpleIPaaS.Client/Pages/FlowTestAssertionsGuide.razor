@@ -2,7 +2,7 @@
 @using Microsoft.AspNetCore.Components
 @inject NavigationManager NavigationManager
 
-<PageTitle>Assertion guide · SimpleIPaaS</PageTitle>
+<PageTitle>Assertion guide · fusetor.com</PageTitle>
 
 <div class="page-scroll flow-doc-page">
     <header class="flow-doc-hero">
@@ -12,7 +12,7 @@
         <div class="flow-doc-title-row">
             <span class="flow-doc-title-icon"><AppIcon Name="check-circle" Class="icon icon-md" /></span>
             <div>
-                <div class="flow-tests-kicker">Flow test documentation</div>
+                <div class="flow-doc-kicker">Flow test documentation</div>
                 <h1>How assertions work</h1>
                 <p>Assertions are the expectations your flow must satisfy after it runs. Use them to turn a scenario into a reliable, repeatable test.</p>
             </div>
@@ -20,7 +20,7 @@
         <div class="flow-doc-actions">
             @if (FlowId.HasValue)
             {
-                <a class="btn btn-outline" href="@($"/flow-tests/{FlowId}")">Back to test</a>
+                <a class="btn btn-outline" href="@($"/flow/{FlowId}?mode=test")">Back to test mode</a>
             }
             else
             {
@@ -141,7 +141,7 @@
             <span>Ready to write a rule?</span>
             @if (FlowId.HasValue)
             {
-                <a class="btn btn-primary" href="@($"/flow-tests/{FlowId}")">Return to assertion editor <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
+                <a class="btn btn-primary" href="@($"/flow/{FlowId}?mode=test")">Return to test mode <AppIcon Name="arrow-right" Class="icon icon-xs" /></a>
             }
         </div>
     </main>

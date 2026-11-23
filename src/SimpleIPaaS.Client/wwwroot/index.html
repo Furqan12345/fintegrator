@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SimpleIPaaS — Integration Builder</title>
+    <title>fusetor.com — Integration Builder</title>
     <base href="/" />
     <script>
         (function () {
@@ -36,6 +36,51 @@
                 }
             };
 
+            window.simpleIPaaSChat = {
+                scroll: function (id) {
+                    var el = document.getElementById(id);
+                    if (el) { el.scrollTop = el.scrollHeight; }
+                },
+                getPanel: function (name) {
+                    try { return localStorage.getItem('simpleipaas-panel-' + name) || ''; } catch (e) { return ''; }
+                },
+                setPanel: function (name, value) {
+                    try { localStorage.setItem('simpleipaas-panel-' + name, value); } catch (e) { }
+                    return value;
+                },
+                bindComposer: function (id, dotnetHelper) {
+                    var el = document.getElementById(id);
+                    if (!el || el.dataset.chatBound === '1') return;
+                    el.dataset.chatBound = '1';
+                    el.addEventListener('keydown', function (e) {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            dotnetHelper.invokeMethodAsync('SubmitPrompt').catch(function () { });
+                        }
+                    });
+                }
+            };
+
+            window.simpleIPaaSTableColumns = {
+                init: function (tableId, storageKey) {
+                    if (!window.__simpleIPaaSTableColumnsModule) {
+                        var moduleUrl = new URL('js/table-columns.js', document.baseURI).href;
+                        window.__simpleIPaaSTableColumnsModule = import(moduleUrl);
+                    }
+                    return window.__simpleIPaaSTableColumnsModule
+                        .then(function (module) { return module.init(tableId, storageKey); })
+                        .catch(function (error) { console.error('table columns init failed', error); });
+                },
+                dispose: function (tableId) {
+                    if (!window.__simpleIPaaSTableColumnsModule) {
+                        return Promise.resolve();
+                    }
+                    return window.__simpleIPaaSTableColumnsModule
+                        .then(function (module) { return module.dispose(tableId); })
+                        .catch(function (error) { console.error('table columns dispose failed', error); });
+                }
+            };
+
             window.simpleIPaaSFullscreen = {
                 isEnabled: function () {
                     return document.fullscreenEnabled !== undefined;
@@ -58,13 +103,139 @@
                     });
                 }
             };
+
+            window.simpleIPaaSCopyText = function (text) {
+                var value = text == null ? '' : String(text);
+                window.__lastCopiedText = value;
+                var fallback = function () {
+                    var area = document.createElement('textarea');
+                    area.value = value;
+                    area.style.position = 'fixed';
+                    area.style.opacity = '0';
+                    document.body.appendChild(area);
+                    area.focus();
+                    area.select();
+                    var copied = document.execCommand('copy');
+                    document.body.removeChild(area);
+                    return copied ? Promise.resolve() : Promise.reject(new Error('copy failed'));
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    return navigator.clipboard.writeText(value).catch(fallback);
+                }
+                return fallback();
+            };
+
+            window.simpleIPaaSDesigner = {
+                markHttpErrorLinks: function (errorIds) {
+                    var designer = window.simpleIPaaSDesigner;
+                    designer._httpErrorIds = new Set(errorIds || []);
+                    var apply = function () {
+                        var errors = designer._httpErrorIds;
+                        document.querySelectorAll('.diagram-link').forEach(function (group) {
+                            if (errors.has(group.getAttribute('data-link-id')))
+                                group.setAttribute('data-http-error', 'true');
+                            else
+                                group.removeAttribute('data-http-error');
+                        });
+                    };
+                    apply();
+                    requestAnimationFrame(apply);
+                    setTimeout(apply, 100);
+                    setTimeout(apply, 500);
+                    if (!designer._httpErrorObserver) {
+                        designer._httpErrorObserver = new MutationObserver(apply);
+                        designer._httpErrorObserver.observe(document.body, { childList: true, subtree: true });
+                    }
+                },
+                applyLinkStyles: function (activeIds, dimIds) {
+                    var rootStyle = getComputedStyle(document.documentElement);
+                    var defaultStroke = rootStyle.getPropertyValue('--link-stroke').trim() || '#9aa4b6';
+                    var active = new Set(activeIds || []);
+                    var dimmed = new Set(dimIds || []);
+                    document.querySelectorAll('.diagram-link').forEach(function (group) {
+                        var id = group.getAttribute('data-link-id');
+                        var isActive = active.has(id);
+                        var isDim = dimmed.has(id);
+                        var isHttpError = group.getAttribute('data-http-error') === 'true';
+                        group.querySelectorAll('path').forEach(function (path) {
+                            // The library renders a wide transparent hit-area path beside the visible one.
+                            if (path.getAttribute('stroke-width') === '12') return;
+                            path.style.setProperty('stroke', isActive
+                                ? (isHttpError ? '#dc2626' : '#6366f1')
+                                : defaultStroke, 'important');
+                            path.style.setProperty('opacity', isDim ? '0.3' : '1', 'important');
+                            if (isActive) path.style.setProperty('stroke-width', '4px', 'important');
+                            else if (isDim) path.style.setProperty('stroke-width', '1.5px', 'important');
+                            else path.style.removeProperty('stroke-width');
+                        });
+                    });
+                },
+                clearLinkStyles: function () {
+                    document.querySelectorAll('.diagram-link path').forEach(function (path) {
+                        path.style.removeProperty('stroke');
+                        path.style.removeProperty('stroke-width');
+                        path.style.removeProperty('opacity');
+                    });
+                },
+                // [width, height, topInset, leftInset] in CSS pixels for the flow canvas. The insets
+                // are the space the floating node palette (top) and zoom stack (bottom left) take
+                // from the canvas, so a fitted graph is not parked underneath them. The designer fits
+                // the graph itself, because the diagram library's own fit clips wide graphs.
+                viewport: function (selector) {
+                    var el = document.querySelector(selector || '.diagram-canvas');
+                    if (!el) { return null; }
+                    var rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) { return null; }
+
+                    var overlayBottom = function (overlaySelector) {
+                        var overlay = document.querySelector(overlaySelector);
+                        if (!overlay) { return 0; }
+                        return Math.max(0, Math.round(overlay.getBoundingClientRect().bottom - rect.top));
+                    };
+                    var overlayRight = function (overlaySelector) {
+                        var overlay = document.querySelector(overlaySelector);
+                        if (!overlay) { return 0; }
+                        return Math.max(0, Math.round(overlay.getBoundingClientRect().right - rect.left));
+                    };
+
+                    return [
+                        Math.round(rect.width),
+                        Math.round(rect.height),
+                        overlayBottom('.diagram-toolbar'),
+                        overlayRight('.zoom-controls')
+                    ];
+                },
+                observeCanvas: function (dotNetHelper) {
+                    window.simpleIPaaSDesigner.unobserveCanvas();
+                    var el = document.querySelector('.diagram-canvas');
+                    if (!el) { return; }
+                    var last = '';
+                    var notify = function () {
+                        var rect = el.getBoundingClientRect();
+                        var metrics = [Math.round(rect.width), Math.round(rect.height), Math.round(rect.top)];
+                        var key = metrics.join(':');
+                        if (key === last) { return; }
+                        last = key;
+                        dotNetHelper.invokeMethodAsync('NotifyCanvasMetrics', metrics).catch(function () { });
+                    };
+                    window.__simpleIPaaSCanvasObserver = new ResizeObserver(notify);
+                    window.__simpleIPaaSCanvasObserver.observe(el);
+                    window.requestAnimationFrame(notify);
+                },
+                unobserveCanvas: function () {
+                    if (window.__simpleIPaaSCanvasObserver) {
+                        window.__simpleIPaaSCanvasObserver.disconnect();
+                        window.__simpleIPaaSCanvasObserver = null;
+                    }
+                }
+            };
         })();
     </script>
     <link rel="preload" id="webassembly" />
     <link href="_content/Z.Blazor.Diagrams/style.css" rel="stylesheet" />
     <link href="_content/Z.Blazor.Diagrams/default.styles.css" rel="stylesheet" />
     <link rel="stylesheet" href="css/app.css" />
-    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1" />
     <link href="SimpleIPaaS.Client.styles.css" rel="stylesheet" />
     <style>
         #app-splash {
@@ -128,7 +299,6 @@
         @keyframes app-splash-spin { to { transform: rotate(360deg); } }
     </style>
     <script type="importmap"></script>
-    <script src="_content/Z.Blazor.Diagrams/script.min.js"></script>
 </head>
 
 <body>
@@ -140,7 +310,7 @@
                         <path d="M13 2 4.5 13.5H11l-.5 8.5L19.5 10H13z" />
                     </svg>
                 </div>
-                <p class="app-splash-title">SimpleIPaaS</p>
+                <p class="app-splash-title">fusetor.com</p>
                 <p>Preparing your integration workspace…</p>
                 <div class="app-splash-spinner"></div>
             </div>
@@ -153,6 +323,7 @@
         <span class="dismiss">✕</span>
     </div>
 
+    <script src="_content/Z.Blazor.Diagrams/script.min.js"></script>
     <script src="_framework/blazor.webassembly.js"></script>
 </body>
 

@@ -11,13 +11,13 @@
 @inject NavigationManager NavigationManager
 @inject HttpClient Http
 
-<PageTitle>Execution Details — SimpleIPaaS</PageTitle>
+<PageTitle>Execution Details — fusetor.com</PageTitle>
 
 <div class="page-scroll">
 <div class="page-header">
     <div class="header-left">
         <p class="breadcrumb">
-            <a href="activity">Activity log</a>
+            <a href="transaction-history">Transactions</a>
             <span class="breadcrumb-sep">/</span>
             <span class="mono">@ShortId(ExecutionId)</span>
         </p>
@@ -411,6 +411,6 @@
 
     private void GoBack()
     {
-        NavigationManager.NavigateTo("/activity");
+        NavigationManager.NavigateTo("/transaction-history");
     }
 }

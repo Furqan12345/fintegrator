@@ -1,0 +1,30 @@
+@using SimpleIPaaS.Shared.Models
+
+<MinimizableNodeCard Title="Add Identifier" NodeName="@Step.NodeName" NodeColorClass="node-header-cyan">
+    <p class="node-hint">
+        Return a string to show in the transaction's Identifier column.
+    </p>
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. SetIdentifier" />
+    </div>
+    <button class="btn btn-block" @onclick="OpenEditor">
+        @(string.IsNullOrWhiteSpace(Step.MappingCode) ? "Open Code Editor" : "Edit Identifier Code")
+    </button>
+    @if (!string.IsNullOrWhiteSpace(Step.MappingCode))
+    {
+        <div class="node-code-preview">
+            @Step.MappingCode.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith("//"))
+        </div>
+    }
+</MinimizableNodeCard>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+    [CascadingParameter] public SimpleIPaaS.Client.Pages.FlowDesigner Designer { get; set; } = default!;
+
+    private void OpenEditor()
+    {
+        Designer?.OpenMapperModal(Step, "MappingCode");
+    }
+}

@@ -1,0 +1,406 @@
+@page "/ai-provider-wizard"
+@page "/ai-provider-wizard/{ProviderId:guid}"
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject NavigationManager NavigationManager
+
+<PageTitle>@(ProviderId.HasValue || _providerId.HasValue ? "Edit AI Provider" : "New AI Provider") — fusetor.com</PageTitle>
+
+<div class="wizard-container">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="breadcrumb">
+                <a href="ai-providers">AI Providers</a>
+                <span class="breadcrumb-sep">/</span>
+                <span>@(ProviderId.HasValue || _providerId.HasValue ? "Edit" : "New")</span>
+            </p>
+            <h2>@(ProviderId.HasValue || _providerId.HasValue ? "Edit AI provider" : "New AI provider")</h2>
+            <p class="subtitle">Save a provider once, then choose it in the flow builder whenever you build with AI.</p>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick="GoBack">Cancel</button>
+            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(_loading || _saving || (ProviderId.HasValue && !_providerId.HasValue))">
+                @(_saving ? "Saving…" : "Save provider")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="validation-banner" role="alert">@_error</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_notice))
+    {
+        <div class="alert alert-success" role="status">@_notice</div>
+    }
+    @if (_loading)
+    {
+        <div class="loading-state">Loading provider…</div>
+    }
+    else
+    {
+        <div class="wizard-form">
+            <section class="wizard-section">
+                <h3 class="wizard-section-title"><AppIcon Name="sparkline" Class="icon icon-sm" /> Provider details</h3>
+                <p class="wizard-section-hint">Give the saved endpoint a name so you can recognize it in the flow builder.</p>
+                <div class="form-group">
+                    <label for="ai-provider-name">Provider name</label>
+                    <input id="ai-provider-name" class="form-control" @bind="_provider.Name" @bind:event="oninput" placeholder="e.g. OpenAI production" />
+                </div>
+                <div class="form-group">
+                    <label for="ai-provider-type">Provider</label>
+                    <select id="ai-provider-type" class="form-control" @bind="_provider.ProviderType" @bind:after="OnProviderTypeChanged">
+                        <option value="OpenAICompatible">OpenAI-compatible</option>
+                        <option value="AzureOpenAI">Azure OpenAI</option>
+                    </select>
+                </div>
+            </section>
+
+            <section class="wizard-section">
+                <h3 class="wizard-section-title"><AppIcon Name="external" Class="icon icon-sm" /> Endpoint and model</h3>
+                <p class="wizard-section-hint">Use the API root, e.g. <code>https://api.openai.com/v1</code> — the app appends <code>/responses</code> or <code>/chat/completions</code>.</p>
+                <div class="form-group">
+                    <label for="ai-provider-api-mode">API mode</label>
+                    <select id="ai-provider-api-mode" class="form-control" @bind="_provider.ApiMode" @bind:after="OnApiModeChanged">
+                        <option value="Responses">Responses</option>
+                        <option value="ChatCompletions">Chat Completions</option>
+                    </select>
+                    <p class="form-hint">Responses is OpenAI's newer API (<code>/responses</code>); Chat Completions (<code>/chat/completions</code>) is what self-hosted OpenAI-compatible servers speak.</p>
+                </div>
+                @if (IsResponsesMode)
+                {
+                    <div class="form-group">
+                        <label for="ai-provider-reasoning">Reasoning effort</label>
+                        <select id="ai-provider-reasoning" class="form-control" @bind="_reasoningEffort">
+                            <option value="">Not set (model default)</option>
+                            <option value="minimal">minimal</option>
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                        </select>
+                        <p class="form-hint">Only meaningful for reasoning models; leave it unset for every other model.</p>
+                    </div>
+                }
+                <div class="form-group">
+                    <label for="ai-provider-endpoint">API endpoint (root)</label>
+                    <input id="ai-provider-endpoint" class="form-control" @bind="_provider.Endpoint" @bind:event="oninput" @bind:after="OnEndpointChanged" placeholder="@EndpointPlaceholder" />
+                    @if (DerivedEndpoint.Length > 0)
+                    {
+                        <p class="form-hint">Requests go to <code>@DerivedEndpoint</code>.</p>
+                    }
+                </div>
+                <div class="form-group">
+                    <label for="ai-provider-model">Model / deployment name</label>
+                    <input id="ai-provider-model" class="form-control" @bind="_provider.Model" @bind:event="oninput" placeholder="e.g. gpt-4.1-mini or your Azure deployment name" />
+                </div>
+                @if (IsResponsesMode)
+                {
+                    <label class="checkbox-label">
+                        <input type="checkbox" @bind="_provider.EnableWebSearch" />
+                        <span>Enable web search (the provider's built-in web search tool, Responses only)</span>
+                    </label>
+                }
+            </section>
+
+            <section class="wizard-section">
+                <h3 class="wizard-section-title"><AppIcon Name="settings" Class="icon icon-sm" /> API key</h3>
+                <p class="wizard-section-hint">The API key is encrypted before it is stored. It is never sent back to this page.</p>
+                @if (_hasApiKey)
+                {
+                    <div class="form-hint">A key is saved. Leave this field blank to keep it, or enter a new key to replace it.</div>
+                }
+                <div class="form-group">
+                    <label for="ai-provider-key">Provider API key</label>
+                    <input id="ai-provider-key" name="ai-provider-secret" type="password" class="form-control" @bind="_apiKey" @bind:event="oninput" @onchange="CaptureApiKey" @onfocus="EnableApiKeyInput" autocomplete="off" readonly="@(!_apiKeyInputEnabled)" placeholder="@(_hasApiKey ? "Saved; blank keeps the current key" : "Click and paste the provider API key")" />
+                </div>
+                <label class="checkbox-label">
+                    <input type="checkbox" @bind="_provider.IsDefault" />
+                    <span>Use as the default provider in the flow builder</span>
+                </label>
+            </section>
+        </div>
+
+        @if (_providerId.HasValue && _hasApiKey)
+        {
+            <div class="wizard-bottom-actions">
+                <button class="btn btn-outline" @onclick="TestConnectionAsync" disabled="@_testing">
+                    @(_testing ? "Testing…" : "Test connection")
+                </button>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public Guid? ProviderId { get; set; }
+
+    private AiProviderSettingsUpdateDto _provider = NewProvider();
+    private Guid? _providerId;
+    private string _apiKey = string.Empty;
+    private string _reasoningEffort = string.Empty;
+    private string _error = string.Empty;
+    private string _notice = string.Empty;
+    private bool _hasApiKey;
+    private bool _apiKeyInputEnabled;
+    private bool _apiModeTouched;
+    private bool _loading;
+    private bool _saving;
+    private bool _testing;
+    private Guid? _loadedProviderId;
+
+    private bool IsResponsesMode => AiApiModes.IsResponses(_provider.ApiMode);
+
+    // The exact URL the app will post to, derived from the shared rule — what the operator
+    // types is normalized to the API root on save.
+    private string DerivedEndpoint => AiProviderEndpoints.DeriveRequestUrl(_provider.Endpoint, _provider.ApiMode);
+
+    private string EndpointPlaceholder => _provider.ProviderType == "AzureOpenAI"
+        ? "https://resource.openai.azure.com/openai/deployments/name?api-version=2024-10-21"
+        : "https://api.openai.com/v1";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (ProviderId == _loadedProviderId) return;
+        _loadedProviderId = ProviderId;
+        _error = string.Empty;
+        _notice = string.Empty;
+        _apiKey = string.Empty;
+        _apiKeyInputEnabled = false;
+        _providerId = null;
+        if (!ProviderId.HasValue)
+        {
+            _provider = NewProvider();
+            _providerId = null;
+            _hasApiKey = false;
+            return;
+        }
+
+        _loading = true;
+        try
+        {
+            using var response = await Http.GetAsync($"api/ai/providers/{ProviderId.Value}");
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not load the AI provider.");
+                return;
+            }
+            var settings = await response.Content.ReadFromJsonAsync<AiProviderSettingsDto>();
+            if (settings == null)
+            {
+                _error = "The server returned empty AI provider settings.";
+                return;
+            }
+            _providerId = settings.Id;
+            _provider = new AiProviderSettingsUpdateDto
+            {
+                Name = settings.Name,
+                IsDefault = settings.IsDefault,
+                ProviderType = settings.ProviderType,
+                ApiMode = settings.ApiMode,
+                ReasoningEffort = settings.ReasoningEffort,
+                EnableWebSearch = settings.EnableWebSearch,
+                Endpoint = settings.Endpoint,
+                Model = settings.Model
+            };
+            _reasoningEffort = settings.ReasoningEffort ?? string.Empty;
+            // A stored provider keeps the mode it was saved with; only a brand-new one follows
+            // the endpoint default.
+            _apiModeTouched = true;
+            _hasApiKey = settings.HasApiKey;
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Could not reach the server to load the AI provider.";
+        }
+        catch (JsonException)
+        {
+            _error = "The server returned unreadable AI provider settings.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = string.Empty;
+        _notice = string.Empty;
+        if (ProviderId.HasValue && !_providerId.HasValue)
+        {
+            _error = "The requested provider was not loaded. Return to AI Providers and open it again.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_provider.Name))
+        {
+            _error = "Enter a name for this provider.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_provider.Endpoint))
+        {
+            _error = "Enter the provider API endpoint.";
+            return;
+        }
+        // The same rule the server applies (SimpleIPaaS.Shared), so this can never reject a
+        // value the API would accept.
+        if (AiProviderEndpoints.Validate(_provider.Endpoint) is { } endpointError)
+        {
+            _error = endpointError;
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_provider.Model))
+        {
+            _error = "Enter the model or Azure deployment name.";
+            return;
+        }
+        if (!_providerId.HasValue && string.IsNullOrWhiteSpace(_apiKey))
+        {
+            _error = "Enter the provider API key before saving.";
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            _provider.ApiKey = _apiKey;
+            _provider.ReasoningEffort = string.IsNullOrWhiteSpace(_reasoningEffort) ? null : _reasoningEffort;
+            using var response = _providerId.HasValue
+                ? await Http.PutAsJsonAsync($"api/ai/providers/{_providerId.Value}", _provider)
+                : await Http.PostAsJsonAsync("api/ai/providers", _provider);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not save the AI provider.");
+                return;
+            }
+
+            var saved = await response.Content.ReadFromJsonAsync<AiProviderSettingsDto>();
+            if (saved == null)
+            {
+                _error = "The provider was saved, but the server returned no confirmation. Reopen AI Providers to verify it.";
+                return;
+            }
+            _providerId = saved.Id;
+            _provider.IsDefault = saved.IsDefault;
+            // The server normalizes the endpoint to the API root — show exactly what was stored.
+            _provider.Endpoint = saved.Endpoint;
+            _provider.ApiMode = saved.ApiMode;
+            _provider.EnableWebSearch = saved.EnableWebSearch;
+            _reasoningEffort = saved.ReasoningEffort ?? string.Empty;
+            _apiModeTouched = true;
+            _hasApiKey = saved.HasApiKey;
+            _apiKey = string.Empty;
+            _apiKeyInputEnabled = false;
+            _notice = "Provider saved securely. You can select it in the flow builder.";
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Could not reach the server to save the AI provider.";
+        }
+        catch (JsonException)
+        {
+            _error = "The server returned an unreadable save response. Reopen AI Providers to verify the provider.";
+        }
+        finally
+        {
+            _provider.ApiKey = string.Empty;
+            _saving = false;
+        }
+    }
+
+    private async Task TestConnectionAsync()
+    {
+        if (!_providerId.HasValue) return;
+        _error = string.Empty;
+        _notice = string.Empty;
+        _testing = true;
+        try
+        {
+            using var response = await Http.PostAsync($"api/ai/providers/{_providerId.Value}/test", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "The provider connection test failed.");
+                return;
+            }
+            var result = await response.Content.ReadFromJsonAsync<AiProviderTestResponseDto>();
+            _notice = result?.Message ?? "Provider connection succeeded.";
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Could not reach the server to test the provider.";
+        }
+        catch (JsonException)
+        {
+            _error = "The server returned an unreadable connection test response.";
+        }
+        finally
+        {
+            _testing = false;
+        }
+    }
+
+    private void OnProviderTypeChanged()
+    {
+        if (string.IsNullOrWhiteSpace(_provider.Endpoint) || _provider.Endpoint == DefaultOpenAiRoot)
+        {
+            _provider.Endpoint = _provider.ProviderType == "OpenAICompatible" ? DefaultOpenAiRoot : string.Empty;
+        }
+        ApplyDefaultApiMode();
+    }
+
+    private void OnEndpointChanged() => ApplyDefaultApiMode();
+
+    private void OnApiModeChanged() => _apiModeTouched = true;
+
+    // A brand-new provider follows the documented default until the operator picks a mode
+    // themselves: OpenAI's own endpoint speaks Responses, everything else Chat Completions.
+    private void ApplyDefaultApiMode()
+    {
+        if (_apiModeTouched) return;
+        _provider.ApiMode = AiApiModes.DefaultFor(_provider.ProviderType, _provider.Endpoint);
+    }
+
+    private void EnableApiKeyInput() => _apiKeyInputEnabled = true;
+    private void CaptureApiKey(ChangeEventArgs args) => _apiKey = args.Value?.ToString() ?? string.Empty;
+    private void GoBack() => NavigationManager.NavigateTo("/ai-providers");
+
+    private const string DefaultOpenAiRoot = "https://api.openai.com/v1";
+
+    private static AiProviderSettingsUpdateDto NewProvider() => new()
+    {
+        ProviderType = "OpenAICompatible",
+        Endpoint = DefaultOpenAiRoot,
+        ApiMode = AiApiModes.Responses
+    };
+
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage response, string fallback)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(body)) return fallback;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            string? message = null;
+            if (root.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String)
+                message = messageElement.GetString();
+            else if (root.TryGetProperty("detail", out var detailElement) && detailElement.ValueKind == JsonValueKind.String)
+                message = detailElement.GetString();
+            else if (root.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String)
+                message = titleElement.GetString();
+
+            if (root.TryGetProperty("traceId", out var traceElement) &&
+                traceElement.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(traceElement.GetString()))
+                return $"{message ?? fallback} (Trace ID: {traceElement.GetString()})";
+
+            if (!string.IsNullOrWhiteSpace(message))
+                return message;
+        }
+        catch (JsonException)
+        {
+        }
+        return fallback;
+    }
+}

@@ -1,0 +1,681 @@
+@page "/integrations"
+@using System.Net.Http.Json
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Client.Store
+@using SimpleIPaaS.Shared.Models
+@inherits Fluxor.Blazor.Web.Components.FluxorComponent
+@inject IDispatcher Dispatcher
+@inject NavigationManager NavigationManager
+@inject HttpClient Http
+
+<PageTitle>Integrations - fusetor.com</PageTitle>
+
+<div class="page-scroll">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="integrations" Class="icon icon-xs" /> Integration catalog</p>
+            <h2>Integrations</h2>
+            <p class="subtitle">Each integration groups the flows that sync one system, and carries the runs they produce. Open one to see its flows.</p>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick="LoadAsync" disabled="@_isLoading" title="Reload the catalog">
+                <AppIcon Name="refresh" Class="icon icon-sm" /> @(_isLoading ? "Refreshing..." : "Refresh")
+            </button>
+            <button class="btn btn-primary" @onclick="OpenCreateModal">
+                <AppIcon Name="plus" Class="icon icon-sm" /> New integration
+            </button>
+        </div>
+    </div>
+
+    <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFilters" CssClass="filter-panel--flush">
+        <Actions>
+            @if (HasFilters)
+            {
+                <button class="btn btn-outline btn-sm" @onclick="ClearFilters" title="Reset search, state and sort">
+                    <AppIcon Name="x-circle" Class="icon icon-sm" /> Clear
+                </button>
+            }
+            <div class="filter-summary">@SummaryText</div>
+        </Actions>
+        <Chips>
+            @if (!string.IsNullOrWhiteSpace(_search))
+            {
+                <FilterChip Label="@($"Search: {_search}")" Title="@_search" OnRemove="ClearSearch" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_stateFilter))
+            {
+                <FilterChip Label="@($"State: {StateFilterLabel}")" OnRemove="ClearStateFilter" />
+            }
+            @if (!string.Equals(_sort, "updated", StringComparison.Ordinal))
+            {
+                <FilterChip Label="@($"Sort: {SortFilterLabel}")" OnRemove="ClearSort" />
+            }
+        </Chips>
+        <ChildContent>
+            <div class="filter-bar-group">
+                <label class="filter-field filter-field-search">
+                    <span class="filter-label">Search</span>
+                    <input type="search" class="form-control filter-search" placeholder="Integration or flow name"
+                           value="@_search" @oninput="OnSearchChanged" />
+                </label>
+                <label class="filter-field">
+                    <span class="filter-label">State</span>
+                    <select class="form-control filter-select" value="@_stateFilter" @onchange="OnStateFilterChanged">
+                        <option value="">All integrations</option>
+                        <option value="attention">Needs attention</option>
+                        <option value="healthy">Last run clean</option>
+                        <option value="empty">No flows yet</option>
+                    </select>
+                </label>
+                <label class="filter-field">
+                    <span class="filter-label">Sort</span>
+                    <select class="form-control filter-select-sm" value="@_sort" @onchange="OnSortChanged">
+                        <option value="updated">Recently updated</option>
+                        <option value="name">Name A to Z</option>
+                        <option value="flows">Most flows</option>
+                    </select>
+                </label>
+            </div>
+        </ChildContent>
+    </FilterPanel>
+
+    <div class="dash-section">
+        @if (_loadError != null)
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="alert" Class="icon icon-lg" /></span>
+                <h3>Can't reach the API</h3>
+                <p class="error-text">@_loadError</p>
+                <button class="btn btn-outline" @onclick="LoadAsync">Retry now</button>
+            </div>
+        }
+        else if (_isLoading && !_integrations.Any())
+        {
+            <div class="table-wrap">
+                <div class="panel-skeleton">
+                    <div class="skeleton skeleton-line w-40"></div>
+                    <div class="skeleton skeleton-line w-80"></div>
+                    <div class="skeleton skeleton-line w-60"></div>
+                    <div class="skeleton skeleton-line w-80"></div>
+                </div>
+            </div>
+        }
+        else if (!_integrations.Any())
+        {
+            <div class="empty-state empty-state-hero">
+                <span class="empty-icon"><AppIcon Name="integrations" Class="icon icon-lg" /></span>
+                <h3>No integrations yet</h3>
+                <p>An integration is the container for the flows that sync one system. Create one here, then add the flows that move data between your systems.</p>
+                <div class="inline-actions">
+                    <button class="btn btn-primary btn-lg" @onclick="OpenCreateModal"><AppIcon Name="plus" Class="icon icon-sm" /> Create integration</button>
+                    <button class="btn btn-outline btn-lg" @onclick="CreateStandaloneFlow">Build a standalone flow</button>
+                </div>
+            </div>
+        }
+        else if (!FilteredIntegrations.Any())
+        {
+            <div class="empty-state">
+                <span class="empty-icon"><AppIcon Name="search" Class="icon icon-lg" /></span>
+                <h3>No integrations match these filters</h3>
+                <p>Try a shorter search term, a different state, or clear the filters.</p>
+                <button class="btn btn-outline" @onclick="ClearFilters">Clear filters</button>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <div class="table-scroll">
+                    <table class="table table-hover int-table">
+                        <caption class="sr-only">Integrations in your workspace</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Integration</th>
+                                <th scope="col">Flows</th>
+                                <th scope="col">Last run</th>
+                                <th scope="col" class="col-updated">Updated</th>
+                                @* The trailing cell only carries a decorative chevron: the row is opened through its name link. *@
+                                <th scope="col" class="col-open" aria-hidden="true"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var integration in FilteredIntegrations)
+                            {
+                                var lastRun = LastRunForIntegration(integration);
+                                <tr class="@(lastRun != null && UiFormat.IsProblemRun(lastRun.Status) ? "row-attention" : null)">
+                                    <td>
+                                        <div class="int-name-cell">
+                                            <span class="card-avatar @UiFormat.AvatarTone(integration.Name)">@UiFormat.Monogram(integration.Name)</span>
+                                            <div class="int-name-text">
+                                                <a class="row-link" href="@($"integrations/{integration.Id}")">@integration.Name</a>
+                                                <span class="cell-desc" title="@integration.Description">
+                                                    @(string.IsNullOrWhiteSpace(integration.Description) ? "No description provided." : integration.Description)
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        @if (integration.Flows.Any())
+                                        {
+                                            var active = integration.Flows.Count(flow => IsActiveFlow(flow));
+                                            <div class="int-flows-cell">
+                                                <span class="cell-primary">@UiFormat.FlowCountLabel(integration.Flows.Count)</span>
+                                                <span class="chip-row">
+                                                    @if (active > 0)
+                                                    {
+                                                        <span class="status-badge active no-dot">@active active</span>
+                                                    }
+                                                    @if (integration.Flows.Count - active > 0)
+                                                    {
+                                                        <span class="status-badge draft no-dot">@(integration.Flows.Count - active) draft</span>
+                                                    }
+                                                </span>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">No flows yet</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (lastRun != null)
+                                        {
+                                            <span class="status-badge @UiFormat.StatusBadgeClass(lastRun.Status)">@lastRun.Status</span>
+                                            <span class="text-muted">@UiFormat.RelativeTime(lastRun.StartedAt)</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">Never run</span>
+                                        }
+                                    </td>
+                                    <td class="col-updated">
+                                        <span class="cell-num">@integration.UpdatedAt.ToLocalTime().ToString("MMM d, yyyy")</span>
+                                    </td>
+                                    <td class="col-open">
+                                        <span class="row-chevron" aria-hidden="true"><AppIcon Name="chevron-right" Class="icon icon-sm" /></span>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="dash-section">
+        <div class="section-heading">
+            <div>
+                <h3><AppIcon Name="flows" Class="icon icon-sm" /> Standalone flows</h3>
+                <p>Flows that are not attached to an integration. They still run, and their transactions are tracked the same way.</p>
+            </div>
+            <span class="header-count">@_standaloneFlows.Count</span>
+        </div>
+
+        @if (!_standaloneFlows.Any())
+        {
+            <div class="empty-state">
+                <span class="empty-icon"><AppIcon Name="flows" Class="icon icon-lg" /></span>
+                <h3>No standalone flows</h3>
+                <p>Every flow in this workspace belongs to an integration.</p>
+                <button class="btn btn-outline" @onclick="CreateStandaloneFlow">Build a standalone flow</button>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <div class="table-scroll">
+                    <table class="table table-hover int-table">
+                        <caption class="sr-only">Flows that are not attached to an integration</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Flow</th>
+                                <th scope="col">Trigger</th>
+                                <th scope="col" class="col-steps">Steps</th>
+                                <th scope="col">Last run</th>
+                                <th scope="col" class="cell-actions">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var flow in _standaloneFlows)
+                            {
+                                var lastRun = LastRunForFlow(flow.Id);
+                                <tr>
+                                    <td>
+                                        <a class="row-link" href="@($"flow/{flow.Id}")">@flow.Name</a>
+                                        <span class="text-muted">@flow.Status</span>
+                                    </td>
+                                    <td><span class="chip">@UiFormat.TriggerLabel(flow.TriggerType, flow.CronExpression)</span></td>
+                                    <td class="col-steps"><span class="cell-num">@flow.Nodes.Count</span></td>
+                                    <td>
+                                        @if (lastRun != null)
+                                        {
+                                            <span class="status-badge @UiFormat.StatusBadgeClass(lastRun.Status)">@lastRun.Status</span>
+                                            <span class="text-muted">@UiFormat.RelativeTime(lastRun.StartedAt)</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">Never run</span>
+                                        }
+                                    </td>
+                                    <td class="cell-actions">
+                                        <div class="inline-actions">
+                                            <button type="button" class="btn btn-sm btn-soft" title="Run this flow now" @onclick="() => RunFlow(flow.Id)">
+                                                <AppIcon Name="play" Class="icon icon-xs" /> Run
+                                            </button>
+                                            <a class="btn btn-sm btn-outline" href="@($"flow/{flow.Id}")" title="Open in the flow designer">Open</a>
+                                            @if (CanToggleSchedule(flow))
+                                            {
+                                                <button type="button" class="btn btn-sm btn-outline" title="@(IsActiveFlow(flow) ? "Pause the schedule" : "Start the schedule")"
+                                                        disabled="@(_scheduleBusyFlowId == flow.Id)" @onclick="() => ToggleScheduleAsync(flow)">
+                                                    @(_scheduleBusyFlowId == flow.Id ? "Updating..." : IsActiveFlow(flow) ? "Pause schedule" : "Start schedule")
+                                                </button>
+                                            }
+                                            <button type="button" class="btn btn-sm btn-ghost" title="Delete flow and its history"
+                                                    aria-label="@($"Delete flow {flow.Name}")" @onclick="() => AskDeleteFlow(flow)">
+                                                <AppIcon Name="trash" Class="icon icon-xs" />
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@if (_showCreateModal)
+{
+    <div class="modal-overlay" @onclick="CloseCreateModal">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <div>
+                    <h2 class="modal-title">New integration</h2>
+                    <p class="modal-subtitle">Group related flows under one name so their runs stay together.</p>
+                </div>
+                <button class="modal-close-btn" @onclick="CloseCreateModal" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body modal-body-scroll">
+                <div class="form-group">
+                    <label for="new-integration-name">Name</label>
+                    <input id="new-integration-name" type="text" class="form-control" @bind="_newName" @bind:event="oninput"
+                           placeholder="e.g. Shopify to Business Central" autocomplete="off" />
+                </div>
+                <div class="form-group">
+                    <label for="new-integration-description">Description</label>
+                    <input id="new-integration-description" type="text" class="form-control" @bind="_newDescription"
+                           placeholder="What does this integration own?" autocomplete="off" />
+                </div>
+                @if (!string.IsNullOrWhiteSpace(_createError))
+                {
+                    <div class="validation-banner">@_createError</div>
+                }
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CloseCreateModal">Cancel</button>
+                    <button class="btn btn-primary" @onclick="CreateIntegrationAsync"
+                            disabled="@(_isCreating || string.IsNullOrWhiteSpace(_newName))">
+                        @(_isCreating ? "Creating..." : "Create and open")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_deleteTarget != null)
+{
+    <div class="modal-overlay" @onclick="CancelDeleteFlow">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <div>
+                    <h2 class="modal-title">Delete flow</h2>
+                    <p class="modal-subtitle">This cannot be undone.</p>
+                </div>
+                <button class="modal-close-btn" @onclick="CancelDeleteFlow" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>This permanently deletes <strong>@_deleteTarget.Name</strong> and its history. Type the flow name to confirm.</p>
+                <div class="form-group">
+                    <input type="text" class="form-control" @bind="_deleteConfirmName" @bind:event="oninput" placeholder="@_deleteTarget.Name" />
+                </div>
+                @if (!string.IsNullOrWhiteSpace(_deleteError))
+                {
+                    <div class="validation-banner" role="alert">@_deleteError</div>
+                }
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CancelDeleteFlow">Cancel</button>
+                    <button class="btn btn-danger" @onclick="ConfirmDeleteFlow"
+                            disabled="@(_isDeleting || !string.Equals(_deleteConfirmName, _deleteTarget.Name, StringComparison.Ordinal))">
+                        @(_isDeleting ? "Deleting..." : "Delete flow")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<IntegrationDto> _integrations = new();
+    private List<IntegrationFlowDto> _standaloneFlows = new();
+    private List<FlowExecutionDto> _recentExecutions = new();
+
+    private string _search = string.Empty;
+    private string _stateFilter = string.Empty;
+    private string _sort = "updated";
+    private bool _filtersOpen;
+
+    private bool _isLoading;
+    private string? _loadError;
+
+    private bool _showCreateModal;
+    private bool _isCreating;
+    private string _newName = string.Empty;
+    private string _newDescription = string.Empty;
+    private string? _createError;
+
+    private IntegrationFlowDto? _deleteTarget;
+    private string _deleteConfirmName = string.Empty;
+    private bool _isDeleting;
+    private string? _deleteError;
+    private Guid? _scheduleBusyFlowId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        await LoadAsync();
+    }
+
+    private bool HasFilters =>
+        !string.IsNullOrWhiteSpace(_search) || !string.IsNullOrWhiteSpace(_stateFilter) || !string.Equals(_sort, "updated", StringComparison.Ordinal);
+
+    /// <summary>Drives the filter disclosure badge and the collapsed summary.</summary>
+    private int ActiveFilterCount =>
+        (!string.IsNullOrWhiteSpace(_search) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_stateFilter) ? 1 : 0) +
+        (!string.Equals(_sort, "updated", StringComparison.Ordinal) ? 1 : 0);
+
+    private string StateFilterLabel => _stateFilter switch
+    {
+        "attention" => "Needs attention",
+        "healthy" => "Last run clean",
+        "empty" => "No flows yet",
+        _ => _stateFilter
+    };
+
+    private string SortFilterLabel => _sort switch
+    {
+        "name" => "Name A to Z",
+        "flows" => "Most flows",
+        _ => "Recently updated"
+    };
+
+    private IEnumerable<IntegrationDto> FilteredIntegrations
+    {
+        get
+        {
+            var query = _integrations.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(_search))
+            {
+                var term = _search.Trim();
+                query = query.Where(integration =>
+                    integration.Name.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    (integration.Description ?? string.Empty).Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    integration.Flows.Any(flow => flow.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            query = _stateFilter switch
+            {
+                "attention" => query.Where(integration => UiFormat.IsProblemRun(LastRunForIntegration(integration)?.Status)),
+                "healthy" => query.Where(integration =>
+                {
+                    var run = LastRunForIntegration(integration);
+                    return run != null && !UiFormat.IsProblemRun(run.Status) && !UiFormat.IsActiveRun(run.Status);
+                }),
+                "empty" => query.Where(integration => !integration.Flows.Any()),
+                _ => query
+            };
+
+            return _sort switch
+            {
+                "name" => query.OrderBy(integration => integration.Name, StringComparer.OrdinalIgnoreCase),
+                "flows" => query.OrderByDescending(integration => integration.Flows.Count).ThenBy(integration => integration.Name, StringComparer.OrdinalIgnoreCase),
+                _ => query.OrderByDescending(integration => integration.UpdatedAt)
+            };
+        }
+    }
+
+    private string SummaryText
+    {
+        get
+        {
+            var total = _integrations.Count;
+            if (FilteredIntegrations.Count() == total)
+            {
+                var flows = _integrations.Sum(integration => integration.Flows.Count);
+                return $"{total} integration{(total == 1 ? string.Empty : "s")} · {UiFormat.FlowCountLabel(flows)}";
+            }
+
+            return $"{FilteredIntegrations.Count()} of {total} integrations shown";
+        }
+    }
+
+    private static bool IsActiveFlow(IntegrationFlowDto flow) =>
+        flow.Status.Equals("Active", StringComparison.OrdinalIgnoreCase);
+
+    private FlowExecutionDto? LastRunForFlow(Guid flowId) =>
+        _recentExecutions.Where(exec => exec.FlowId == flowId).OrderByDescending(exec => exec.StartedAt).FirstOrDefault();
+
+    private FlowExecutionDto? LastRunForIntegration(IntegrationDto integration)
+    {
+        var flowIds = integration.Flows.Select(flow => flow.Id).ToHashSet();
+        return _recentExecutions.Where(exec => flowIds.Contains(exec.FlowId)).OrderByDescending(exec => exec.StartedAt).FirstOrDefault();
+    }
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        try
+        {
+            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+
+            var allFlows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+            _standaloneFlows = allFlows.Where(flow => flow.IntegrationId == null).OrderByDescending(flow => flow.UpdatedAt).ToList();
+
+            _recentExecutions = (await SafeFetch.GetAsync<List<FlowExecutionDto>>(Http, "api/executions?page=1&pageSize=100", Dispatcher, "recent runs")
+                ?? new List<FlowExecutionDto>())
+                .OrderByDescending(exec => exec.StartedAt)
+                .ToList();
+        }
+        catch (HttpRequestException ex)
+        {
+            _loadError = $"Could not reach the API: {ex.Message}";
+        }
+        catch (TaskCanceledException)
+        {
+            _loadError = "The API is not responding yet.";
+        }
+        catch (Exception ex)
+        {
+            _loadError = $"Could not load integrations: {ex.Message}";
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnSearchChanged(ChangeEventArgs args) => _search = args.Value?.ToString() ?? string.Empty;
+
+    private void OnStateFilterChanged(ChangeEventArgs args) => _stateFilter = args.Value?.ToString() ?? string.Empty;
+
+    private void OnSortChanged(ChangeEventArgs args) => _sort = args.Value?.ToString() ?? "updated";
+
+    private void ClearFilters()
+    {
+        _search = string.Empty;
+        _stateFilter = string.Empty;
+        _sort = "updated";
+    }
+
+    // Per-chip removals from the collapsed summary.
+    private void ClearSearch() => _search = string.Empty;
+
+    private void ClearStateFilter() => _stateFilter = string.Empty;
+
+    private void ClearSort() => _sort = "updated";
+
+    private void OpenCreateModal()
+    {
+        _newName = string.Empty;
+        _newDescription = string.Empty;
+        _createError = null;
+        _showCreateModal = true;
+    }
+
+    private void CloseCreateModal()
+    {
+        _showCreateModal = false;
+        _createError = null;
+    }
+
+    private async Task CreateIntegrationAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newName))
+        {
+            return;
+        }
+
+        _isCreating = true;
+        _createError = null;
+        try
+        {
+            var response = await Http.PostAsJsonAsync("api/integrations", new IntegrationDto
+            {
+                Name = _newName.Trim(),
+                Description = _newDescription.Trim()
+            });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _createError = await SafeFetch.DescribeFailureAsync(response, "Could not create the integration.");
+                return;
+            }
+
+            var created = await response.Content.ReadFromJsonAsync<IntegrationDto>();
+            _showCreateModal = false;
+            if (created != null && created.Id != Guid.Empty)
+            {
+                NavigationManager.NavigateTo($"/integrations/{created.Id}");
+                return;
+            }
+
+            await LoadAsync();
+        }
+        catch (Exception)
+        {
+            _createError = "Could not create the integration. The API may be unavailable.";
+        }
+        finally
+        {
+            _isCreating = false;
+        }
+    }
+
+    private static bool CanToggleSchedule(IntegrationFlowDto flow) =>
+        flow.PublishedVersion != null &&
+        (IsActiveFlow(flow) || flow.Status.Equals("Paused", StringComparison.OrdinalIgnoreCase)) &&
+        (flow.TriggerType.Equals("Cron", StringComparison.OrdinalIgnoreCase) ||
+         flow.RunAt != null ||
+         flow.Nodes.Any(node => node.StepType.Equals("Schedule", StringComparison.OrdinalIgnoreCase)));
+
+    private async Task ToggleScheduleAsync(IntegrationFlowDto flow)
+    {
+        _scheduleBusyFlowId = flow.Id;
+        try
+        {
+            var action = IsActiveFlow(flow) ? "pause" : "start";
+            using var response = await Http.PostAsync($"api/integrationflow/{flow.Id}/schedule/{action}", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                Dispatcher.Dispatch(new ShowToastAction
+                {
+                    Message = await SafeFetch.DescribeFailureAsync(response, "The schedule could not be updated."),
+                    Level = "error"
+                });
+                return;
+            }
+
+            Dispatcher.Dispatch(new ShowToastAction
+            {
+                Message = $"Flow \"{flow.Name}\" schedule {(action == "pause" ? "paused" : "started")}.",
+                Level = "success"
+            });
+            await LoadAsync();
+        }
+        catch (Exception)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = "The schedule could not be updated. The API may be unavailable.", Level = "error" });
+        }
+        finally
+        {
+            _scheduleBusyFlowId = null;
+        }
+    }
+
+    private void AskDeleteFlow(IntegrationFlowDto flow)
+    {
+        _deleteTarget = flow;
+        _deleteConfirmName = string.Empty;
+        _deleteError = null;
+    }
+
+    private void CancelDeleteFlow()
+    {
+        if (_isDeleting) return;
+        _deleteTarget = null;
+        _deleteConfirmName = string.Empty;
+        _deleteError = null;
+    }
+
+    private async Task ConfirmDeleteFlow()
+    {
+        if (_deleteTarget == null || _isDeleting ||
+            !string.Equals(_deleteConfirmName, _deleteTarget.Name, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _isDeleting = true;
+        _deleteError = null;
+        try
+        {
+            using var response = await Http.DeleteAsync($"api/integrationflow/{_deleteTarget.Id}");
+            if (!response.IsSuccessStatusCode)
+            {
+                _deleteError = await SafeFetch.DescribeFailureAsync(response, "The flow could not be deleted.");
+                return;
+            }
+
+            _deleteTarget = null;
+            _deleteConfirmName = string.Empty;
+            await LoadAsync();
+        }
+        catch (Exception)
+        {
+            _deleteError = "The flow could not be deleted. The API may be unavailable.";
+        }
+        finally
+        {
+            _isDeleting = false;
+        }
+    }
+
+    private void CreateStandaloneFlow() => NavigationManager.NavigateTo("/flow");
+
+    private void RunFlow(Guid flowId) => Dispatcher.Dispatch(new RunFlowAction { Id = flowId });
+}

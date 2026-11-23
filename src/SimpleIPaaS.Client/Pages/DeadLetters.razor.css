@@ -1,0 +1,309 @@
+.dead-letters-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+/* The disclosure card is inset like the list below it. */
+.dl-filter-panel { margin: 0 var(--page-gutter); }
+
+.dl-notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    margin: 0 var(--page-gutter);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid color-mix(in srgb, var(--success) 34%, transparent);
+    border-radius: var(--radius-md);
+    background: var(--success-soft);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.dl-filters {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.dl-filter-search {
+    flex: 1 1 260px;
+    min-width: 200px;
+}
+
+.dl-filter-select {
+    flex: 0 1 170px;
+    min-width: 140px;
+}
+
+.dl-layout {
+    display: block;
+    padding: 0 var(--page-gutter) var(--space-8);
+}
+
+.dl-list-card {
+    overflow: hidden;
+}
+
+.dl-empty {
+    padding: var(--space-6);
+    text-align: center;
+}
+
+.dl-time { white-space: nowrap; }
+
+.dl-flow-name {
+    font-weight: 620;
+    font-size: 0.82rem;
+}
+
+.dl-node-name {
+    color: var(--text-muted);
+    font-size: 0.74rem;
+}
+
+.dl-error-cell {
+    max-width: 460px;
+    font-size: 0.76rem;
+    color: var(--danger);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dl-status {
+    font-weight: 650;
+    font-size: 0.74rem;
+    white-space: nowrap;
+}
+
+.dl-status.is-ok { color: var(--success); }
+.dl-status.is-warn { color: var(--warning); }
+.dl-status.is-muted { color: var(--text-muted); }
+.dl-status.is-pending { color: var(--primary); }
+
+tr.is-selected {
+    background: color-mix(in srgb, var(--primary) 9%, transparent);
+}
+
+.modal-container.dl-detail-modal {
+    max-width: 1040px;
+    height: 90vh;
+    max-height: 900px;
+}
+
+.dl-detail-title {
+    min-width: 0;
+}
+
+.dl-detail-title .modal-title {
+    overflow-wrap: anywhere;
+}
+
+.dl-detail-title p {
+    margin: 2px 0 0;
+    font-size: 0.76rem;
+    overflow-wrap: anywhere;
+}
+
+.dl-detail-body {
+    min-height: 0;
+    overflow-y: auto;
+    gap: var(--space-4);
+}
+
+.dl-detail-body > * {
+    flex-shrink: 0;
+}
+
+.dl-actions,
+.dl-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
+.dl-resync-box {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--bg-subtle);
+}
+
+.dl-resync-hint {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.dl-section h4 {
+    margin: 0 0 var(--space-2);
+    font-size: 0.82rem;
+}
+
+.dl-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+}
+
+.dl-section-head h4 {
+    margin: 0;
+}
+
+.dl-state-editor {
+    width: 100%;
+    min-height: 240px;
+    resize: vertical;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.72rem;
+    line-height: 1.5;
+    white-space: pre;
+    tab-size: 2;
+}
+
+.dl-state-hint,
+.dl-state-error {
+    margin: var(--space-1) 0 0;
+    font-size: 0.72rem;
+}
+
+.dl-state-hint { color: var(--text-muted); }
+.dl-state-error { color: var(--danger); }
+
+.dl-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    margin-top: var(--space-2);
+}
+
+.dl-error-box {
+    padding: var(--space-3);
+    border-left: 3px solid var(--danger);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    border-radius: var(--radius-md);
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.dl-attempts {
+    margin: 0;
+    padding-left: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.dl-attempt {
+    padding: var(--space-2) var(--space-3);
+    border-left: 2px solid var(--border-color);
+}
+
+.dl-attempt.is-blocked { border-left-color: var(--warning); }
+
+.dl-attempt-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: 0.76rem;
+}
+
+.dl-attempt-meta {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+
+.dl-attempt-error {
+    margin-top: var(--space-1);
+    color: var(--danger);
+    font-size: 0.74rem;
+    word-break: break-word;
+}
+
+.dl-code {
+    margin: var(--space-1) 0 var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    font-family: var(--font-mono, monospace);
+    font-size: 0.72rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 260px;
+    overflow: auto;
+}
+
+.dl-packets {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.dl-packet {
+    padding: var(--space-3);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: 0.76rem;
+}
+
+.dl-packet-url {
+    font-family: var(--font-mono, monospace);
+    word-break: break-all;
+}
+
+@media (max-width: 720px) {
+    .modal-container.dl-detail-modal {
+        width: 100vw;
+        height: 100vh;
+        max-width: none;
+        max-height: none;
+        border-radius: 0;
+    }
+}
+
+.dl-bulk-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-subtle);
+}
+
+.dl-check {
+    width: 36px;
+    text-align: center;
+    vertical-align: middle;
+}
+
+.dl-check input {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.dl-bulk-skips {
+    margin: var(--space-3) 0 0;
+    padding-left: var(--space-4);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.dl-bulk-skips li + li { margin-top: var(--space-1); }

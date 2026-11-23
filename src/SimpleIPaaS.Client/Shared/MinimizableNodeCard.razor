@@ -1,7 +1,13 @@
 @using SimpleIPaaS.Client.Shared
 
 <div class="card-header node-header @NodeColorClass">
-    <h3 class="card-title">@Title</h3>
+    <div class="node-header-text">
+        <h3 class="card-title">@Title</h3>
+        @if (!string.IsNullOrWhiteSpace(NodeName))
+        {
+            <div class="node-card-node-name" title="@NodeName">@NodeName</div>
+        }
+    </div>
     <button class="node-card-toggle @((Minimized ? "minimized" : ""))"
             @onclick="ToggleMinimize"
             @onclick:preventDefault
@@ -11,7 +17,16 @@
         <AppIcon Name="chevron-down" Class="node-card-toggle-icon" />
     </button>
 </div>
-@if (!Minimized)
+@if (Minimized)
+{
+    @if (MinimizedContent != null)
+    {
+        <div class="card-body" @onwheel:stopPropagation="StopWheelPropagation">
+            @MinimizedContent
+        </div>
+    }
+}
+else
 {
     <div class="card-body" @onwheel:stopPropagation="StopWheelPropagation">
         @ChildContent
@@ -20,11 +35,22 @@
 
 @code {
     [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? NodeName { get; set; }
+    [Parameter] public bool StartMinimized { get; set; }
     [Parameter] public string NodeColorClass { get; set; } = string.Empty;
     [Parameter] public bool StopWheelPropagation { get; set; } = false;
     [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? MinimizedContent { get; set; }
 
     private bool Minimized { get; set; }
+    private bool _initialized;
+
+    protected override void OnParametersSet()
+    {
+        if (_initialized) return;
+        Minimized = StartMinimized;
+        _initialized = true;
+    }
 
     private void ToggleMinimize()
     {

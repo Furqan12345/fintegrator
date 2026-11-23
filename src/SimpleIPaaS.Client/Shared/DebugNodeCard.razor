@@ -7,7 +7,7 @@
 @inject IState<FlowState> FlowState
 @inject HttpClient Http
 
-<MinimizableNodeCard Title="Debug / Inspect" NodeColorClass="node-header-slate" StopWheelPropagation="true">
+<MinimizableNodeCard Title="Debug / Inspect" NodeName="@Step.NodeName" NodeColorClass="node-header-slate" StopWheelPropagation="true">
     <div class="node-field">
         <label class="node-label">Node Name</label>
         <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. InspectPayload" />

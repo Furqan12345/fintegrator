@@ -1,0 +1,304 @@
+@page "/admin/users"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@inject HttpClient Http
+
+<PageTitle>Users · fusetor.com</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-page-header">
+        <div>
+            <h2>Users</h2>
+            <p class="auth-hint">Invite people, assign roles, and recover accounts. Every account must enroll TOTP two-factor authentication on first sign-in.</p>
+        </div>
+        <button class="btn btn-outline btn-sm" @onclick="LoadAsync" disabled="@_busy">Refresh</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="auth-error" role="alert">@_error</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <div class="auth-info">@_message</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_inviteUrl))
+    {
+        <div class="auth-info">
+            Invite link (send it to the user): <a class="auth-link" href="@_inviteUrl">@_inviteUrl</a>
+        </div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_resetUrl))
+    {
+        <div class="auth-info">
+            Password reset link: <a class="auth-link" href="@_resetUrl">@_resetUrl</a>
+        </div>
+    }
+
+    <section class="admin-card">
+        <h3>Invite a user</h3>
+        <div class="admin-invite-grid">
+            <input class="form-control" placeholder="Full name" @bind="InviteName" />
+            <input class="form-control" type="email" placeholder="email@example.com" @bind="InviteEmail" />
+            <select class="form-control" @bind="InviteRole">
+                <option value="User">User</option>
+                <option value="Viewer">Viewer</option>
+                <option value="Admin">Admin</option>
+            </select>
+            <button class="btn btn-primary" @onclick="InviteAsync" disabled="@_inviteBusy">
+                @(_inviteBusy ? "Inviting…" : "Send invite")
+            </button>
+        </div>
+        <p class="auth-hint">If SMTP is not configured, copy the invite link shown above and send it directly.</p>
+    </section>
+
+    <section class="admin-card">
+        <div class="admin-card-header">
+            <h3>Accounts</h3>
+            <input class="form-control admin-search" placeholder="Search email or name" @bind="Search" @bind:event="oninput" @onkeyup="SearchKeyUp" />
+        </div>
+
+        <div class="table-wrap">
+            <table class="table table-hover admin-users-table">
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>2FA</th>
+                        <th>Status</th>
+                        <th>Last sign-in</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_users.Count == 0)
+                    {
+                        <tr><td colspan="7" class="empty-state">No users loaded.</td></tr>
+                    }
+                    @foreach (var user in _users)
+                    {
+                        <tr>
+                            <td>@user.Email</td>
+                            <td>@user.FullName</td>
+                            <td>
+                                <select class="form-control form-control-sm" value="@user.Role" @onchange="args => ChangeRoleAsync(user, args)">
+                                    <option value="Admin">Admin</option>
+                                    <option value="User">User</option>
+                                    <option value="Viewer">Viewer</option>
+                                </select>
+                            </td>
+                            <td>@(user.TwoFactorEnabled ? "Enabled" : "Pending")</td>
+                            <td>@(user.IsDisabled ? "Disabled" : "Active")</td>
+                            <td>@(user.LastLoginAt?.ToLocalTime().ToString("g") ?? "Never")</td>
+                            <td class="admin-actions">
+                                @if (user.IsDisabled)
+                                {
+                                    <button class="btn btn-outline btn-sm" @onclick="() => EnableAsync(user)">Enable</button>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-outline btn-sm" @onclick="() => DisableAsync(user)">Disable</button>
+                                }
+                                <button class="btn btn-outline btn-sm" @onclick="() => ResetPasswordAsync(user)">Reset password</button>
+                                <button class="btn btn-outline btn-sm" @onclick="() => ResetTwoFactorAsync(user)">Reset 2FA</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="admin-card">
+        <h3>Recent authentication events</h3>
+        <div class="table-wrap">
+            <table class="table table-hover admin-audit-table">
+                <thead>
+                    <tr><th>Time</th><th>Event</th><th>Result</th><th>Email</th><th>IP</th><th>Details</th></tr>
+                </thead>
+                <tbody>
+                    @if (_audit.Count == 0)
+                    {
+                        <tr><td colspan="6" class="empty-state">No events recorded yet.</td></tr>
+                    }
+                    @foreach (var entry in _audit)
+                    {
+                        <tr>
+                            <td>@entry.TimestampUtc.ToLocalTime().ToString("g")</td>
+                            <td>@entry.EventType</td>
+                            <td>@(entry.Success ? "Success" : "Failure")</td>
+                            <td>@entry.Email</td>
+                            <td>@entry.IpAddress</td>
+                            <td>@entry.Details</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+@code {
+    private List<UserDto> _users = new();
+    private List<AuthAuditDto> _audit = new();
+    private string Search { get; set; } = string.Empty;
+    private string InviteName { get; set; } = string.Empty;
+    private string InviteEmail { get; set; } = string.Empty;
+    private string InviteRole { get; set; } = "User";
+    private string? _error;
+    private string? _message;
+    private string? _inviteUrl;
+    private string? _resetUrl;
+    private bool _busy;
+    private bool _inviteBusy;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            var search = string.IsNullOrWhiteSpace(Search) ? string.Empty : $"?search={Uri.EscapeDataString(Search)}";
+            _users = await Http.GetFromJsonAsync<List<UserDto>>($"api/admin/users{search}") ?? new();
+            _audit = await Http.GetFromJsonAsync<List<AuthAuditDto>>("api/admin/users/audit?take=100") ?? new();
+        }
+        catch (Exception)
+        {
+            _error = "Users could not be loaded. You may not have permission, or the API is unavailable.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SearchKeyUp(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task InviteAsync()
+    {
+        _inviteBusy = true;
+        _error = null;
+        _message = null;
+        _inviteUrl = null;
+        try
+        {
+            using var response = await Http.PostAsJsonAsync("api/admin/users/invite", new InviteUserRequest
+            {
+                Email = InviteEmail.Trim(),
+                FullName = InviteName.Trim(),
+                Role = InviteRole
+            });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "The invitation could not be created.");
+                return;
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<InviteUserResponse>();
+            if (result != null)
+            {
+                _inviteUrl = result.InviteUrl;
+                _message = result.EmailSent ? "Invitation created and emailed." : "Invitation created. Copy the link below.";
+                InviteEmail = string.Empty;
+                InviteName = string.Empty;
+                await LoadAsync();
+            }
+        }
+        catch (Exception)
+        {
+            _error = "The invitation could not be created. The API may be unavailable.";
+        }
+        finally
+        {
+            _inviteBusy = false;
+        }
+    }
+
+    private async Task ChangeRoleAsync(UserDto user, ChangeEventArgs args)
+    {
+        var role = args.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(role) || string.Equals(role, user.Role, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _error = null;
+        try
+        {
+            using var response = await Http.PutAsJsonAsync($"api/admin/users/{user.Id}/role", new UpdateRoleRequest { Role = role });
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "The role could not be changed.");
+                await LoadAsync();
+                return;
+            }
+
+            _message = $"{user.Email} is now {role}.";
+            await LoadAsync();
+        }
+        catch (Exception)
+        {
+            _error = "The role could not be changed. The API may be unavailable.";
+        }
+    }
+
+    private async Task DisableAsync(UserDto user) => await PostActionAsync($"api/admin/users/{user.Id}/disable", $"{user.Email} has been disabled.");
+
+    private async Task EnableAsync(UserDto user) => await PostActionAsync($"api/admin/users/{user.Id}/enable", $"{user.Email} has been enabled.");
+
+    private async Task ResetTwoFactorAsync(UserDto user) => await PostActionAsync($"api/admin/users/{user.Id}/reset-2fa", $"Two-factor authentication has been reset for {user.Email}.");
+
+    private async Task ResetPasswordAsync(UserDto user)
+    {
+        _error = null;
+        _resetUrl = null;
+        try
+        {
+            using var response = await Http.PostAsync($"api/admin/users/{user.Id}/reset-password", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "The password reset could not be created.");
+                return;
+            }
+
+            using var document = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            _resetUrl = document.RootElement.GetProperty("resetUrl").GetString();
+            _message = "Password reset link created.";
+        }
+        catch (Exception)
+        {
+            _error = "The password reset could not be created. The API may be unavailable.";
+        }
+    }
+
+    private async Task PostActionAsync(string url, string successMessage)
+    {
+        _error = null;
+        _message = null;
+        try
+        {
+            using var response = await Http.PostAsync(url, null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await SafeFetch.DescribeFailureAsync(response, "The action could not be completed.");
+                return;
+            }
+
+            _message = successMessage;
+            await LoadAsync();
+        }
+        catch (Exception)
+        {
+            _error = "The action could not be completed. The API may be unavailable.";
+        }
+    }
+}

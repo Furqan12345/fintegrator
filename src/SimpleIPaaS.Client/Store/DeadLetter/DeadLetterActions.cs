@@ -18,3 +18,4 @@ public class DiscardDeadLetterAction
     public Guid Id { get; set; }
     public string StatusFilter { get; set; } = string.Empty;
 }
+

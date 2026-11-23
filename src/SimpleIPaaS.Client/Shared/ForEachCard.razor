@@ -1,6 +1,6 @@
 @using SimpleIPaaS.Shared.Models
 
-<MinimizableNodeCard Title="For Each" NodeColorClass="node-header-violet">
+<MinimizableNodeCard Title="For Each" NodeName="@Step.NodeName" NodeColorClass="node-header-violet">
     <p class="node-hint">
         Iterates an array and executes downstream nodes once per element. The current element is available in
         downstream scripts as <code>flowState.&lt;itemVariable&gt;</code> (default <code>item</code>).

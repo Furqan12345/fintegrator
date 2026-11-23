@@ -1,0 +1,746 @@
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Shared.Models
+
+<aside class="debug-inspector test-card-inspector">
+    <div class="debug-inspector-head">
+        <div>
+            <div class="debug-inspector-eyebrow">CARD INSPECTOR</div>
+            <h2>@CardName</h2>
+            <small>@StepType</small>
+        </div>
+        <button class="debug-inspector-close" @onclick="OnClose" title="Close inspector">×</button>
+    </div>
+
+    <nav class="test-tabs">
+        <button class="@(Tab == "Result" ? "active" : "")" @onclick="ShowResultTab">Result</button>
+        <button class="@(Tab == "Behavior" ? "active" : "")" @onclick="ShowBehaviorTab">Behavior</button>
+        <button class="@(Tab == "Checks" ? "active" : "")" @onclick="ShowChecksTab">
+            Checks <span>@Session.ChecksFor(CardId, CardName).Count()</span>
+        </button>
+        <button class="@(Tab == "Configuration" ? "active" : "")" @onclick="ShowConfigurationTab">Config</button>
+    </nav>
+
+    <div class="debug-inspector-body test-inspector-body">
+        @if (Tab == "Result")
+        {
+            var result = Session.CardResult(CardId);
+            <section class="debug-inspector-section">
+                <div class="test-result-head">
+                    <span class="status-badge @ResultStatusClass(result)">@(result?.Status ?? (Session.IsRunning ? "Running" : "No result"))</span>
+                    @if (result != null)
+                    {
+                        <span>@result.DurationMs ms · @result.InvocationCount invocation(s)</span>
+                    }
+                </div>
+                @if (result != null)
+                {
+                    @if (result.InvocationCount > 1)
+                    {
+                        <label class="test-field">
+                            <span>Invocation</span>
+                            <select class="form-control" value="@_invocation" @onchange="OnInvocationChanged">
+                                @for (var index = 1; index <= result.InvocationCount; index++)
+                                {
+                                    <option value="@index">@index</option>
+                                }
+                            </select>
+                        </label>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
+                    {
+                        <div class="test-json-view is-error">
+                            <div class="test-json-view-head"><span>Error</span><CopyButton Text="@result.ErrorMessage" /></div>
+                            <pre>@result.ErrorMessage</pre>
+                        </div>
+                    }
+                    <div class="test-json-view">
+                        <div class="test-json-view-head"><span>Input</span><CopyButton Text="@FlowTestSession.FormatJson(result.Input)" /></div>
+                        <pre>@FlowTestSession.FormatJson(result.Input)</pre>
+                    </div>
+                    @if (result.InputTruncated) { <div class="field-hint">Input was truncated at 64 KB.</div> }
+                    <div class="test-json-view">
+                        <div class="test-json-view-head"><span>Output</span><CopyButton Text="@FlowTestSession.FormatJson(result.Output)" /></div>
+                        <pre>@FlowTestSession.FormatJson(result.Output)</pre>
+                    </div>
+
+                    var checks = Session.Evaluation?.Checks
+                        .Where(check => check.CardId == CardId && (check.Invocation == null || check.Invocation == _invocation))
+                        .ToList() ?? new();
+                    @if (checks.Any())
+                    {
+                        <div class="debug-inspector-section-title">Checks</div>
+                        @foreach (var check in checks)
+                        {
+                            <div class="test-check-row @check.Status.ToLowerInvariant()">
+                                <span>@(check.Status == "Passed" ? "✓" : "✗")</span>
+                                <div><strong>@check.Description</strong><small>@check.FailureReason</small></div>
+                            </div>
+                            @if (check.Status == "Failed" && check.IsJsonComparison)
+                            {
+                                <div class="test-diff">
+                                    <div>
+                                        <span>Expected</span>
+                                        <CopyButton Text="@FlowTestSession.FormatJson(check.ExpectedValue)" />
+                                        <pre>@FlowTestSession.FormatJson(check.ExpectedValue)</pre>
+                                    </div>
+                                    <div>
+                                        <span>Actual</span>
+                                        <CopyButton Text="@FlowTestSession.FormatJson(check.ActualValue)" />
+                                        <pre>@FlowTestSession.FormatJson(check.ActualValue)</pre>
+                                    </div>
+                                </div>
+                                var paths = DifferingPaths(check.ExpectedValue, check.ActualValue);
+                                @if (paths.Any())
+                                {
+                                    <div class="field-hint">Differing paths: @string.Join(", ", paths)</div>
+                                }
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    <div class="debug-inspector-empty">Run the scenario to record this card’s input, output and error.</div>
+                }
+            </section>
+        }
+        else if (Tab == "Behavior")
+        {
+            <section class="debug-inspector-section" @onchange="Session.MarkChanged">
+                <div class="debug-inspector-section-title">Card behavior</div>
+                <label class="test-radio">
+                    <input type="radio" name="test-behavior" checked="@(!Session.IsSupplied(CardId))" @onchange="() => Session.SetCardMode(CardId, CardName, false)" />
+                    <span><strong>Run normally</strong><small>Use the production card configuration.</small></span>
+                </label>
+                <label class="test-radio">
+                    <input type="radio" name="test-behavior" checked="@Session.IsSupplied(CardId)" @onchange="() => Session.SetCardMode(CardId, CardName, true)" />
+                    <span><strong>Supply output</strong><small>Replace this card and continue normal routing.</small></span>
+                </label>
+                @if (Session.CardResult(CardId) != null)
+                {
+                    <button class="btn btn-outline btn-sm" @onclick="() => Session.UseLastActualOutput(CardId, CardName)">
+                        Use last actual output
+                    </button>
+                }
+
+                @if (Session.IsSupplied(CardId))
+                {
+                    var supplied = Session.GetOverride(CardId, CardName);
+                    <label class="test-field">
+                        <span>Output format</span>
+                        <select class="form-control" value="@supplied.OutputFormat" @onchange="e => SetOutputFormat(supplied, e)">
+                            <option value="Json">JSON</option>
+                            <option value="Text">Text</option>
+                            <option value="Xml">XML</option>
+                        </select>
+                    </label>
+                    <label class="test-field">
+                        <span>Supplied output <CopyButton Text="@supplied.OutputJson" /></span>
+                        <textarea class="form-control test-code-field" rows="8" value="@supplied.OutputJson"
+                                  @onchange="e => supplied.OutputJson = e.Value?.ToString() ?? string.Empty"></textarea>
+                        @if (supplied.OutputFormat == "Json" && !IsJson(supplied.OutputJson))
+                        {
+                            <small class="test-field-error">This is not valid JSON.</small>
+                        }
+                    </label>
+                    <label class="test-field">
+                        <span>HTTP status (optional)</span>
+                        <input class="form-control" type="number" value="@supplied.StatusCode" @onchange="e => supplied.StatusCode = ParseInt(e.Value)" />
+                    </label>
+                }
+
+                @if (Session.IsHttpCard(CardId))
+                {
+                    <div class="debug-inspector-section-title test-section-heading">
+                        <span>HTTP response fixtures</span>
+                        <span>
+                            <button class="btn btn-ghost btn-sm" @onclick="() => Session.AddHttpResponse(CardId)">Add response</button>
+                        </span>
+                    </div>
+                    <label class="test-field">
+                        <span>When responses run out</span>
+                        <select class="form-control" value="@Session.Definition.ResponseExhaustionBehavior"
+                                @onchange="e => Session.Definition.ResponseExhaustionBehavior = e.Value?.ToString() ?? string.Empty">
+                            <option value="RepeatFinalResponse">Repeat final response</option>
+                            <option value="FailWhenExhausted">Fail when exhausted</option>
+                        </select>
+                    </label>
+                    var responses = Session.GetHttpResponses(CardId);
+                    @for (var index = 0; index < responses.Count; index++)
+                    {
+                        var response = responses[index];
+                        var responseIndex = index;
+                        <details class="test-fixture-card" open="@(responseIndex == 0)">
+                            <summary>
+                                <strong>Response @(responseIndex + 1)</strong>
+                                <span class="test-fixture-actions" @onclick:stopPropagation="true">
+                                    <button class="btn btn-ghost btn-sm" disabled="@(responseIndex == 0)" @onclick="() => Session.MoveHttpResponse(CardId, response, -1)">↑</button>
+                                    <button class="btn btn-ghost btn-sm" disabled="@(responseIndex == responses.Count - 1)" @onclick="() => Session.MoveHttpResponse(CardId, response, 1)">↓</button>
+                                    <button class="btn btn-ghost btn-sm" @onclick="() => Session.RemoveHttpResponse(CardId, response)">Remove</button>
+                                </span>
+                            </summary>
+                            <label class="test-field">
+                                <span>Status</span>
+                                <input class="form-control" type="number" value="@response.StatusCode" @onchange="e => response.StatusCode = ParseInt(e.Value) ?? 200" />
+                            </label>
+                            <label class="test-field">
+                                <span>Body format</span>
+                                <select class="form-control" value="@response.ResponseFormat" @onchange="e => SetResponseFormat(response, e)">
+                                    <option value="Json">JSON</option>
+                                    <option value="Text">Text</option>
+                                    <option value="Xml">XML</option>
+                                </select>
+                            </label>
+                            <label class="test-field">
+                                <span>Body <CopyButton Text="@response.ResponseBody" /></span>
+                                <textarea class="form-control test-code-field" rows="6" value="@response.ResponseBody"
+                                          @onchange="e => response.ResponseBody = e.Value?.ToString() ?? string.Empty"></textarea>
+                                @if (response.ResponseFormat == "Json" && !IsJson(response.ResponseBody))
+                                {
+                                    <small class="test-field-error">This is not valid JSON.</small>
+                                }
+                            </label>
+                            <label class="test-field">
+                                <span>Headers (JSON object of string arrays) <CopyButton Text="@Session.HeadersText[response]" /></span>
+                                <textarea class="form-control test-code-field" rows="3" value="@Session.HeadersText[response]"
+                                          @onchange="e => SetHeaders(response, e)"></textarea>
+                            </label>
+                        </details>
+                    }
+                    @if (responses.Count == 0 && !Session.IsSupplied(CardId))
+                    {
+                        <div class="test-field-error">Needs response. Add a fixture before running.</div>
+                    }
+                }
+            </section>
+        }
+        else if (Tab == "Checks")
+        {
+            <section class="debug-inspector-section">
+                <div class="debug-inspector-section-title test-section-heading">
+                    <span>Checks for this card</span>
+                    <span>
+                        <a class="btn btn-ghost btn-sm" href="@($"/docs/flow-test-assertions?flowId={Session.FlowId}")" target="_blank">Help</a>
+                        <button class="btn btn-ghost btn-sm" @onclick="() => Session.AddCheck(CardId, CardName)">Add check</button>
+                    </span>
+                </div>
+                @if (Session.ShouldSuggestExpectedFailure(CardId))
+                {
+                    <div class="test-expected-hint">
+                        <span>This scenario expects an error — set Expected run result to Failed?</span>
+                        <button class="btn btn-sm btn-outline" @onclick='() => Session.SetExpectedRunResult("Failed")'>Set to Failed</button>
+                    </div>
+                }
+                @foreach (var check in Session.ChecksFor(CardId, CardName).ToList())
+                {
+                    <div class="test-check-editor" @onchange="Session.MarkChanged">
+                        <div class="test-check-summary">
+                            <strong>@Session.CardNameForCheck(check)</strong>
+                            <button class="btn btn-ghost btn-sm" @onclick="() => Session.RemoveCheck(check)">Remove</button>
+                        </div>
+                        <label class="test-field">
+                            <span>Inspect</span>
+                            <select class="form-control" value="@check.Field" @onchange="e => SetField(check, e)">
+                                <option value="Status">Card status</option>
+                                <option value="ResponsePayload">Output</option>
+                                <option value="ReceivedInput">Input</option>
+                                <option value="HttpStatusCode">HTTP status</option>
+                                <option value="ErrorMessage">Error text</option>
+                                <option value="InvocationCount">Invocation count</option>
+                            </select>
+                        </label>
+                        @if (check.Field is "ResponsePayload" or "ReceivedInput")
+                        {
+                            <label class="test-field">
+                                <span>Field path</span>
+                                <div class="test-path-row">
+                                    <input class="form-control" value="@check.Path" @onchange="e => check.Path = e.Value?.ToString() ?? string.Empty" placeholder="orders[0].SellerSKU" />
+                                    <button class="btn btn-ghost btn-sm" @onclick="() => _showPathPicker = !_showPathPicker">Pick</button>
+                                </div>
+                            </label>
+                            @if (_showPathPicker)
+                            {
+                                <select class="form-control" value="" @onchange="e => PickPath(check, e.Value?.ToString())">
+                                    <option value="">Choose a path from the latest run…</option>
+                                    @foreach (var option in Session.PathOptions(CardId))
+                                    {
+                                        <option value="@option.Path">@option.Path = @option.Value</option>
+                                    }
+                                </select>
+                            }
+                        }
+                        <div class="test-check-grid">
+                            <label class="test-field">
+                                <span>Operator</span>
+                                <select class="form-control" value="@check.Operator" @onchange="e => SetOperator(check, e)">
+                                    @foreach (var op in Operators)
+                                    {
+                                        <option value="@op">@FlowTestSession.DescribeOperator(op)</option>
+                                    }
+                                </select>
+                            </label>
+                            <label class="test-field">
+                                <span>Expected</span>
+                                <input class="form-control" value="@check.ExpectedValue" @onchange="e => check.ExpectedValue = e.Value?.ToString() ?? string.Empty" />
+                            </label>
+                        </div>
+                        <div class="test-check-grid">
+                            <label class="test-field">
+                                <span>Invocation scope</span>
+                                <select class="form-control" value="@check.InvocationScope" @onchange="e => SetInvocationScope(check, e)">
+                                    <option value="Every">Every invocation</option>
+                                    <option value="Any">Any invocation</option>
+                                    <option value="InvocationNumber">Invocation number</option>
+                                </select>
+                            </label>
+                            @if (check.InvocationScope == "InvocationNumber")
+                            {
+                                <label class="test-field">
+                                    <span>Invocation #</span>
+                                    <input class="form-control" type="number" value="@check.InvocationNumber" @onchange="e => check.InvocationNumber = ParseInt(e.Value)" />
+                                </label>
+                            }
+                        </div>
+                    </div>
+                }
+                @if (!Session.ChecksFor(CardId, CardName).Any())
+                {
+                    <div class="debug-inspector-empty">No checks yet. Add one from this card.</div>
+                }
+            </section>
+        }
+        else
+        {
+            var step = CurrentStep;
+            <section class="debug-inspector-section">
+                <div class="debug-inspector-section-title test-section-heading">
+                    <span>Configuration</span>
+                    <span>
+                        <CopyButton Text="@ConfigurationText" Label="Copy config" />
+                        <button class="btn btn-ghost btn-sm" @onclick="() => OnOpenInEditor.InvokeAsync(CardId)">Open in editor</button>
+                    </span>
+                </div>
+                @if (step == null)
+                {
+                    <div class="debug-inspector-empty">This card is no longer in the flow.</div>
+                }
+                else
+                {
+                    @if (InlineScripts.Count > 0)
+                    {
+                        <div class="test-config-subhead">Scripts and code</div>
+                        @foreach (var script in InlineScripts)
+                        {
+                            if (string.IsNullOrWhiteSpace(script.Code))
+                            {
+                                <details class="test-script-unused">
+                                    <summary>@script.Label — Not used</summary>
+                                </details>
+                            }
+                            else
+                            {
+                                <div class="test-script-block" @key="script.Label">
+                                    <div class="test-json-view-head">
+                                        <span>@script.Label</span>
+                                        <CopyButton Text="@script.Code" />
+                                    </div>
+                                    <CodeEditor Value="@script.Code" Language="csharp" ReadOnly="true"
+                                                CssClass="test-config-editor" Style="@EditorStyle(script.Code)" />
+                                </div>
+                            }
+                        }
+                    }
+                    @if (StepType == "Email")
+                    {
+                        var email = EmailCardConfig.Read(step.StepConfig);
+                        <div class="test-config-list">
+                            <div><span>To</span><strong>@email.To</strong></div>
+                            <div><span>Cc</span><strong>@email.Cc</strong></div>
+                            <div><span>Bcc</span><strong>@email.Bcc</strong></div>
+                            <div><span>Reply-To</span><strong>@email.ReplyTo</strong></div>
+                            <div><span>Subject</span><strong>@email.Subject</strong></div>
+                            <div><span>HTML body</span><strong>@(email.IsHtml ? "Yes" : "No")</strong></div>
+                            <div><span>Use script</span><strong>@(email.UseScript ? "Yes" : "No")</strong></div>
+                        </div>
+                        @if (!email.UseScript)
+                        {
+                            <div class="test-json-view">
+                                <div class="test-json-view-head"><span>Body</span><CopyButton Text="@email.Body" /></div>
+                                <pre>@email.Body</pre>
+                            </div>
+                        }
+                    }
+                    @if (StepType == "HttpAction")
+                    {
+                        <div class="test-config-list">
+                            <div><span>Method</span><strong>@step.HttpMethod</strong></div>
+                            <div><span>URL</span><strong>@step.EndpointUrl</strong></div>
+                            <div><span>URL source</span><strong>@step.UrlMode</strong></div>
+                            <div><span>On HTTP error</span><strong>@(step.HttpErrorMode == "Continue" ? "Continue through Error port" : "Stop the flow")</strong></div>
+                            <div><span>Auth</span><strong>@step.AuthType</strong></div>
+                            <div><span>Connection</span><strong>@(step.ConnectionId?.ToString() ?? "—")</strong></div>
+                        </div>
+                    }
+                    @if (HasOtherSettings)
+                    {
+                        <div class="test-json-view">
+                            <div class="test-json-view-head">
+                                <span>@(StepType == "HttpAction" ? "Headers, body and pagination" : "Card configuration")</span>
+                                <CopyButton Text="@SafeStepConfig" />
+                            </div>
+                            <pre>@SafeStepConfig</pre>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="field-hint">No other settings</div>
+                    }
+                }
+            </section>
+        }
+    </div>
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public FlowTestSession Session { get; set; } = null!;
+    [Parameter] public Guid CardId { get; set; }
+    [Parameter] public string CardName { get; set; } = string.Empty;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<Guid> OnOpenInEditor { get; set; }
+
+    private string Tab
+    {
+        get => Session.InspectorTab;
+        set => Session.InspectorTab = value;
+    }
+
+    private bool _autoOpenedResult;
+    private int _invocation = 1;
+    private bool _showPathPicker;
+
+    private static readonly string[] Operators =
+    {
+        "Equals", "NotEquals", "Contains", "NotContains", "StartsWith", "EndsWith",
+        "Exists", "Missing", "GreaterThan", "GreaterOrEqual", "LessThan", "LessOrEqual",
+        "CollectionCount"
+    };
+
+    private string StepType => Session.Flow.Nodes.FirstOrDefault(node => node.Id == CardId)?.StepType ?? "Card";
+
+    private void ShowResultTab() => Tab = "Result";
+    private void ShowBehaviorTab() => Tab = "Behavior";
+    private void ShowChecksTab() => Tab = "Checks";
+    private void ShowConfigurationTab() => Tab = "Configuration";
+
+    private IntegrationStepDto? CurrentStep =>
+        Session.Flow.Nodes.FirstOrDefault(node => node.Id == CardId);
+
+    private bool IsCodeCard => StepType is "Mapping" or "Branch" or "ForEach" or "Success" or "Error"
+        or "PersistedState" or "AddIdentifier"
+        || (StepType == "Email" && EmailCardConfig.Read(CurrentStep?.StepConfig).UseScript);
+
+    private sealed record ConfigScript(string Label, string Code);
+
+    private List<ConfigScript> InlineScripts
+    {
+        get
+        {
+            var step = CurrentStep;
+            var scripts = new List<ConfigScript>();
+            if (step == null) return scripts;
+
+            void Add(string label, string? code)
+            {
+                var value = code ?? string.Empty;
+                if (!scripts.Any(item => item.Label == label && item.Code == value))
+                    scripts.Add(new ConfigScript(label, value));
+            }
+
+            if (IsCodeCard)
+                Add(PrimaryCodeLabel, step.MappingCode);
+
+            if (StepType == "HttpAction")
+            {
+                Add("Dynamic URL script", step.UrlCode);
+                Add("Pre-request body script", step.PreFlightCode);
+                Add("Post-response script", step.PostFlightCode);
+            }
+
+            CollectConfigScripts(CleanedStepConfig, null, scripts);
+            return scripts;
+        }
+    }
+
+    private static string EditorStyle(string? code)
+    {
+        var lines = Math.Clamp((code ?? string.Empty).Split('\n').Length, 3, 20);
+        var height = lines * 20 + 12;
+        return $"height:{height}px;min-height:{height}px;max-height:{height}px;";
+    }
+
+    private string PrimaryCodeLabel => StepType switch
+    {
+        "Mapping" => "Mapping code",
+        "Branch" => "Branch condition",
+        "ForEach" => "ForEach mapping code",
+        "Success" => "Success message code",
+        "Error" => "Error message code",
+        "PersistedState" => "Persisted state code",
+        "AddIdentifier" => "Identifier code",
+        "Email" => "Email body script",
+        _ => "Code"
+    };
+
+    private static void CollectConfigScripts(JsonNode? node, string? prefix, List<ConfigScript> scripts)
+    {
+        if (node is JsonObject obj)
+        {
+            foreach (var property in obj)
+            {
+                var path = string.IsNullOrWhiteSpace(prefix) ? property.Key : $"{prefix}.{property.Key}";
+                if (property.Value is JsonValue value && value.TryGetValue<string>(out var text))
+                {
+                    if (IsCodeName(property.Key)
+                        && !scripts.Any(item => item.Label == path && item.Code == text))
+                        scripts.Add(new ConfigScript(path, text));
+                }
+                else
+                {
+                    CollectConfigScripts(property.Value, path, scripts);
+                }
+            }
+        }
+        else if (node is JsonArray array)
+        {
+            for (var index = 0; index < array.Count; index++)
+                CollectConfigScripts(array[index], $"{prefix}[{index}]", scripts);
+        }
+    }
+
+    private static bool IsCodeName(string name) =>
+        name.Contains("code", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("script", StringComparison.OrdinalIgnoreCase);
+
+    private JsonNode? CleanedStepConfig
+    {
+        get
+        {
+            var config = CurrentStep?.StepConfig;
+            if (string.IsNullOrWhiteSpace(config)) return new JsonObject();
+            try
+            {
+                return CleanConfig(JsonNode.Parse(config));
+            }
+            catch (JsonException)
+            {
+                return new JsonObject { ["error"] = "The stored card configuration is not valid JSON." };
+            }
+        }
+    }
+
+    private bool HasOtherSettings => CleanedStepConfig is not JsonObject obj || obj.Count > 0;
+
+    private string SafeStepConfig =>
+        CleanedStepConfig?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "{}";
+
+    private string ConfigurationText
+    {
+        get
+        {
+            var step = CurrentStep;
+            if (step == null) return string.Empty;
+            var lines = new List<string>
+            {
+                $"Type: {step.StepType}",
+                $"Node: {step.NodeName}",
+                $"URL: {step.EndpointUrl}",
+                $"Method: {step.HttpMethod}",
+                $"Auth: {step.AuthType}",
+                $"Connection: {step.ConnectionId}"
+            };
+            foreach (var script in InlineScripts)
+            {
+                lines.Add(string.IsNullOrWhiteSpace(script.Code)
+                    ? $"{script.Label}: Not used"
+                    : $"{script.Label}:{Environment.NewLine}{script.Code}");
+            }
+            lines.Add($"Configuration:{Environment.NewLine}{SafeStepConfig}");
+            return string.Join(Environment.NewLine, lines);
+        }
+    }
+
+    // Designer metadata (mapper samples, previews, layout hints) is not card configuration.
+    // Nested JSON held in string values is decoded and pretty-printed so the Config tab does not
+    // show escaped \u0022 blobs.
+    private static JsonNode? CleanConfig(JsonNode? node)
+    {
+        if (node is JsonObject obj)
+        {
+            var cleaned = new JsonObject();
+            foreach (var property in obj)
+            {
+                if (IsDesignerMetadata(property.Key)) continue;
+                if (IsSecretName(property.Key))
+                {
+                    cleaned[property.Key] = "[redacted]";
+                    continue;
+                }
+
+                var value = property.Value;
+                if (value is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var text))
+                {
+                    var trimmed = text.Trim();
+                    if (trimmed.StartsWith('{') || trimmed.StartsWith('['))
+                    {
+                        try { value = JsonNode.Parse(trimmed); }
+                        catch (JsonException) { }
+                    }
+                }
+                cleaned[property.Key] = CleanConfig(value);
+            }
+            return cleaned;
+        }
+        if (node is JsonArray array)
+        {
+            var cleaned = new JsonArray();
+            foreach (var child in array) cleaned.Add(CleanConfig(child));
+            return cleaned;
+        }
+        return node?.DeepClone();
+    }
+
+    private static bool IsDesignerMetadata(string name)
+    {
+        var normalized = name.Replace("_", string.Empty).Replace("-", string.Empty);
+        return normalized.Contains("sample", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("designer", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("preview", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("uiMetadata", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("nodeMetadata", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("layout", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSecretName(string name) =>
+        name.Contains("token", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("secret", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("password", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("api-key", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("apikey", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("authorization", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("cookie", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("set-cookie", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("proxy-authorization", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnParametersSet()
+    {
+        if (!_autoOpenedResult && Session.HasResult && !Session.KeepInspectorTab)
+        {
+            Tab = "Result";
+            _autoOpenedResult = true;
+        }
+        var result = Session.CardResult(CardId);
+        if (result != null && _invocation > result.InvocationCount) _invocation = Math.Max(1, result.InvocationCount);
+    }
+
+    private void OnInvocationChanged(ChangeEventArgs args)
+    {
+        _invocation = ParseInt(args.Value) ?? 1;
+    }
+
+    private void PickPath(FlowTestAssertionDto check, string? path)
+    {
+        var option = Session.PathOptions(CardId).FirstOrDefault(item => item.Path == path);
+        if (option != null) Session.SetCheckPath(check, option);
+        _showPathPicker = false;
+    }
+
+    private static int? ParseInt(object? value) =>
+        int.TryParse(value?.ToString(), out var parsed) ? parsed : null;
+
+    private static void SetOutputFormat(FlowTestCardOverrideDto supplied, ChangeEventArgs args) =>
+        supplied.OutputFormat = args.Value?.ToString() ?? "Json";
+
+    private static void SetResponseFormat(FlowHttpResponseOverrideDto response, ChangeEventArgs args) =>
+        response.ResponseFormat = args.Value?.ToString() ?? "Json";
+
+    private void SetHeaders(FlowHttpResponseOverrideDto response, ChangeEventArgs args) =>
+        Session.HeadersText[response] = args.Value?.ToString() ?? "{}";
+
+    private static void SetField(FlowTestAssertionDto check, ChangeEventArgs args) =>
+        check.Field = args.Value?.ToString() ?? "Status";
+
+    private static void SetOperator(FlowTestAssertionDto check, ChangeEventArgs args) =>
+        check.Operator = args.Value?.ToString() ?? "Equals";
+
+    private static void SetInvocationScope(FlowTestAssertionDto check, ChangeEventArgs args) =>
+        check.InvocationScope = args.Value?.ToString() ?? "Every";
+
+    private static bool IsJson(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        try { using var _ = JsonDocument.Parse(value); return true; }
+        catch (JsonException) { return false; }
+    }
+
+    private static string ResultStatusClass(FlowTestCardResultDto? result) => result?.Status switch
+    {
+        "Failed" => "failed",
+        "NotReached" => "notreached",
+        "Supplied" => "supplied",
+        "Fixture" => "fixture",
+        "Passed" => "success",
+        _ => "queued"
+    };
+
+    private static List<string> DifferingPaths(string expected, string actual)
+    {
+        var paths = new List<string>();
+        try
+        {
+            using var expectedDocument = JsonDocument.Parse(expected);
+            using var actualDocument = JsonDocument.Parse(actual);
+            Compare(expectedDocument.RootElement, actualDocument.RootElement, "$", paths, 0);
+        }
+        catch (JsonException)
+        {
+            if (expected != actual) paths.Add("$");
+        }
+        return paths.Take(8).ToList();
+    }
+
+    private static void Compare(JsonElement expected, JsonElement actual, string path, List<string> paths, int depth)
+    {
+        if (depth > 8 || paths.Count >= 8) return;
+        if (expected.ValueKind != actual.ValueKind)
+        {
+            paths.Add(path);
+            return;
+        }
+        if (expected.ValueKind == JsonValueKind.Object)
+        {
+            var expectedProperties = expected.EnumerateObject().ToDictionary(item => item.Name, item => item.Value, StringComparer.Ordinal);
+            var actualProperties = actual.EnumerateObject().ToDictionary(item => item.Name, item => item.Value, StringComparer.Ordinal);
+            foreach (var name in expectedProperties.Keys.Union(actualProperties.Keys, StringComparer.Ordinal))
+            {
+                if (!expectedProperties.TryGetValue(name, out var expectedValue) || !actualProperties.TryGetValue(name, out var actualValue))
+                    paths.Add($"{path}.{name}");
+                else
+                    Compare(expectedValue, actualValue, $"{path}.{name}", paths, depth + 1);
+            }
+        }
+        else if (expected.ValueKind == JsonValueKind.Array)
+        {
+            var expectedItems = expected.EnumerateArray().ToList();
+            var actualItems = actual.EnumerateArray().ToList();
+            if (expectedItems.Count != actualItems.Count) paths.Add($"{path}.length");
+            for (var index = 0; index < Math.Min(expectedItems.Count, actualItems.Count); index++)
+                Compare(expectedItems[index], actualItems[index], $"{path}[{index}]", paths, depth + 1);
+        }
+        else if (!JsonElement.DeepEquals(expected, actual))
+        {
+            paths.Add(path);
+        }
+    }
+}

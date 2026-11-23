@@ -1,0 +1,74 @@
+.ai-flow-overlay {
+    z-index: 1200;
+}
+
+.ai-flow-modal {
+    width: min(760px, calc(100vw - 32px));
+    max-height: min(90vh, 920px);
+}
+
+.ai-flow-body {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.ai-provider-panel,
+.ai-prompt-panel,
+.ai-result-panel {
+    padding: 18px;
+    border: 1px solid var(--border-color, #dbe2ee);
+    border-radius: 12px;
+    background: var(--surface-color, #fff);
+}
+
+.ai-provider-panel h3,
+.ai-prompt-panel h3,
+.ai-result-panel h3 {
+    margin: 0 0 14px;
+    font-size: 1rem;
+}
+
+.ai-provider-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.ai-provider-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.ai-prompt {
+    min-height: 140px;
+    resize: vertical;
+}
+
+.ai-result-panel ul {
+    padding-left: 22px;
+}
+
+.ai-result-panel a {
+    overflow-wrap: anywhere;
+}
+
+.ai-result-panel li {
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+    .ai-provider-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+    }
+
+    .ai-provider-panel,
+    .ai-prompt-panel,
+    .ai-result-panel {
+        padding: 14px;
+    }
+}
+

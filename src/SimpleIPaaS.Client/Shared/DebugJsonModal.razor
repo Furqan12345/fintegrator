@@ -1,13 +1,13 @@
 @if (IsVisible)
 {
-    <div class="modal-overlay" @onclick="Close" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
-        <div class="modal-container debug-json-modal" @onclick:stopPropagation="true" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+    <div class="modal-overlay" @onclick="Close" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+        <div class="modal-container debug-json-modal" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
             <div class="modal-header">
                 <h2 class="modal-title">JSON Viewer</h2>
                 <button class="modal-close-btn" @onclick="Close">✕</button>
             </div>
 
-            <div class="debug-json-modal-body" @onwheel:stopPropagation="true">
+            <div class="debug-json-modal-body">
                 @if (!string.IsNullOrWhiteSpace(ErrorMessage))
                 {
                     <div class="debug-json-error">@ErrorMessage</div>

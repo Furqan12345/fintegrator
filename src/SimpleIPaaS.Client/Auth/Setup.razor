@@ -1,0 +1,104 @@
+@page "/setup"
+@inject AuthApiClient AuthApi
+@inject NavigationManager Navigation
+
+<PageTitle>First-time setup · fusetor.com</PageTitle>
+
+<h1 class="auth-title">Create the first administrator</h1>
+<p class="auth-subtitle">This page is available only until the first account exists.</p>
+
+@if (_alreadyConfigured)
+{
+    <div class="auth-info">
+        Setup has already been completed.
+        <a class="auth-link" href="/login">Go to sign in</a>
+    </div>
+}
+else
+{
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="auth-error" role="alert">@_error</div>
+    }
+
+    <form class="auth-form" @onsubmit="SubmitAsync" @onsubmit:preventDefault>
+        <label class="form-label" for="setup-name">Full name</label>
+        <input id="setup-name" class="form-control" autocomplete="name" @bind="FullName" disabled="@_busy" />
+
+        <label class="form-label" for="setup-email">Email</label>
+        <input id="setup-email" class="form-control" type="email" autocomplete="username" @bind="Email" disabled="@_busy" />
+
+        <label class="form-label" for="setup-password">Password</label>
+        <input id="setup-password" class="form-control" type="password" autocomplete="new-password" @bind="Password" disabled="@_busy" />
+        <p class="auth-hint">At least 12 characters, with upper/lowercase, a digit, and a symbol.</p>
+
+        <label class="form-label" for="setup-confirm">Confirm password</label>
+        <input id="setup-confirm" class="form-control" type="password" autocomplete="new-password" @bind="ConfirmPassword" disabled="@_busy" />
+
+        <button type="submit" class="btn btn-primary auth-submit" disabled="@_busy">
+            @(_busy ? "Creating…" : "Create administrator")
+        </button>
+    </form>
+}
+
+@code {
+    private string FullName { get; set; } = string.Empty;
+    private string Email { get; set; } = string.Empty;
+    private string Password { get; set; } = string.Empty;
+    private string ConfirmPassword { get; set; } = string.Empty;
+    private bool _busy;
+    private bool _alreadyConfigured;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var status = await AuthApi.GetSetupStatusAsync();
+            _alreadyConfigured = !status.Required;
+        }
+        catch (Exception)
+        {
+            _error = "The API could not be reached. Try again.";
+        }
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _error = null;
+        if (!string.Equals(Password, ConfirmPassword, StringComparison.Ordinal))
+        {
+            _error = "The passwords do not match.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var response = await AuthApi.SetupAsync(new SimpleIPaaS.Shared.Models.SetupRequest
+            {
+                Email = Email.Trim(),
+                Password = Password,
+                FullName = FullName.Trim()
+            });
+            Navigation.NavigateTo($"/setup-2fa?token={Uri.EscapeDataString(response.SetupToken)}");
+        }
+        catch (AuthApiException exception)
+        {
+            _error = exception.Message;
+        }
+        catch (Exception)
+        {
+            _error = "The API could not be reached. Try again.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

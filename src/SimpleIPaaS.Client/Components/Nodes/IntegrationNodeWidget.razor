@@ -3,9 +3,28 @@
 @using SimpleIPaaS.Client.Shared
 @using SimpleIPaaS.Client.Components
 @using SimpleIPaaS.Client.Components.Nodes
+@using SimpleIPaaS.Client.Services
 
-<div class="custom-node @Node.StepConfig.StepType?.ToLower() @(Node.IsTestMode ? "is-test-node" : string.Empty) @(Node.IsMocked ? "is-mocked" : string.Empty)" @onclick="HandleClick" @onclick:stopPropagation="true">
-    @if (Node.StepConfig.StepType == "HttpAction")
+<div class="custom-node @Node.StepConfig.StepType?.ToLower() @(Node.IsTestMode ? $"is-test-node test-state-{Node.TestState}" : string.Empty) @(Node.IsMocked ? "is-mocked" : string.Empty) @(Node.IsDebugMode ? $"is-debug debug-{Node.DebugState.ToString().ToLowerInvariant()}" : string.Empty) @(Node.StepConfig.StepType == "HttpAction" && Node.StepConfig.HttpErrorMode == "Continue" ? "has-http-error-port" : string.Empty) @(Node.IsHttpErrorPortTaken ? "http-error-taken" : string.Empty)" @onclick="HandleClick" @onclick:stopPropagation="true">
+    @if (Node.IsDebugMode && Node.HasDebugOutput)
+    {
+        <span class="debug-badge @(Node.DebugState switch { DebugNodeState.Success => "debug-badge-success", DebugNodeState.Supplied => "debug-badge-supplied", _ => "debug-badge-error" })"
+              title="@(Node.DebugState switch { DebugNodeState.Success => "Completed successfully", DebugNodeState.Supplied => "Output supplied without running", _ => "Failed" })">
+            <AppIcon Name="@(Node.DebugState switch { DebugNodeState.Success => "check-circle", DebugNodeState.Supplied => "copy", _ => "x-circle" })" Class="icon icon-xs" />
+        </span>
+    }
+
+    @if (Node.IsTestMode)
+    {
+        <div class="test-node-compact">
+            <div class="test-node-compact-head">
+                <span class="test-node-kind">@DisplayStepType</span>
+                <strong>@Node.StepConfig.NodeName</strong>
+            </div>
+            <div class="test-node-compact-summary" title="@TestSummary">@TestSummary</div>
+        </div>
+    }
+    else if (Node.StepConfig.StepType == "HttpAction")
     {
         <HttpActionCard Step="Node.StepConfig" />
     }
@@ -41,6 +60,26 @@
     {
         <ForEachCard Step="Node.StepConfig" />
     }
+    else if (Node.StepConfig.StepType == "FanOut")
+    {
+        <FanOutCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "AddIdentifier")
+    {
+        <AddIdentifierCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "Error")
+    {
+        <ErrorCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "Success")
+    {
+        <SuccessCard Step="Node.StepConfig" />
+    }
+    else if (Node.StepConfig.StepType == "Email")
+    {
+        <EmailCard Step="Node.StepConfig" />
+    }
     else
     {
         <div class="test-card-fallback">
@@ -50,18 +89,70 @@
         </div>
     }
 
-    @if (Node.IsTestMode)
+    @if (Node.IsDebugMode)
+    {
+        <div class="debug-node-actions">
+            @if (Node.IsDebugRunning)
+            {
+                <span class="debug-spinner" role="status" aria-label="Running">
+                    <span class="debug-spinner-ring"></span>
+                    <span>Running…</span>
+                </span>
+            }
+            else
+            {
+                <button type="button"
+                        class="debug-action debug-action-run @(Node.DebugRunnable ? string.Empty : "is-disabled")"
+                        disabled="@(!Node.DebugRunnable)"
+                        @onclick="RunNodeAsync"
+                        @onclick:preventDefault
+                        @onclick:stopPropagation="true"
+                        @onpointerdown:stopPropagation="true"
+                        title="@(Node.DebugRunnable ? "Run this step" : "Waiting for upstream steps to succeed")">
+                    <AppIcon Name="play" Class="icon icon-xs" /> @(Node.DebugRunnable ? (Node.HasDebugOutput ? "Re-run" : "Run") : "Waiting")
+                </button>
+                <button type="button"
+                        class="debug-action debug-action-supply"
+                        disabled="@(!Node.DebugRunnable)"
+                        @onclick="SupplyNodeAsync"
+                        @onclick:preventDefault
+                        @onclick:stopPropagation="true"
+                        @onpointerdown:stopPropagation="true"
+                        title="Supply this card's output without executing it">
+                    <AppIcon Name="copy" Class="icon icon-xs" /> Supply output
+                </button>
+                @if (Node.HasDebugLogs)
+                {
+                    <button type="button"
+                            class="debug-action debug-action-logs"
+                            @onclick="ViewLogs"
+                            @onclick:stopPropagation="true"
+                            @onpointerdown:stopPropagation="true"
+                            title="Inspect input, output and logs">
+                        <AppIcon Name="logs" Class="icon icon-xs" /> Logs
+                    </button>
+                }
+            }
+        </div>
+    }
+
+    @if (Node.IsTestMode && !string.IsNullOrWhiteSpace(Node.TestBadge))
     {
         <button type="button"
-                class="test-node-status @(Node.TestStatus.ToLowerInvariant().Replace(" ", "-"))"
+                class="test-node-badge @Node.TestTone"
                 title="Configure this card for the current test scenario"
                 @onclick="HandleClick"
                 @onclick:stopPropagation="true"
                 @onpointerdown:stopPropagation="true">
-            <span class="test-node-status-dot"></span>
-            <span>@Node.TestStatus</span>
-            @if (Node.IsMocked) { <span class="test-node-mocked">Supplied</span> }
-            <span class="test-node-configure">Configure test</span>
+            @if (Node.TestState == "passed")
+            {
+                <AppIcon Name="check-circle" Class="icon icon-xs" />
+            }
+            else if (Node.TestState == "failed" || Node.TestTone == "needs-response")
+            {
+                <AppIcon Name="x-circle" Class="icon icon-xs" />
+            }
+            <span>@Node.TestBadge</span>
         </button>
     }
 
@@ -69,9 +160,71 @@
     {
         <PortRenderer Port="port" />
     }
+    @if (Node.StepConfig.StepType == "HttpAction" && Node.StepConfig.HttpErrorMode == "Continue")
+    {
+        <span class="http-error-port-label @(Node.IsHttpErrorPortTaken ? "is-taken" : "")"
+              title="HTTP errors continue through this port">Error</span>
+    }
 </div>
 
 @code {
     [Parameter] public IntegrationNodeModel Node { get; set; } = null!;
     private Task HandleClick() => Node.TestClick?.Invoke(Node) ?? Task.CompletedTask;
+
+    private string DisplayStepType => Node.StepConfig.StepType switch
+    {
+        "HttpAction" => "HTTP Action",
+        "Mapping" => "Mapper",
+        "CrossReferenceStore" => "XRef Store",
+        "CrossReferenceFilter" => "XRef Filter",
+        "PersistedState" => "Persisted State",
+        "ForEach" => "For Each",
+        "FanOut" => "Fan Out",
+        "AddIdentifier" => "Identifier",
+        "Success" => "Success",
+        "Error" => "Error",
+        "Email" => "Email",
+        "Schedule" => "Schedule",
+        "Branch" => "Branch",
+        "Debug" => "Debug",
+        _ => string.IsNullOrWhiteSpace(Node.StepConfig.StepType) ? "Card" : Node.StepConfig.StepType
+    };
+
+    private string TestSummary
+    {
+        get
+        {
+            var config = Node.StepConfig;
+            return config.StepType switch
+            {
+                "HttpAction" => $"{config.HttpMethod} · {Truncate(config.EndpointUrl, 80)}",
+                "Mapping" => $"C# mapper · {Truncate(Preview(config.MappingCode), 72)}",
+                "Branch" => $"C# branch · {Truncate(Preview(config.MappingCode), 72)}",
+                "PersistedState" => $"C# persisted state · {Truncate(Preview(config.MappingCode), 66)}",
+                "Email" => $"Email · {Truncate(Preview(config.StepConfig), 76)}",
+                "Schedule" => "Schedule trigger",
+                "ForEach" => "Loop over incoming items",
+                "FanOut" => "Create one transaction per item",
+                "CrossReferenceStore" => "Store isolated cross-reference keys",
+                "CrossReferenceFilter" => "Filter by isolated cross-reference keys",
+                "AddIdentifier" => Truncate(Preview(config.MappingCode), 88),
+                "Error" => Truncate(Preview(config.MappingCode), 88),
+                "Success" => Truncate(Preview(config.MappingCode), 88),
+                "Debug" => "Debug card",
+                _ => "Uses production configuration"
+            };
+        }
+    }
+
+    private static string Preview(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "production configuration"
+            : string.Join(' ', value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)).Trim();
+
+    private static string Truncate(string value, int length) =>
+        string.IsNullOrWhiteSpace(value) ? "—" : value.Length <= length ? value : value[..length] + "…";
+
+    private Task RunNodeAsync() => Node.DebugRun?.Invoke(Node) ?? Task.CompletedTask;
+    private Task SupplyNodeAsync() => Node.DebugSupply?.Invoke(Node) ?? Task.CompletedTask;
+    private Task ViewLogs() => Node.DebugViewLogs?.Invoke(Node) ?? Task.CompletedTask;
 }

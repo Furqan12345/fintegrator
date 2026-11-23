@@ -1,0 +1,114 @@
+@page "/setup-2fa"
+@inject AuthSession Auth
+@inject AuthApiClient AuthApi
+@inject NavigationManager Navigation
+
+<PageTitle>Set up two-factor authentication · fusetor.com</PageTitle>
+
+<h1 class="auth-title">Set up two-factor authentication</h1>
+<p class="auth-subtitle">Two-factor authentication is required for every account.</p>
+
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="auth-error" role="alert">@_error</div>
+    <p class="auth-hint"><a class="auth-link" href="/login">Return to sign in</a></p>
+}
+else if (_setup == null)
+{
+    <p class="auth-hint">Loading your authenticator setup…</p>
+}
+else if (_recoveryCodes.Count > 0)
+{
+    <div class="auth-success">Two-factor authentication is enabled.</div>
+    <p>Save these recovery codes somewhere safe. Each code works once and is the only way back in if you lose the authenticator app.</p>
+    <div class="recovery-codes">
+        @foreach (var recoveryCode in _recoveryCodes)
+        {
+            <code>@recoveryCode</code>
+        }
+    </div>
+    <button type="button" class="btn btn-primary auth-submit" @onclick="ContinueAsync">I saved the codes — continue</button>
+}
+else
+{
+    <p>Scan this code with your authenticator app, then enter the six-digit code it shows.</p>
+    <div class="auth-qr">
+        <img src="@_setup.QrCodeDataUri" alt="Authenticator QR code" />
+    </div>
+    <p class="auth-hint">Can’t scan it? Enter this key manually:</p>
+    <code class="auth-shared-key">@_setup.SharedKey</code>
+
+    <form class="auth-form" @onsubmit="EnableAsync" @onsubmit:preventDefault>
+        <label class="form-label" for="two-factor-code">Authenticator code</label>
+        <input id="two-factor-code" class="form-control" inputmode="numeric" autocomplete="one-time-code" maxlength="12" @bind="Code" disabled="@_busy" />
+        <button type="submit" class="btn btn-primary auth-submit" disabled="@_busy">
+            @(_busy ? "Verifying…" : "Enable two-factor authentication")
+        </button>
+    </form>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Token { get; set; }
+
+    private SimpleIPaaS.Shared.Models.TwoFactorSetupResponse? _setup;
+    private IReadOnlyList<string> _recoveryCodes = Array.Empty<string>();
+    private string Code { get; set; } = string.Empty;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Token))
+        {
+            _error = "The setup session is missing or has expired. Sign in again.";
+            return;
+        }
+
+        try
+        {
+            _setup = await AuthApi.SetupTwoFactorAsync(Token);
+        }
+        catch (AuthApiException exception)
+        {
+            _error = exception.Message;
+        }
+        catch (Exception)
+        {
+            _error = "The API could not be reached. Try again.";
+        }
+    }
+
+    private async Task EnableAsync()
+    {
+        if (_busy || string.IsNullOrWhiteSpace(Token))
+        {
+            return;
+        }
+
+        _busy = true;
+        _error = null;
+        try
+        {
+            var response = await Auth.EnableTwoFactorAsync(Token, Code);
+            _recoveryCodes = response.RecoveryCodes;
+        }
+        catch (AuthApiException exception)
+        {
+            _error = exception.Message;
+        }
+        catch (Exception)
+        {
+            _error = "The API could not be reached. Try again.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void ContinueAsync()
+    {
+        Navigation.NavigateTo("/", replace: true);
+    }
+}

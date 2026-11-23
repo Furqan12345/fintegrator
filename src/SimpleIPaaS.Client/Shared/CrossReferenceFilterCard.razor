@@ -4,7 +4,7 @@
 @inject IState<CrossReferenceState> CrossReferenceState
 @inject IDispatcher Dispatcher
 
-<MinimizableNodeCard Title="Cross-Reference Filter" NodeColorClass="node-header-pink">
+<MinimizableNodeCard Title="Cross-Reference Filter" NodeName="@Step.NodeName" NodeColorClass="node-header-pink">
     <p class="node-hint">
         @if (Config.FilterMode == "KeepExisting")
         {

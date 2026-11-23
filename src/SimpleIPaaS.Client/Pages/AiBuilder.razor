@@ -1,0 +1,730 @@
+@page "/ai-builder"
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+@implements IDisposable
+
+<PageTitle>Build with AI - fusetor.com</PageTitle>
+
+<div class="ai-builder @(_sessionsCollapsed ? "sessions-collapsed" : string.Empty) @(_previewCollapsed ? "preview-collapsed" : string.Empty)">
+    <aside class="ai-builder-sessions @(_sessionsCollapsed ? "is-collapsed" : string.Empty)">
+        <button type="button" class="ai-panel-strip" @onclick="ExpandSessions" title="Show sessions">
+            <AppIcon Name="chevron-right" Class="icon icon-sm" />
+            <span class="ai-panel-strip-label">Sessions</span>
+        </button>
+        <div class="ai-panel-content">
+        <div class="ai-sessions-head">
+            <h3>Sessions</h3>
+            <div class="ai-panel-actions">
+                <button class="btn btn-icon btn-sm" @onclick="CollapseSessions" title="Hide sessions" aria-label="Hide sessions">
+                    <AppIcon Name="chevron-left" Class="icon icon-sm" />
+                </button>
+                <button class="btn btn-primary btn-sm" @onclick="StartNewSession">+ New</button>
+            </div>
+        </div>
+        @if (_loadingSessions)
+        {
+            <p class="text-muted">Loading sessions…</p>
+        }
+        else if (_sessions.Count == 0)
+        {
+            <p class="text-muted">No sessions yet. Start one to build a flow with the agent.</p>
+        }
+        else
+        {
+            <div class="ai-session-list">
+                @foreach (var session in _sessions)
+                {
+                    <div class="ai-session-row">
+                        <button type="button" class="ai-session-item @(_session?.Id == session.Id ? "is-active" : string.Empty)" @onclick="() => OpenSessionAsync(session.Id)">
+                            <span class="ai-session-title">@session.Title</span>
+                            <span class="ai-session-meta">
+                                <span class="ai-session-status @(session.Status == "Ended" ? "is-ended" : "is-active")">@session.Status</span>
+                                @session.UpdatedAt.ToLocalTime().ToString("g")
+                            </span>
+                            @if (!string.IsNullOrWhiteSpace(session.LastMessagePreview))
+                            {
+                                <span class="ai-session-preview">@session.LastMessagePreview</span>
+                            }
+                        </button>
+                        <button type="button" class="ai-session-delete"
+                                title="Delete this session"
+                                aria-label="@($"Delete session {session.Title}")"
+                                disabled="@(_session?.Id == session.Id && _busy)"
+                                @onclick="() => AskDeleteSession(session)">
+                            <AppIcon Name="trash" Class="icon icon-xs" />
+                        </button>
+                    </div>
+                }
+            </div>
+        }
+        </div>
+    </aside>
+
+    <main class="ai-builder-chat">
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <div class="alert alert-error" role="alert">@_error</div>
+        }
+
+        @if (_session == null)
+        {
+            <section class="ai-start-panel">
+                <h2>Build a flow with AI</h2>
+                <p class="text-muted">The agent researches official documentation, inspects your data, and builds the flow step by step. Everything it does is saved — you can close this page and come back.</p>
+                <div class="form-group">
+                    <label for="ai-start-flow">What should the agent work on?</label>
+                    <select id="ai-start-flow" class="form-control" @bind="_startFlowChoice">
+                        <option value="">Select an existing flow…</option>
+                        <option value="new">New flow — start from scratch</option>
+                        @foreach (var flow in _flows)
+                        {
+                            <option value="@flow.Id">@flow.Name</option>
+                        }
+                    </select>
+                    <small class="field-hint">When opened from inside a flow designer, the current flow is picked up automatically.</small>
+                </div>
+                <button class="btn btn-primary" disabled="@(!CanStartSession)" @onclick="StartSessionAsync">Start build session</button>
+            </section>
+        }
+        else
+        {
+            <div class="ai-chat-head">
+                <div>
+                    <h2>@_session.Title</h2>
+                    <p class="text-muted">@(_session.Status == "Ended" ? "Session ended — the history below stays saved." : "Prompts and agent progress are saved automatically.")</p>
+                </div>
+                <div class="ai-chat-head-actions">
+                    @if (_session.Status == "Ended")
+                    {
+                        <button class="btn btn-primary" @onclick="StartNewSession">Start new session</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-outline" disabled="@_busy" @onclick="EndSessionAsync">End session</button>
+                    }
+                </div>
+            </div>
+
+            <div class="ai-chat-transcript" id="ai-chat-transcript">
+                @foreach (var message in _session.Messages)
+                {
+                    @if (message.Role == "User")
+                    {
+                        <div class="ai-msg ai-msg-user">
+                            <div class="ai-msg-body">@message.Content</div>
+                            <div class="ai-msg-meta">You · @message.CreatedAt.ToLocalTime().ToString("g")</div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="ai-msg ai-msg-agent">
+                            <div class="ai-msg-meta">Agent@(string.IsNullOrWhiteSpace(message.Model) ? string.Empty : " · " + message.Model) · @message.CreatedAt.ToLocalTime().ToString("g")</div>
+                            @if (message.Status == "Queued")
+                            {
+                                <div class="ai-agent-status is-queued">Waiting in the build queue · @ElapsedText(message)</div>
+                            }
+                            else if (message.Status == "Running")
+                            {
+                                <div class="ai-agent-status is-running">Agent is working · @message.Steps.Count steps · @ElapsedText(message)</div>
+                            }
+                            else if (message.Status == "Failed")
+                            {
+                                <div class="ai-agent-status is-failed">Build failed</div>
+                            }
+                            @if (message.Steps.Count > 0)
+                            {
+                                <details class="ai-steps" open="@(message.Status == "Running")">
+                                    <summary>Agent steps (@message.Steps.Count)</summary>
+                                    <ol>
+                                        @foreach (var step in message.Steps)
+                                        {
+                                            <li>
+                                                <span class="ai-step-note">@step.Note</span>
+                                                <span class="ai-step-meta">@step.At.ToLocalTime().ToString("T") · @step.ToolCalls tools</span>
+                                            </li>
+                                        }
+                                    </ol>
+                                </details>
+                            }
+                            @if (message.Status == "Failed")
+                            {
+                                <div class="alert alert-error">@message.Error</div>
+                            }
+                            else if (!string.IsNullOrWhiteSpace(message.Content))
+                            {
+                                <div class="ai-msg-body">@message.Content</div>
+                            }
+                            @if (message.Warnings.Count > 0)
+                            {
+                                <div class="ai-msg-warnings">
+                                    <strong>Review these items</strong>
+                                    <ul>@foreach (var warning in message.Warnings) { <li>@warning</li> }</ul>
+                                </div>
+                            }
+                            @if (message.Sources.Count > 0)
+                            {
+                                <div class="ai-msg-sources">
+                                    <strong>Research sources</strong>
+                                    <ul>
+                                        @foreach (var source in message.Sources)
+                                        {
+                                            <li>@if (SourceHref(source) is string url) { <a href="@url" target="_blank" rel="noopener noreferrer">@source</a> } else { @source }</li>
+                                        }
+                                    </ul>
+                                </div>
+                            }
+                            @if (message.Status == "Complete" && message.Flow != null)
+                            {
+                                <button class="btn btn-outline btn-sm" @onclick="() => OpenDraftInDesigner(message)">Use this draft in the designer</button>
+                            }
+                        </div>
+                    }
+                }
+            </div>
+
+            @if (_session.Status == "Ended")
+            {
+                <div class="ai-composer is-disabled">
+                    <p class="text-muted">This session is ended. Start a new session to keep building.</p>
+                </div>
+            }
+            else
+            {
+                <div class="ai-composer">
+                    <div class="ai-quick-actions">
+                        <button type="button" class="btn btn-outline btn-sm" @onclick='() => UseQuickPrompt("Explain what my current draft does, step by step.")' disabled="@_busy">Explain draft</button>
+                        <button type="button" class="btn btn-outline btn-sm" @onclick='() => UseQuickPrompt("Review this draft for problems: bad paths, missing error handling, and risky side effects.")' disabled="@_busy">Audit draft</button>
+                        <button type="button" class="btn btn-outline btn-sm" @onclick='() => UseQuickPrompt("Add error handling and retries where this flow needs them.")' disabled="@_busy">Add error handling</button>
+                        <button type="button" class="btn btn-outline btn-sm" @onclick='() => UseQuickPrompt("Why did my last run fail? Check recent runs and dead letters, then propose a fix.")' disabled="@_busy">Fix last failure</button>
+                    </div>
+                    <div class="ai-composer-row">
+                        <select class="form-control ai-provider-select" @bind="_selectedProviderId" disabled="@_busy">
+                            @foreach (var provider in _providers.Where(provider => provider.HasApiKey))
+                            {
+                                <option value="@provider.Id">@provider.Name — @provider.Model</option>
+                            }
+                        </select>
+                    </div>
+                    @if (!_providers.Any(provider => provider.HasApiKey))
+                    {
+                        <div class="form-hint" role="note">
+                            No AI provider has a saved API key yet, so the agent cannot be sent a prompt.
+                            <a href="ai-providers">Configure a provider</a> to start building.
+                        </div>
+                    }
+                    <textarea class="form-control ai-prompt" id="ai-chat-composer" @bind="_prompt" @bind:event="oninput" maxlength="32000" disabled="@_busy"
+                              placeholder="Describe the flow or the change you want, then press Send."></textarea>
+                    <div class="ai-composer-row ai-composer-actions">
+                        <small class="field-hint">Enter sends · Shift+Enter adds a line. The agent continues from the current draft state; saved credentials are never sent to the provider.</small>
+                        <button class="btn btn-primary" disabled="@(!CanSend)" @onclick="SendAsync">@(_busy ? "Agent is responding…" : "Send")</button>
+                    </div>
+                </div>
+            }
+        }
+    </main>
+
+    <aside class="ai-builder-preview @(_previewCollapsed ? "is-collapsed" : string.Empty)">
+        <button type="button" class="ai-panel-strip" @onclick="ExpandPreview" title="Show draft canvas">
+            <AppIcon Name="chevron-left" Class="icon icon-sm" />
+            <span class="ai-panel-strip-label">Draft</span>
+        </button>
+        <div class="ai-panel-content">
+        <div class="ai-preview-head">
+            <h3>Draft canvas</h3>
+            <button class="btn btn-icon btn-sm" @onclick="CollapsePreview" title="Hide draft canvas" aria-label="Hide draft canvas">
+                <AppIcon Name="chevron-right" Class="icon icon-sm" />
+            </button>
+        </div>
+        @if (_session?.DraftFlow == null)
+        {
+            <p class="text-muted">The draft appears here as the agent builds it, so you can watch the flow take shape while you chat.</p>
+        }
+        else
+        {
+            <div class="ai-draft-name">@_session.DraftFlow.Name</div>
+            <div class="ai-draft-nodes">
+                @foreach (var node in _session.DraftFlow.Nodes)
+                {
+                    <div class="ai-draft-node">
+                        <span class="ai-draft-node-type">@node.StepType</span>
+                        <span class="ai-draft-node-name">@node.NodeName</span>
+                    </div>
+                }
+            </div>
+            @if (_session.DraftFlow.Edges.Count > 0)
+            {
+                <p class="text-muted">@_session.DraftFlow.Edges.Count connections</p>
+            }
+            <button class="btn btn-primary btn-block" @onclick="() => OpenDraftInDesigner(null)">Open in the flow designer</button>
+        }
+        </div>
+    </aside>
+</div>
+
+@if (_deleteSessionTarget != null)
+{
+    <div class="modal-overlay" @onclick="CancelDeleteSession">
+        <div class="modal-container confirm-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <div>
+                    <h2 class="modal-title">Delete session</h2>
+                    <p class="modal-subtitle">The flow it produced is not deleted.</p>
+                </div>
+                <button class="modal-close-btn" @onclick="CancelDeleteSession" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Delete <strong>@_deleteSessionTarget.Title</strong> and all of its chat messages? This cannot be undone.</p>
+                @if (!string.IsNullOrWhiteSpace(_deleteSessionError))
+                {
+                    <div class="validation-banner" role="alert">@_deleteSessionError</div>
+                }
+                <div class="modal-actions">
+                    <button class="btn btn-outline" @onclick="CancelDeleteSession" disabled="@_deletingSession">Cancel</button>
+                    <button class="btn btn-danger" @onclick="DeleteSessionAsync" disabled="@_deletingSession">
+                        @(_deletingSession ? "Deleting…" : "Delete session")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "flowId")]
+    public Guid? FlowIdQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "sessionId")]
+    public Guid? SessionIdQuery { get; set; }
+
+    private List<AiChatSessionSummaryDto> _sessions = new();
+    private List<AiProviderSettingsDto> _providers = new();
+    private List<IntegrationFlowDto> _flows = new();
+    private AiChatSessionDetailDto? _session;
+    private AiChatSessionSummaryDto? _deleteSessionTarget;
+    private string _deleteSessionError = string.Empty;
+    private bool _deletingSession;
+    private IntegrationFlowDto? _baseFlow;
+    private string _selectedProviderId = string.Empty;
+    private string _startFlowChoice = string.Empty;
+    private string _prompt = string.Empty;
+    private string _error = string.Empty;
+    private bool _loadingSessions = true;
+    private bool _sending;
+    private bool _sessionsCollapsed;
+    private bool _previewCollapsed;
+    private DotNetObjectReference<AiBuilder>? _dotnetHelper;
+    private CancellationTokenSource? _pollCts;
+
+    private bool _busy => _session?.Messages.Any(message => message.Role == "Agent" && message.Status is "Queued" or "Running") == true;
+
+    private bool CanStartSession =>
+        _startFlowChoice == "new" || Guid.TryParse(_startFlowChoice, out _);
+
+    private bool CanSend =>
+        !_sending && !_busy && _session is { Status: "Active" } &&
+        !string.IsNullOrWhiteSpace(_prompt) && Guid.TryParse(_selectedProviderId, out _);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSessionsAsync();
+        await LoadProvidersAsync();
+        await LoadFlowsAsync();
+
+        if (SessionIdQuery.HasValue)
+        {
+            await OpenSessionAsync(SessionIdQuery.Value);
+        }
+        else if (FlowIdQuery.HasValue)
+        {
+            var existing = _sessions.FirstOrDefault(session => session.FlowId == FlowIdQuery && session.Status == "Active");
+            if (existing != null) await OpenSessionAsync(existing.Id);
+            else await CreateSessionAsync(FlowIdQuery);
+        }
+        else
+        {
+            var latest = _sessions.FirstOrDefault(session => session.Status == "Active");
+            if (latest != null) await OpenSessionAsync(latest.Id);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _dotnetHelper = DotNetObjectReference.Create(this);
+            await LoadPanelsAsync();
+        }
+        if (_session != null)
+        {
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("simpleIPaaSChat.bindComposer", "ai-chat-composer", _dotnetHelper);
+            }
+            catch (JSException)
+            {
+            }
+        }
+    }
+
+    private async Task LoadPanelsAsync()
+    {
+        try
+        {
+            _sessionsCollapsed = await JSRuntime.InvokeAsync<string>("simpleIPaaSChat.getPanel", "sessions") == "1";
+            _previewCollapsed = await JSRuntime.InvokeAsync<string>("simpleIPaaSChat.getPanel", "preview") == "1";
+            StateHasChanged();
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private Task CollapseSessions() => SetPanelAsync("sessions", true);
+    private Task ExpandSessions() => SetPanelAsync("sessions", false);
+    private Task CollapsePreview() => SetPanelAsync("preview", true);
+    private Task ExpandPreview() => SetPanelAsync("preview", false);
+
+    private async Task SetPanelAsync(string name, bool collapsed)
+    {
+        if (name == "sessions") _sessionsCollapsed = collapsed;
+        else _previewCollapsed = collapsed;
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSChat.setPanel", name, collapsed ? "1" : "0");
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    [JSInvokable]
+    public async Task SubmitPrompt()
+    {
+        if (CanSend) await SendAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadSessionsAsync()
+    {
+        _loadingSessions = true;
+        try
+        {
+            _sessions = await Http.GetFromJsonAsync<List<AiChatSessionSummaryDto>>("api/ai/chat/sessions") ?? new List<AiChatSessionSummaryDto>();
+        }
+        catch (Exception)
+        {
+            _sessions = new List<AiChatSessionSummaryDto>();
+        }
+        _loadingSessions = false;
+    }
+
+    private async Task LoadProvidersAsync()
+    {
+        try
+        {
+            _providers = await Http.GetFromJsonAsync<List<AiProviderSettingsDto>>("api/ai/providers") ?? new List<AiProviderSettingsDto>();
+            var configured = _providers.Where(provider => provider.HasApiKey).ToList();
+            _selectedProviderId = (configured.FirstOrDefault(provider => provider.IsDefault) ?? configured.FirstOrDefault())?.Id.ToString() ?? string.Empty;
+        }
+        catch (Exception)
+        {
+            _providers = new List<AiProviderSettingsDto>();
+        }
+    }
+
+    private async Task LoadFlowsAsync()
+    {
+        try
+        {
+            _flows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+        }
+        catch (Exception)
+        {
+            _flows = new List<IntegrationFlowDto>();
+        }
+    }
+
+    private async Task OpenSessionAsync(Guid sessionId)
+    {
+        _error = string.Empty;
+        try
+        {
+            _session = await Http.GetFromJsonAsync<AiChatSessionDetailDto>($"api/ai/chat/sessions/{sessionId}");
+            _baseFlow = null;
+            StartPolling();
+            await ScrollToEndAsync();
+        }
+        catch (Exception)
+        {
+            _error = "Could not open this session. Refresh the page and try again.";
+        }
+    }
+
+    private async Task CreateSessionAsync(Guid? flowId)
+    {
+        _error = string.Empty;
+        try
+        {
+            _baseFlow = null;
+            if (flowId.HasValue)
+                _baseFlow = await Http.GetFromJsonAsync<IntegrationFlowDto>($"api/integrationflow/{flowId.Value}");
+
+            var response = await Http.PostAsJsonAsync("api/ai/chat/sessions", new AiChatSessionCreateDto
+            {
+                FlowId = flowId,
+                ProviderId = Guid.TryParse(_selectedProviderId, out var providerId) ? providerId : null
+            });
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not start the build session.");
+                return;
+            }
+            _session = await response.Content.ReadFromJsonAsync<AiChatSessionDetailDto>();
+            StartPolling();
+            await ScrollToEndAsync();
+        }
+        catch (Exception)
+        {
+            _error = "Could not reach the server to start the session.";
+        }
+    }
+
+    private async Task StartSessionAsync()
+    {
+        Guid? flowId = _startFlowChoice == "new" ? null
+            : Guid.TryParse(_startFlowChoice, out var parsed) ? parsed : null;
+        if (_startFlowChoice != "new" && flowId == null) return;
+        await CreateSessionAsync(flowId);
+    }
+
+    private void StartNewSession()
+    {
+        _pollCts?.Cancel();
+        _session = null;
+        _startFlowChoice = string.Empty;
+        _prompt = string.Empty;
+        _error = string.Empty;
+    }
+
+    private void UseQuickPrompt(string prompt) => _prompt = prompt;
+
+    private async Task SendAsync()
+    {
+        if (_session == null || !Guid.TryParse(_selectedProviderId, out var providerId)) return;
+        var content = _prompt.Trim();
+        if (content.Length == 0) return;
+
+        _sending = true;
+        _error = string.Empty;
+        try
+        {
+            var response = await Http.PostAsJsonAsync($"api/ai/chat/sessions/{_session.Id}/messages", new AiChatMessageCreateDto
+            {
+                Content = content,
+                ProviderId = providerId,
+                CurrentFlow = _baseFlow
+            });
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not send the prompt.");
+                return;
+            }
+            _session = await response.Content.ReadFromJsonAsync<AiChatSessionDetailDto>();
+            _prompt = string.Empty;
+            StartPolling();
+            await ScrollToEndAsync();
+        }
+        catch (Exception)
+        {
+            _error = "Could not reach the server to send the prompt.";
+        }
+        finally
+        {
+            _sending = false;
+        }
+    }
+
+    private void AskDeleteSession(AiChatSessionSummaryDto session)
+    {
+        _deleteSessionTarget = session;
+        _deleteSessionError = string.Empty;
+    }
+
+    private void CancelDeleteSession()
+    {
+        if (_deletingSession) return;
+        _deleteSessionTarget = null;
+        _deleteSessionError = string.Empty;
+    }
+
+    private async Task DeleteSessionAsync()
+    {
+        if (_deleteSessionTarget == null || _deletingSession) return;
+
+        _deletingSession = true;
+        _deleteSessionError = string.Empty;
+        var deletedId = _deleteSessionTarget.Id;
+        try
+        {
+            using var response = await Http.DeleteAsync($"api/ai/chat/sessions/{deletedId}");
+            if (!response.IsSuccessStatusCode)
+            {
+                _deleteSessionError = await ReadErrorAsync(response, "The session could not be deleted.");
+                return;
+            }
+
+            if (_session?.Id == deletedId)
+            {
+                _pollCts?.Cancel();
+                _session = null;
+                _baseFlow = null;
+            }
+
+            _deleteSessionTarget = null;
+            await LoadSessionsAsync();
+        }
+        catch (Exception)
+        {
+            _deleteSessionError = "Could not reach the API to delete this session.";
+        }
+        finally
+        {
+            _deletingSession = false;
+        }
+    }
+
+    private async Task EndSessionAsync()
+    {
+        if (_session == null) return;
+        try
+        {
+            var response = await Http.PostAsync($"api/ai/chat/sessions/{_session.Id}/end", null);
+            if (response.IsSuccessStatusCode)
+                _session = await response.Content.ReadFromJsonAsync<AiChatSessionDetailDto>();
+        }
+        catch (Exception)
+        {
+            _error = "Could not end the session. Refresh the page and try again.";
+        }
+    }
+
+    private void StartPolling()
+    {
+        _pollCts?.Cancel();
+        _pollCts = new CancellationTokenSource();
+        if (_busy) _ = PollAsync(_pollCts.Token);
+    }
+
+    private async Task PollAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested && _session != null)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(3), token);
+            try
+            {
+                var detail = await Http.GetFromJsonAsync<AiChatSessionDetailDto>($"api/ai/chat/sessions/{_session.Id}", token);
+                if (detail == null) continue;
+                _session = detail;
+                await InvokeAsync(async () =>
+                {
+                    StateHasChanged();
+                    await ScrollToEndAsync();
+                });
+                if (!_busy) return;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private async Task ScrollToEndAsync()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSChat.scroll", "ai-chat-transcript");
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task OpenDraftInDesigner(AiChatMessageDto? message)
+    {
+        if (_session == null) return;
+
+        // A save in the designer binds this session to the new flow. Refresh once before
+        // navigating so a stale page does not send the user back through the "new flow" path.
+        if (!_session.FlowId.HasValue)
+        {
+            try
+            {
+                var detail = await Http.GetFromJsonAsync<AiChatSessionDetailDto>($"api/ai/chat/sessions/{_session.Id}");
+                if (detail != null) _session = detail;
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        var messageId = message?.Id
+            ?? _session.Messages.LastOrDefault(item => item.Role == "Agent" && item.Flow != null)?.Id;
+        if (messageId == null) return;
+        var query = $"draftMessageId={messageId}&chatSessionId={_session.Id}";
+        var target = _session.FlowId.HasValue
+            ? $"/flow-designer/{_session.FlowId}?{query}"
+            : $"/flow-designer?{query}";
+        NavigationManager.NavigateTo(target);
+    }
+
+    private static string ElapsedText(AiChatMessageDto message)
+    {
+        var elapsed = (message.CompletedAt ?? DateTime.UtcNow) - message.CreatedAt;
+        return elapsed.TotalMinutes >= 1 ? $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds}s" : $"{Math.Max(0, elapsed.Seconds)}s";
+    }
+
+    private static string? SourceHref(string source)
+    {
+        var start = source.IndexOf("https://", StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return null;
+        var address = source[start..].Trim();
+        return Uri.TryCreate(address, UriKind.Absolute, out var uri) ? uri.AbsoluteUri : null;
+    }
+
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage response, string fallback)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(body)) return fallback;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            string? message = null;
+            if (root.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String)
+                message = messageElement.GetString();
+            else if (root.TryGetProperty("detail", out var detailElement) && detailElement.ValueKind == JsonValueKind.String)
+                message = detailElement.GetString();
+            else if (root.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String)
+                message = titleElement.GetString();
+            return string.IsNullOrWhiteSpace(message) ? fallback : message;
+        }
+        catch (JsonException)
+        {
+        }
+        return fallback;
+    }
+
+    public void Dispose()
+    {
+        _pollCts?.Cancel();
+        _dotnetHelper?.Dispose();
+    }
+}

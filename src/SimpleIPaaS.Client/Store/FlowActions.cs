@@ -11,6 +11,9 @@ public class SaveFlowAction
 {
     public IntegrationFlowDto Flow { get; set; } = null!;
     public bool RunAfterSave { get; set; }
+    // Present when the designer was opened from an AI chat draft. After the save assigns a
+    // real flow id, the effect binds the session so subsequent turns read the saved flow.
+    public Guid? ChatSessionId { get; set; }
 }
 public class SaveFlowResultAction { public IntegrationFlowDto Flow { get; set; } = null!; }
 public class RunFlowAction { public Guid Id { get; set; } }

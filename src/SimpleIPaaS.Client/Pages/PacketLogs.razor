@@ -1,0 +1,337 @@
+@page "/packet-logs"
+@using System.Net.Http.Json
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+
+<PageTitle>Packet Logs - fusetor.com</PageTitle>
+
+<div class="packet-logs-page">
+    <div class="packet-logs-head">
+        <div>
+            <h2>Packet Logs</h2>
+            <p class="text-muted">Every HTTP call the platform made to the outside world — with the flow, integration, node, and connection that made it.</p>
+        </div>
+        <button class="btn btn-outline" @onclick="ReloadAsync" disabled="@_loading">@(_loading ? "Refreshing…" : "Refresh")</button>
+    </div>
+
+    <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFiltersAsync">
+        <Actions>
+            @if (HasActiveFilters)
+            {
+                <button class="btn btn-outline btn-sm" @onclick="ClearFiltersAsync" title="Reset the filters to their defaults">
+                    <AppIcon Name="x-circle" Class="icon icon-sm" /> Clear
+                </button>
+            }
+            <div class="filter-summary">Page @_page · @_items.Count packet@(_items.Count == 1 ? "" : "s")</div>
+        </Actions>
+        <Chips>
+            @if (!string.IsNullOrWhiteSpace(_search))
+            {
+                <FilterChip Label="@($"Search: {_search}")" Title="@_search" OnRemove="ClearSearchAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_flowIdFilter))
+            {
+                <FilterChip Label="@($"Flow: {FlowFilterLabel}")" OnRemove="ClearFlowFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_integrationIdFilter))
+            {
+                <FilterChip Label="@($"Integration: {IntegrationFilterLabel}")" OnRemove="ClearIntegrationFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_connectionIdFilter))
+            {
+                <FilterChip Label="@($"Connection: {ConnectionFilterLabel}")" OnRemove="ClearConnectionFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_outcomeFilter))
+            {
+                <FilterChip Label="@($"Outcome: {(_outcomeFilter == "success" ? "Success (2xx)" : "Failure")}")" OnRemove="ClearOutcomeFilterAsync" />
+            }
+            @if (!string.IsNullOrWhiteSpace(_methodFilter))
+            {
+                <FilterChip Label="@($"Method: {_methodFilter}")" OnRemove="ClearMethodFilterAsync" />
+            }
+            @if (_hoursFilter != DefaultHoursFilter)
+            {
+                <FilterChip Label="@($"Window: {HoursFilterLabel}")" OnRemove="ClearHoursFilterAsync" />
+            }
+        </Chips>
+        <ChildContent>
+            <div class="packet-logs-filters">
+                <input type="search" class="form-control packet-filter-search" placeholder="Search URL, flow, integration or node…"
+                       aria-label="Search packet logs by URL, flow, integration or node"
+                       @bind="_search" @bind:event="oninput" @onkeyup="OnFilterKeyUp" />
+                <select class="form-control packet-filter-select" aria-label="Filter by flow" @bind="_flowIdFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="">All flows</option>
+                    @foreach (var flow in _flows)
+                    {
+                        <option value="@flow.Id">@flow.Name</option>
+                    }
+                </select>
+                <select class="form-control packet-filter-select" aria-label="Filter by integration" @bind="_integrationIdFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="">All integrations</option>
+                    @foreach (var integration in _integrations)
+                    {
+                        <option value="@integration.Id">@integration.Name</option>
+                    }
+                </select>
+                <select class="form-control packet-filter-select" aria-label="Filter by connection" @bind="_connectionIdFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="">All connections</option>
+                    <option value="manual">Manual / node config</option>
+                    @foreach (var connection in _connections)
+                    {
+                        <option value="@connection.Id">@connection.Name</option>
+                    }
+                </select>
+                <select class="form-control packet-filter-select" aria-label="Filter by outcome" @bind="_outcomeFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="">All outcomes</option>
+                    <option value="success">Success (2xx)</option>
+                    <option value="failure">Failure (errors)</option>
+                </select>
+                <select class="form-control packet-filter-select" aria-label="Filter by HTTP method" @bind="_methodFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="">All methods</option>
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
+                </select>
+                <select class="form-control packet-filter-select" aria-label="Filter by time window" @bind="_hoursFilter" @bind:after="ApplyFiltersAsync">
+                    <option value="24">Last 24 hours</option>
+                    <option value="168">Last 7 days</option>
+                    <option value="720">Last 30 days</option>
+                    <option value="">All time</option>
+                </select>
+            </div>
+        </ChildContent>
+    </FilterPanel>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="alert alert-error" role="alert">@_error</div>
+    }
+
+    <div class="card packet-logs-card">
+        @if (_loading && _items.Count == 0)
+        {
+            <p class="text-muted packet-logs-empty">Loading packet logs…</p>
+        }
+        else if (_items.Count == 0)
+        {
+            <p class="text-muted packet-logs-empty">No HTTP packets match these filters. Run a flow that calls an external API and they will appear here.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Flow</th>
+                            <th>Integration</th>
+                            <th>Node</th>
+                            <th>Connection</th>
+                            <th>Call</th>
+                            <th>Status</th>
+                            <th>Duration</th>
+                            <th>Page</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in _items)
+                        {
+                            <tr>
+                                <td class="packet-time">@item.StartedAt.ToLocalTime().ToString("g")</td>
+                                <td>@item.FlowName</td>
+                                <td>@(string.IsNullOrWhiteSpace(item.IntegrationName) ? "—" : item.IntegrationName)</td>
+                                <td>@item.NodeName</td>
+                                <td><span class="packet-connection-badge">@item.ConnectionName</span></td>
+                                <td class="packet-call-cell">
+                                    <span class="packet-method">@item.HttpMethod</span>
+                                    <span class="packet-url" title="@item.RequestUrl">@item.RequestUrl</span>
+                                    @if (!string.IsNullOrWhiteSpace(item.Error))
+                                    {
+                                        <span class="packet-error" title="@item.Error">@item.Error</span>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="packet-status @StatusClass(item.StatusCode)">@item.StatusCode</span>
+                                </td>
+                                <td>@(item.DurationMs.HasValue ? $"{item.DurationMs} ms" : "—")</td>
+                                <td>@(item.PageNumber.HasValue ? $"p{item.PageNumber}" : "—")@(item.Attempt > 0 ? $" · try {item.Attempt}" : string.Empty)</td>
+                                <td class="packet-detail-links">
+                                    <a class="btn btn-outline btn-sm" href="@($"/packet-logs/{item.PacketId}")">Open packet log</a>
+                                    <a class="btn btn-outline btn-sm" href="@($"/transaction-history/{item.FlowExecutionId}")">Open transaction</a>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="packet-logs-pager">
+                <button class="btn btn-outline btn-sm" disabled="@(_page <= 1 || _loading)" @onclick="PreviousPage">Previous</button>
+                <span class="text-muted">Page @_page</span>
+                <button class="btn btn-outline btn-sm" disabled="@(_items.Count < PageSize || _loading)" @onclick="NextPage">Next</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>The page opens on the last 24 hours, so that window is the "no filter" state.</summary>
+    private const string DefaultHoursFilter = "24";
+
+    private const int PageSize = 25;
+
+    private List<PacketLogDto> _items = new();
+    private List<IntegrationFlowDto> _flows = new();
+    private List<IntegrationDto> _integrations = new();
+    private List<ConnectionDto> _connections = new();
+    private string _search = string.Empty;
+    private string _flowIdFilter = string.Empty;
+    private string _integrationIdFilter = string.Empty;
+    private string _connectionIdFilter = string.Empty;
+    private string _outcomeFilter = string.Empty;
+    private string _methodFilter = string.Empty;
+    private string _hoursFilter = DefaultHoursFilter;
+    private string _error = string.Empty;
+    private bool _loading;
+    private bool _filtersOpen;
+    private int _page = 1;
+
+    /// <summary>Drives the filter disclosure badge and the collapsed summary.</summary>
+    private int ActiveFilterCount =>
+        (!string.IsNullOrWhiteSpace(_search) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_flowIdFilter) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_integrationIdFilter) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_connectionIdFilter) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_outcomeFilter) ? 1 : 0) +
+        (!string.IsNullOrWhiteSpace(_methodFilter) ? 1 : 0) +
+        (_hoursFilter != DefaultHoursFilter ? 1 : 0);
+
+    private bool HasActiveFilters => ActiveFilterCount > 0;
+
+    private string FlowFilterLabel =>
+        _flows.FirstOrDefault(flow => flow.Id.ToString() == _flowIdFilter)?.Name ?? "Selected flow";
+
+    private string IntegrationFilterLabel =>
+        _integrations.FirstOrDefault(integration => integration.Id.ToString() == _integrationIdFilter)?.Name
+        ?? "Selected integration";
+
+    private string ConnectionFilterLabel =>
+        _connectionIdFilter == "manual"
+            ? "Manual / node config"
+            : _connections.FirstOrDefault(connection => connection.Id.ToString() == _connectionIdFilter)?.Name
+              ?? "Selected connection";
+
+    private string HoursFilterLabel => _hoursFilter switch
+    {
+        "24" => "24 hours",
+        "168" => "7 days",
+        "720" => "30 days",
+        _ => "all time"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _flows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+            _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
+            _connections = await Http.GetFromJsonAsync<List<ConnectionDto>>("api/connections") ?? new List<ConnectionDto>();
+        }
+        catch (Exception)
+        {
+        }
+        await LoadAsync();
+    }
+
+    private async Task ReloadAsync() => await LoadAsync();
+
+    private async Task ApplyFiltersAsync()
+    {
+        _page = 1;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = string.Empty;
+        try
+        {
+            var parameters = new List<string> { $"page={_page}", $"pageSize={PageSize}" };
+            if (Guid.TryParse(_flowIdFilter, out var flowId)) parameters.Add($"flowId={flowId}");
+            if (Guid.TryParse(_integrationIdFilter, out var integrationId)) parameters.Add($"integrationId={integrationId}");
+            if (Guid.TryParse(_connectionIdFilter, out var connectionId)) parameters.Add($"connectionId={connectionId}");
+            else if (_connectionIdFilter == "manual") parameters.Add("manualOnly=true");
+            if (!string.IsNullOrWhiteSpace(_outcomeFilter)) parameters.Add($"outcome={_outcomeFilter}");
+            if (!string.IsNullOrWhiteSpace(_methodFilter)) parameters.Add($"method={_methodFilter}");
+            if (int.TryParse(_hoursFilter, out var hours)) parameters.Add($"hours={hours}");
+            if (!string.IsNullOrWhiteSpace(_search)) parameters.Add($"search={Uri.EscapeDataString(_search.Trim())}");
+
+            _items = await Http.GetFromJsonAsync<List<PacketLogDto>>("api/packetlogs?" + string.Join("&", parameters)) ?? new List<PacketLogDto>();
+        }
+        catch (Exception)
+        {
+            _error = "Could not load packet logs. Refresh the page and try again.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task OnFilterKeyUp(KeyboardEventArgs args)
+    {
+        if (args.Key != "Enter") return;
+        await ApplyFiltersAsync();
+    }
+
+    // Per-chip removals from the collapsed summary; each one reloads the first page.
+    private Task ClearSearchAsync() => ResetAndReloadAsync(() => _search = string.Empty);
+    private Task ClearFlowFilterAsync() => ResetAndReloadAsync(() => _flowIdFilter = string.Empty);
+    private Task ClearIntegrationFilterAsync() => ResetAndReloadAsync(() => _integrationIdFilter = string.Empty);
+    private Task ClearConnectionFilterAsync() => ResetAndReloadAsync(() => _connectionIdFilter = string.Empty);
+    private Task ClearOutcomeFilterAsync() => ResetAndReloadAsync(() => _outcomeFilter = string.Empty);
+    private Task ClearMethodFilterAsync() => ResetAndReloadAsync(() => _methodFilter = string.Empty);
+    private Task ClearHoursFilterAsync() => ResetAndReloadAsync(() => _hoursFilter = DefaultHoursFilter);
+
+    /// <summary>Back to the page's default view: no filters, last 24 hours, first page.</summary>
+    private Task ClearFiltersAsync() => ResetAndReloadAsync(() =>
+    {
+        _search = string.Empty;
+        _flowIdFilter = string.Empty;
+        _integrationIdFilter = string.Empty;
+        _connectionIdFilter = string.Empty;
+        _outcomeFilter = string.Empty;
+        _methodFilter = string.Empty;
+        _hoursFilter = DefaultHoursFilter;
+    });
+
+    private async Task ResetAndReloadAsync(Action apply)
+    {
+        apply();
+        _page = 1;
+        await LoadAsync();
+    }
+
+    private async Task PreviousPage()
+    {
+        if (_page <= 1) return;
+        _page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPage()
+    {
+        _page++;
+        await LoadAsync();
+    }
+
+    private static string StatusClass(int? statusCode) => statusCode switch
+    {
+        >= 200 and < 300 => "is-ok",
+        >= 400 => "is-error",
+        _ => "is-unknown"
+    };
+}

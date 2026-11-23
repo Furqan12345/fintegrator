@@ -1,0 +1,28 @@
+.page-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.notice-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid color-mix(in srgb, var(--success) 34%, transparent);
+    border-radius: var(--radius-md);
+    background: var(--success-soft);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+@media (max-width: 760px) {
+    .page-header {
+        align-items: stretch;
+    }
+
+    .header-right {
+        justify-content: flex-start;
+    }
+}

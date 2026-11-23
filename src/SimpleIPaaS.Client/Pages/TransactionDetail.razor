@@ -5,7 +5,7 @@
 @inject HttpClient Http
 @inject NavigationManager NavigationManager
 
-<PageTitle>Transaction Details - SimpleIPaaS</PageTitle>
+<PageTitle>Transaction Details - fusetor.com</PageTitle>
 
 <div class="page-scroll">
 <div class="page-header">
@@ -37,7 +37,7 @@
             <button class="btn btn-outline" @onclick="GoBack">Back to history</button>
         </div>
     }
-    else if (_steps.Count == 0)
+    else if (_steps.Count == 0 && !(_execution?.FanOutItemIndex.HasValue ?? false))
     {
         <div class="empty-state empty-state-hero">
             <span class="empty-icon"><AppIcon Name="transactions" Class="icon icon-lg" /></span>
@@ -65,9 +65,35 @@
                 <span class="summary-label">Status</span>
                 <span class="status-badge @((_execution?.Status ?? string.Empty).ToLowerInvariant())">@(_execution?.Status ?? "-")</span>
             </div>
+            @if (!string.IsNullOrWhiteSpace(_execution?.Identifier))
+            {
+                <div>
+                    <span class="summary-label">Identifier</span>
+                    <strong>@_execution.Identifier</strong>
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(_execution?.Message))
+            {
+                <div>
+                    <span class="summary-label">Message</span>
+                    <strong>@_execution.Message</strong>
+                </div>
+            }
         </div>
 
         <div class="transaction-card-list">
+            @if (_execution?.FanOutItemIndex is int itemIndex)
+            {
+                <section class="transaction-card">
+                    <div class="transaction-card-header">
+                        <div>
+                            <div class="transaction-card-eyebrow">Fan Out · @(_execution.FanOutNodeName)</div>
+                            <h3>Item @itemIndex of @_execution.FanOutItemCount</h3>
+                        </div>
+                    </div>
+                    <pre class="transaction-json-viewer">@FormatJson(_execution.FanOutItemJson ?? "{}")</pre>
+                </section>
+            }
             @foreach (var step in _steps.OrderBy(s => s.StartedAt))
             {
                 var node = FindNode(step.StepId);
@@ -81,9 +107,9 @@
                     </div>
 
                     <div class="transaction-card-meta">
-                        <span>Started: @step.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</span>
-                        <span>Completed: @(step.CompletedAt?.ToLocalTime().ToString("h:mm:ss tt") ?? "-")</span>
-                        <span>Status Code: @step.HttpStatusCode</span>
+                        <span class="meta-item"><span class="meta-label">Started</span><span class="meta-value">@step.StartedAt.ToLocalTime().ToString("h:mm:ss tt")</span></span>
+                        <span class="meta-item"><span class="meta-label">Completed</span><span class="meta-value">@(step.CompletedAt?.ToLocalTime().ToString("h:mm:ss tt") ?? "—")</span></span>
+                        <span class="meta-item"><span class="meta-label">Status code</span><span class="meta-value">@step.HttpStatusCode</span></span>
                     </div>
 
                     @if (!string.IsNullOrWhiteSpace(step.ErrorMessage))

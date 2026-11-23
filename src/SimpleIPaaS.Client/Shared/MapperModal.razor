@@ -1,42 +1,64 @@
 @using SimpleIPaaS.Shared.Models
 @using System.Text.Json
 @using System.Text.Json.Nodes
+@using Microsoft.JSInterop
 @inject HttpClient Http
+@inject IJSRuntime JSRuntime
 
 @if (IsVisible)
 {
-    <div class="modal-overlay" @onclick="Close" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
-        <div class="modal-container" @onclick:stopPropagation="true" @onwheel:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+    <div class="modal-overlay @(_isMaximized ? "modal-maximized-overlay" : string.Empty)" @onclick="Close" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
+        <div class="modal-container editor-modal @(_isMaximized ? "modal-maximized" : string.Empty)" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true" @onmouseup:stopPropagation="true" @onpointerdown:stopPropagation="true" @onpointerup:stopPropagation="true">
             <div class="modal-header">
                 <h2 class="modal-title">@ModalTitle</h2>
-                <button class="modal-close-btn" @onclick="Close" aria-label="Close">✕</button>
+                <div class="modal-header-actions">
+                    <button class="modal-icon-btn" @onclick="ToggleMaximized" title="@(_isMaximized ? "Restore size" : "Maximize editor")" aria-label="@(_isMaximized ? "Restore size" : "Maximize editor")">
+                        <AppIcon Name="@(_isMaximized ? "minimize" : "maximize")" Class="icon icon-sm" />
+                    </button>
+                    <button class="modal-close-btn" @onclick="Close" aria-label="Close">✕</button>
+                </div>
             </div>
 
             <div class="modal-body">
-                <div class="editor-panel">
+                <div class='editor-panel @PaneClass("main")'>
                     <div class="panel-header">
                         <span class="panel-label">C# Script</span>
                         <span class="panel-hint">@ScriptHint</span>
+                        <button class="panel-expand-btn" @onclick='() => TogglePane("main")'
+                                title='@(IsPaneExpanded("main") ? "Restore panes" : "Expand this editor")'
+                                aria-label='@(IsPaneExpanded("main") ? "Restore panes" : "Expand this editor")'>
+                            <AppIcon Name='@(IsPaneExpanded("main") ? "minimize" : "maximize")' Class="icon icon-xs" />
+                        </button>
                     </div>
-                    <textarea class="code-textarea" @bind="Code" @bind:event="oninput" spellcheck="false"></textarea>
+                    <CodeEditor @bind-Value="Code" Language="csharp" CssClass="code-editor-main" />
                 </div>
 
-                <div class="io-panels">
-                    <div class="editor-panel">
+                <div class="io-panels @(_expandedPane == "main" ? "is-hidden" : string.Empty)">
+                    <div class='editor-panel @PaneClass("sample")'>
                         <div class="panel-header">
                             <span class="panel-label">@SampleInputLabel</span>
+                            <button class="panel-expand-btn" @onclick='() => TogglePane("sample")'
+                                    title='@(IsPaneExpanded("sample") ? "Restore panes" : "Expand this editor")'
+                                    aria-label='@(IsPaneExpanded("sample") ? "Restore panes" : "Expand this editor")'>
+                                <AppIcon Name='@(IsPaneExpanded("sample") ? "minimize" : "maximize")' Class="icon icon-xs" />
+                            </button>
                         </div>
-                        <textarea class="code-textarea io-textarea" @bind="SampleInput" @bind:event="oninput" spellcheck="false"></textarea>
+                        <CodeEditor @bind-Value="SampleInput" Language="json" CssClass="code-editor-io" />
                     </div>
 
-                    <div class="editor-panel">
+                    <div class='editor-panel @PaneClass("persisted")'>
                         <div class="panel-header">
                             <span class="panel-label">Sample Persisted State JSON</span>
+                            <button class="panel-expand-btn" @onclick='() => TogglePane("persisted")'
+                                    title='@(IsPaneExpanded("persisted") ? "Restore panes" : "Expand this editor")'
+                                    aria-label='@(IsPaneExpanded("persisted") ? "Restore panes" : "Expand this editor")'>
+                                <AppIcon Name='@(IsPaneExpanded("persisted") ? "minimize" : "maximize")' Class="icon icon-xs" />
+                            </button>
                         </div>
-                        <textarea class="code-textarea io-textarea" @bind="PersistedStateInput" @bind:event="oninput" spellcheck="false"></textarea>
+                        <CodeEditor @bind-Value="PersistedStateInput" Language="json" CssClass="code-editor-io" />
                     </div>
 
-                    <div class="editor-panel">
+                    <div class='editor-panel @PaneClass("output")'>
                         <div class="panel-header">
                             <span class="panel-label">Output</span>
                             @if (_isRunning)
@@ -51,8 +73,13 @@
                             {
                                 <span class="panel-hint panel-hint-success">Success</span>
                             }
+                            <button class="panel-expand-btn" @onclick='() => TogglePane("output")'
+                                    title='@(IsPaneExpanded("output") ? "Restore panes" : "Expand this editor")'
+                                    aria-label='@(IsPaneExpanded("output") ? "Restore panes" : "Expand this editor")'>
+                                <AppIcon Name='@(IsPaneExpanded("output") ? "minimize" : "maximize")' Class="icon icon-xs" />
+                            </button>
                         </div>
-                        <textarea class="code-textarea io-textarea output-textarea" readonly value="@Output"></textarea>
+                        <CodeEditor Value="@Output" Language="json" ReadOnly="true" CssClass="code-editor-io code-editor-output" />
                     </div>
                 </div>
             </div>
@@ -74,6 +101,7 @@
     [Parameter] public EventCallback<bool> IsVisibleChanged { get; set; }
     [Parameter] public IntegrationStepDto Step { get; set; } = default!;
     [Parameter] public string TargetProperty { get; set; } = "MappingCode";
+    [Parameter] public string HelperCode { get; set; } = string.Empty;
 
     private string Code { get; set; } = string.Empty;
     private string SampleInput { get; set; } = string.Empty;
@@ -106,6 +134,8 @@
     private bool _hasError;
     private bool _hasResult;
     private bool _wasVisible;
+    private bool _isMaximized;
+    private string? _expandedPane;
 
     private const string DefaultSampleInput = @"{
   ""GetUsers"": {
@@ -144,9 +174,50 @@
             Output = string.Empty;
             _hasError = false;
             _hasResult = false;
+            _isMaximized = false;
+            _expandedPane = null;
         }
 
         _wasVisible = IsVisible;
+    }
+
+    private bool IsPaneExpanded(string pane) => _expandedPane == pane;
+
+    private string PaneClass(string pane) =>
+        _expandedPane == null ? string.Empty : IsPaneExpanded(pane) ? "is-expanded" : "is-hidden";
+
+    private async Task TogglePane(string pane)
+    {
+        _expandedPane = _expandedPane == pane ? null : pane;
+        StateHasChanged();
+
+        // Give the browser a frame to apply the new pane sizes, then nudge the editors.
+        await Task.Delay(60);
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSCodeEditor.layoutAll");
+        }
+        catch (JSException)
+        {
+            // The editor module has not loaded yet; automaticLayout will handle it.
+        }
+    }
+
+    private async Task ToggleMaximized()
+    {
+        _isMaximized = !_isMaximized;
+        StateHasChanged();
+
+        // Give the browser a frame to apply the new size, then nudge the editors.
+        await Task.Delay(60);
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("simpleIPaaSCodeEditor.layoutAll");
+        }
+        catch (JSException)
+        {
+            // The editor module has not loaded yet; automaticLayout will handle it.
+        }
     }
 
     private const string SamplesConfigKey = "mapperSamples";
@@ -225,6 +296,9 @@
 var state = JObject.Parse(FlowStateJson);
 var persisted = JObject.Parse(PersistedStateJson);
 var status = (string)state[""GetUsers""][""status""];
+
+// HTTP cards using Continue through the Error port expose { ok, statusCode, error, body, headers }.
+// return state[""FetchOrders""]?[""statusCode""]?.Value<int>() == 404;
 
 return status == ""active"" && persisted[""isEnabled""]?.Value<bool>() != false;";
         }
@@ -308,7 +382,8 @@ return JsonConvert.SerializeObject(result);"
                 PersistedStateJson = PersistedStateInput,
                 HttpResponseJson = TargetProperty == "PostFlightCode" ? SampleInput : "{}",
                 TargetProperty = TargetProperty,
-                StepType = Step?.StepType ?? string.Empty
+                StepType = Step?.StepType ?? string.Empty,
+                HelperCode = HelperCode
             };
 
             var response = await Http.PostAsJsonAsync("api/integrationflow/test-mapping", request);

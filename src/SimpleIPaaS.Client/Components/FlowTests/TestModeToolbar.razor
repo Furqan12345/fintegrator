@@ -1,0 +1,97 @@
+@using SimpleIPaaS.Client.Shared
+@using SimpleIPaaS.Shared.Models
+
+<div class="test-mode-toolbar">
+    <span class="test-mode-pill"><AppIcon Name="check-circle" Class="icon icon-xs" /> Test mode</span>
+    <div class="toolbar-group test-mode-toolbar-group">
+        <select class="toolbar-input toolbar-select test-scenario-select"
+                value="@Session.SelectedId"
+                @onchange="OnScenarioChanged"
+                title="Select scenario">
+            @if (Session.SelectedId == Guid.Empty)
+            {
+                <option value="">@Session.ScenarioName</option>
+            }
+            @foreach (var scenario in Session.Scenarios)
+            {
+                <option value="@scenario.Id">@scenario.Name</option>
+            }
+        </select>
+    </div>
+    <div class="toolbar-group test-toolbar-secondary">
+        <button class="btn btn-outline btn-sm" @onclick="OnNew" title="New scenario">
+            <AppIcon Name="plus" Class="icon icon-xs" /> New
+        </button>
+        <button class="btn btn-outline btn-sm" @onclick="OnDuplicate"
+                disabled="@(Session.SelectedTest == null)" title="Duplicate scenario">
+            <AppIcon Name="copy" class="icon icon-xs" /> Duplicate
+        </button>
+        <button class="btn btn-outline btn-sm" @onclick="OpenInputs" title="Scenario inputs">
+            Inputs
+        </button>
+    </div>
+    <div class="toolbar-group test-toolbar-save">
+        <button class="btn btn-outline btn-sm" @onclick="SaveAsync" disabled="@Session.IsBusy">
+            @if (Session.IsDirty) { <span class="test-unsaved-dot"></span> } Save
+        </button>
+    </div>
+    <div class="test-toolbar-overflow">
+        <button type="button" class="btn btn-outline btn-sm test-toolbar-overflow-trigger"
+                @onclick="ToggleOverflow" @onclick:stopPropagation="true"
+                title="More scenario actions" aria-label="More scenario actions">⋯</button>
+        @if (_overflowOpen)
+        {
+            <div class="test-toolbar-overflow-menu" @onclick:stopPropagation="true">
+                <button class="btn btn-ghost btn-sm" @onclick="OverflowNew">New scenario</button>
+                <button class="btn btn-ghost btn-sm" @onclick="OverflowDuplicate"
+                        disabled="@(Session.SelectedTest == null)">Duplicate</button>
+                <button class="btn btn-ghost btn-sm" @onclick="OverflowInputs">Inputs</button>
+            </div>
+        }
+    </div>
+    <div class="toolbar-divider"></div>
+    <div class="toolbar-group test-toolbar-run">
+        <button class="btn btn-primary btn-sm" @onclick="RunAsync"
+                disabled="@Session.IsBusy">
+            <AppIcon Name="play" Class="icon icon-xs" /> Run scenario
+        </button>
+        <button class="btn btn-outline btn-sm" @onclick="RunAllAsync" disabled="@Session.IsBusy">
+            Run all
+        </button>
+        <button class="btn btn-ghost btn-sm" @onclick="Exit" title="Exit test mode">
+            <AppIcon Name="x-circle" Class="icon icon-xs" /> Exit
+        </button>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(Session.Error))
+    {
+        <span class="test-toolbar-message is-error" title="@Session.Error">@Session.Error</span>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FlowTestSession Session { get; set; } = null!;
+    [Parameter] public EventCallback OnExit { get; set; }
+    [Parameter] public EventCallback<Guid> OnScenarioSelected { get; set; }
+    [Parameter] public EventCallback OnNew { get; set; }
+    [Parameter] public EventCallback OnDuplicate { get; set; }
+
+    private bool _overflowOpen;
+
+    private Task OnScenarioChanged(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var id) && id != Session.SelectedId)
+            return OnScenarioSelected.InvokeAsync(id);
+        return Task.CompletedTask;
+    }
+
+    private Task SaveAsync() => Session.SaveAsync();
+    private Task RunAsync() => Session.RunAsync();
+    private Task RunAllAsync() => Session.RunSuiteAsync();
+
+    private void Exit() => _ = OnExit.InvokeAsync();
+    private void OpenInputs() => Session.SetInputsOpen(true);
+    private void ToggleOverflow() => _overflowOpen = !_overflowOpen;
+    private void OverflowNew() { _overflowOpen = false; _ = OnNew.InvokeAsync(); }
+    private void OverflowDuplicate() { _overflowOpen = false; _ = OnDuplicate.InvokeAsync(); }
+    private void OverflowInputs() { _overflowOpen = false; OpenInputs(); }
+}

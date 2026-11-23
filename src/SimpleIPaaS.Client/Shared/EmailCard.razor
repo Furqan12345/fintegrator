@@ -1,0 +1,174 @@
+@using SimpleIPaaS.Shared.Models
+
+<MinimizableNodeCard Title="Email" NodeName="@Step.NodeName" NodeColorClass="node-header-teal">
+    <p class="node-hint">
+        Sends an email through the server's SMTP settings. Test runs record the resolved values without sending;
+        Debug runs from the designer send for real.
+    </p>
+
+    <div class="node-field">
+        <label class="node-label">Node Name</label>
+        <input type="text" class="form-control" @bind="Step.NodeName" placeholder="e.g. NotifyWarehouse" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">To</label>
+        <input type="text" class="form-control" @bind="Config.To" @bind:after="Save"
+               @onfocus='() => Focus("To")' placeholder="ops@example.com or {{flowState.Node.email}}" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">CC</label>
+        <input type="text" class="form-control" @bind="Config.Cc" @bind:after="Save"
+               @onfocus='() => Focus("Cc")' placeholder="Optional, comma or semicolon separated" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">BCC</label>
+        <input type="text" class="form-control" @bind="Config.Bcc" @bind:after="Save"
+               @onfocus='() => Focus("Bcc")' placeholder="Optional, comma or semicolon separated" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Reply-To</label>
+        <input type="text" class="form-control" @bind="Config.ReplyTo" @bind:after="Save"
+               @onfocus='() => Focus("ReplyTo")' placeholder="Optional single address, e.g. support@example.com" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Subject</label>
+        <input type="text" class="form-control" @bind="Config.Subject" @bind:after="Save"
+               @onfocus='() => Focus("Subject")' placeholder="e.g. Order {{flowState.MapOrder.orderNo}} synced" />
+    </div>
+
+    <div class="node-field">
+        <label class="node-label">Body</label>
+        <textarea class="form-control" rows="4" @bind="Config.Body" @bind:after="Save"
+                  @onfocus='() => Focus("Body")' placeholder="Message text or HTML; use {{flowState.Node.field}}"></textarea>
+    </div>
+
+    <small class="field-hint">
+        Insert values with <code>@("{{flowState.NodeName.field}}")</code>. Paths support indexes and wildcards
+        (<code>@("lines[0].sku")</code>, <code>@("orders[*].id")</code>). Use <code>@("\\{{")</code> for a literal
+        <code>@("{{")</code>.
+    </small>
+
+    @if (UpstreamNodes.Count > 0)
+    {
+        <div class="node-field">
+            <label class="node-label">Insert upstream value</label>
+            <div class="email-placeholder-buttons">
+                @foreach (var nodeName in UpstreamNodes)
+                {
+                    <button type="button" class="btn btn-outline btn-sm" @onclick="() => InsertPlaceholder(nodeName)">
+                        @($"{{{{flowState.{nodeName}.}}}}")
+                    </button>
+                }
+            </div>
+        </div>
+    }
+
+    <label class="checkbox-label switch-label">
+        <input type="checkbox" @bind="Config.IsHtml" @bind:after="Save" />
+        Body is HTML
+    </label>
+
+    <label class="checkbox-label switch-label">
+        <input type="checkbox" @bind="Config.UseScript" @bind:after="Save" />
+        Use script to resolve values
+    </label>
+
+    @if (Config.UseScript)
+    {
+        <button class="btn btn-block" @onclick="OpenEditor">
+            @(string.IsNullOrWhiteSpace(Step.MappingCode) ? "Open Code Editor" : "Edit Email Script")
+        </button>
+        @if (string.IsNullOrWhiteSpace(Step.MappingCode))
+        {
+            <button class="btn btn-outline btn-block" @onclick="InsertStarterScript">Insert starter script</button>
+        }
+        <small class="field-hint">
+            Return an object with <code>to</code>, <code>cc</code>, <code>bcc</code>, <code>replyTo</code>,
+            <code>subject</code>, <code>body</code> and <code>isHtml</code>. Returned fields override the static values
+            above and are sent as-is (placeholders are not re-rendered).
+        </small>
+        @if (!string.IsNullOrWhiteSpace(Step.MappingCode))
+        {
+            <div class="node-code-preview">
+                @Step.MappingCode.Split('\n').FirstOrDefault(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("//"))
+            </div>
+        }
+    }
+
+    <label class="checkbox-label switch-label">
+        <input type="checkbox" @bind="Config.ContinueOnError" @bind:after="Save" />
+        Continue flow if sending fails
+    </label>
+</MinimizableNodeCard>
+
+@code {
+    [Parameter] public IntegrationStepDto Step { get; set; } = default!;
+    [CascadingParameter] public SimpleIPaaS.Client.Pages.FlowDesigner Designer { get; set; } = default!;
+
+    private EmailCardConfig Config { get; set; } = new();
+    private Guid _hydratedStepId;
+    private string _lastFocused = "Body";
+
+    private IReadOnlyList<string> UpstreamNodes =>
+        Designer?.GetUpstreamNodeNames(Step) ?? Array.Empty<string>();
+
+    protected override void OnParametersSet()
+    {
+        if (Step.Id != _hydratedStepId)
+        {
+            _hydratedStepId = Step.Id;
+            Config = EmailCardConfig.Read(Step.StepConfig);
+        }
+    }
+
+    private void Save() => Step.StepConfig = Config.Write(Step.StepConfig);
+
+    private void Focus(string field) => _lastFocused = field;
+
+    private void OpenEditor() => Designer?.OpenMapperModal(Step, "MappingCode");
+
+    private void InsertPlaceholder(string nodeName)
+    {
+        var snippet = $"{{{{flowState.{nodeName}.";
+        switch (_lastFocused)
+        {
+            case "To": Config.To += snippet; break;
+            case "Cc": Config.Cc += snippet; break;
+            case "Bcc": Config.Bcc += snippet; break;
+            case "ReplyTo": Config.ReplyTo += snippet; break;
+            case "Subject": Config.Subject += snippet; break;
+            default: Config.Body += snippet; break;
+        }
+
+        Save();
+    }
+
+    private void InsertStarterScript()
+    {
+        if (string.IsNullOrWhiteSpace(Step.MappingCode))
+        {
+            Step.MappingCode = BuildStarterScript();
+        }
+
+        OpenEditor();
+    }
+
+    private string BuildStarterScript()
+    {
+        var nodeName = UpstreamNodes.Count == 1 ? UpstreamNodes[0] : "YourNodeName";
+        return $$"""
+            var state = JObject.Parse(FlowStateJson);
+            var order = state["{{nodeName}}"];          // output of the node named {{nodeName}}
+            return new
+            {
+                subject = $"Order {order?["orderNo"]} synced",
+                body = $"Order {order?["orderNo"]} for {order?["customerName"]} is in Business Central."
+            };
+            """;
+    }
+}

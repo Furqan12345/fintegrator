@@ -1,0 +1,257 @@
+@using System.Net.Http.Json
+@using System.Text.Json
+@using SimpleIPaaS.Client.Services
+@using SimpleIPaaS.Shared.Models
+@inject HttpClient Http
+@inject AiBuildJobTracker BuildTracker
+@inject NavigationManager NavigationManager
+@implements IDisposable
+
+@if (IsVisible)
+{
+    <div class="modal-overlay ai-flow-overlay" @onclick="CloseAsync">
+        <section class="modal-container ai-flow-modal" role="dialog" aria-modal="true" aria-labelledby="ai-flow-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <h2 id="ai-flow-title" class="modal-title">Build a flow with AI</h2>
+                    <p class="modal-subtitle">Describe the integration. The agent researches it in the background — you can close this and keep working.</p>
+                </div>
+                <button class="modal-close-btn" @onclick="CloseAsync" aria-label="Close">✕</button>
+            </header>
+            <div class="modal-body modal-body-scroll ai-flow-body">
+                @if (!string.IsNullOrWhiteSpace(_error))
+                {
+                    <div class="alert alert-error" role="alert">@_error</div>
+                }
+
+                <section class="ai-provider-panel">
+                    <div class="ai-provider-heading">
+                        <h3>AI provider</h3>
+                        <a href="ai-providers">Manage providers</a>
+                    </div>
+                    @if (_loadingProviders)
+                    {
+                        <p class="text-muted">Loading saved providers…</p>
+                    }
+                    else if (!_providers.Any(provider => provider.HasApiKey))
+                    {
+                        <p class="text-muted">No configured AI providers are available. Add a provider and save its API key first.</p>
+                        <a class="btn btn-outline" href="ai-provider-wizard">Add an AI provider</a>
+                    }
+                    else
+                    {
+                        <div class="form-group">
+                            <label for="ai-provider-select">Use this provider to build the flow</label>
+                            <select id="ai-provider-select" class="form-control" @bind="_selectedProviderId" disabled="@BuildTracker.IsBusy">
+                                @foreach (var provider in _providers.Where(provider => provider.HasApiKey))
+                                {
+                                    <option value="@provider.Id">@ProviderLabel(provider)</option>
+                                }
+                            </select>
+                        </div>
+                        <p class="field-hint">Provider keys stay encrypted in the app database. Your prompt, flow configuration, and generated C# scripts are sent to the selected provider.</p>
+                    }
+                </section>
+
+                <section class="ai-prompt-panel">
+                    <h3>What should the flow do?</h3>
+                    <textarea class="form-control ai-prompt" @bind="_instruction" @bind:event="oninput" maxlength="32000" disabled="@BuildTracker.IsBusy"
+                              placeholder="Example: When a Shopify order is created, fetch its line items, fan out one transaction per item, map each item to our inventory API, and log failures for resync."></textarea>
+                    <p class="field-hint">The agent researches official API documentation, inspects your cross-reference data and stored sample payloads, and validates the graph before returning a draft. Saved integration credentials are never sent to research tools.</p>
+                    <button class="btn btn-primary" @onclick="GenerateAsync" disabled="@(!CanGenerate)">
+                        @(BuildTracker.IsBusy ? "Building in background…" : "Generate draft")
+                    </button>
+                </section>
+
+                @if (Job != null)
+                {
+                    <section class="ai-result-panel" aria-live="polite">
+                        @if (Job.Status == "Queued" || Job.Status == "Running")
+                        {
+                            <h3>Agent is building your draft</h3>
+                            <p class="text-muted">Builds run one at a time. You can close this dialog and keep working — the build continues and will notify you when it is ready.</p>
+                            <p><strong>@Job.ProgressNote</strong></p>
+                            <p class="text-muted">Tool calls: @Job.ToolCallsUsed · Waiting + building for: @ElapsedText</p>
+                        }
+                        else if (Job.Status == "Completed" && Job.Flow != null)
+                        {
+                            <h3>Draft ready to review</h3>
+                            <p>@Job.ProgressNote</p>
+                            @if (Job.Warnings.Count > 0)
+                            {
+                                <div><strong>Review these items</strong><ul>@foreach (var warning in Job.Warnings) { <li>@warning</li> }</ul></div>
+                            }
+                            @if (Job.Sources.Count > 0)
+                            {
+                                <div><strong>Research sources</strong><ul>@foreach (var source in Job.Sources) { <li>@if (SourceHref(source) is string url) { <a href="@url" target="_blank" rel="noopener noreferrer">@source</a> } else { @source }</li> }</ul></div>
+                            }
+                            <button class="btn btn-primary" @onclick="ApplyDraftAsync">Use this draft on canvas</button>
+                        }
+                        else if (Job.Status == "Failed")
+                        {
+                            <h3>Build failed</h3>
+                            <p class="alert alert-error">@Job.Error</p>
+                            <button class="btn btn-outline" @onclick="() => BuildTracker.Clear()">Start a new build</button>
+                        }
+                    </section>
+                }
+            </div>
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public EventCallback<bool> IsVisibleChanged { get; set; }
+    [Parameter] public IntegrationFlowDto? CurrentFlow { get; set; }
+    [Parameter] public EventCallback<AiFlowBuildResponseDto> OnFlowGenerated { get; set; }
+
+    private List<AiProviderSettingsDto> _providers = new();
+    private string _selectedProviderId = string.Empty;
+    private string _instruction = string.Empty;
+    private string _error = string.Empty;
+    private bool _loadingProviders;
+    private bool _wasVisible;
+
+    private AiBuildJobDto? Job => BuildTracker.CurrentJob;
+
+    private bool CanGenerate =>
+        Guid.TryParse(_selectedProviderId, out _) &&
+        !BuildTracker.IsBusy &&
+        !BuildTracker.IsRestoring &&
+        !string.IsNullOrWhiteSpace(_instruction);
+
+    private string ElapsedText
+    {
+        get
+        {
+            var job = Job;
+            if (job == null) return "0s";
+            var start = job.StartedAt ?? job.CreatedAt;
+            var elapsed = (job.CompletedAt ?? DateTime.UtcNow) - start;
+            return elapsed.TotalMinutes >= 1 ? $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds}s" : $"{Math.Max(0, elapsed.Seconds)}s";
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        BuildTracker.Changed += OnJobChanged;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsVisible && !_wasVisible)
+        {
+            _error = string.Empty;
+            await LoadProvidersAsync();
+        }
+        _wasVisible = IsVisible;
+    }
+
+    private void OnJobChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task LoadProvidersAsync()
+    {
+        _loadingProviders = true;
+        try
+        {
+            using var response = await Http.GetAsync("api/ai/providers");
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await ReadErrorAsync(response, "Could not load saved AI providers.");
+                return;
+            }
+
+            _providers = await response.Content.ReadFromJsonAsync<List<AiProviderSettingsDto>>() ?? new List<AiProviderSettingsDto>();
+            var configuredProviders = _providers.Where(provider => provider.HasApiKey).ToList();
+            if (!configuredProviders.Any())
+            {
+                _selectedProviderId = string.Empty;
+                return;
+            }
+
+            var selected = configuredProviders.FirstOrDefault(provider => provider.Id.ToString() == _selectedProviderId)
+                ?? configuredProviders.FirstOrDefault(provider => provider.IsDefault)
+                ?? configuredProviders[0];
+            _selectedProviderId = selected.Id.ToString();
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Could not reach the server to load saved AI providers.";
+        }
+        catch (JsonException)
+        {
+            _error = "The server returned unreadable AI provider settings. Reload the page and try again.";
+        }
+        finally
+        {
+            _loadingProviders = false;
+        }
+    }
+
+    private async Task GenerateAsync()
+    {
+        if (!Guid.TryParse(_selectedProviderId, out var providerId)) return;
+        _error = string.Empty;
+        await BuildTracker.CreateAsync(providerId, _instruction.Trim(), CurrentFlow);
+    }
+
+    private async Task ApplyDraftAsync()
+    {
+        var job = Job;
+        if (job?.Flow == null) return;
+        await OnFlowGenerated.InvokeAsync(new AiFlowBuildResponseDto
+        {
+            Flow = job.Flow,
+            Summary = job.ProgressNote,
+            Warnings = job.Warnings,
+            Sources = job.Sources
+        });
+        await CloseAsync();
+    }
+
+    private Task CloseAsync() => IsVisibleChanged.InvokeAsync(false);
+
+    private static string ProviderLabel(AiProviderSettingsDto provider) =>
+        $"{provider.Name} — {provider.ProviderType}, {provider.Model}" + (provider.IsDefault ? " (default)" : string.Empty);
+
+    private static string? SourceHref(string source)
+    {
+        var start = source.IndexOf("https://", StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return null;
+        var address = source[start..].Trim();
+        return Uri.TryCreate(address, UriKind.Absolute, out var uri) ? uri.AbsoluteUri : null;
+    }
+
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage response, string fallback)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(body)) return fallback;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            string? message = null;
+            if (root.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String)
+                message = messageElement.GetString();
+            else if (root.TryGetProperty("detail", out var detailElement) && detailElement.ValueKind == JsonValueKind.String)
+                message = detailElement.GetString();
+            else if (root.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String)
+                message = titleElement.GetString();
+
+            if (root.TryGetProperty("traceId", out var traceElement) &&
+                traceElement.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(traceElement.GetString()))
+                return $"{message ?? fallback} (Trace ID: {traceElement.GetString()})";
+
+            if (!string.IsNullOrWhiteSpace(message))
+                return message;
+        }
+        catch (JsonException)
+        {
+        }
+        return fallback;
+    }
+
+    public void Dispose() => BuildTracker.Changed -= OnJobChanged;
+}
