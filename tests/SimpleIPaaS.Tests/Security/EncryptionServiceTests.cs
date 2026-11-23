@@ -89,7 +89,7 @@ public class EncryptionServiceTests
     [Fact]
     public async Task DecryptAsync_ThrowsWhenTheCiphertextWasProducedWithADifferentKey()
     {
-        var cipherText = await Create().EncryptAsync("tenant-a-secret");
+        var cipherText = await Create().EncryptAsync("deployment-secret");
         var otherService = Create("fedcba9876543210fedcba9876543210");
 
         await Assert.ThrowsAsync<AuthenticationTagMismatchException>(() => otherService.DecryptAsync(cipherText));

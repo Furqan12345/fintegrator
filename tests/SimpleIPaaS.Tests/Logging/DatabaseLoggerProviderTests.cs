@@ -47,7 +47,7 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
 
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT Id, Level, Source, Category, Message, Exception, TenantId, FlowExecutionId, FlowId, NodeName
+            SELECT Id, Level, Source, Category, Message, Exception, FlowExecutionId, FlowId, NodeName
             FROM AppLogEntries ORDER BY Id;
             """;
 
@@ -63,8 +63,7 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
                 reader.IsDBNull(5) ? null : reader.GetString(5),
                 reader.IsDBNull(6) ? null : reader.GetGuid(6),
                 reader.IsDBNull(7) ? null : reader.GetGuid(7),
-                reader.IsDBNull(8) ? null : reader.GetGuid(8),
-                reader.IsDBNull(9) ? null : reader.GetString(9)));
+                reader.IsDBNull(8) ? null : reader.GetString(8)));
         }
 
         return rows;
@@ -223,7 +222,6 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
     {
         var executionId = Guid.NewGuid();
         var flowId = Guid.NewGuid();
-        var tenantId = Guid.NewGuid();
 
         using (var provider = CreateProvider(Options()))
         {
@@ -232,8 +230,7 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
             using (logger.BeginScope(new Dictionary<string, object>
             {
                 ["ExecutionId"] = executionId,
-                ["FlowId"] = flowId,
-                ["TenantId"] = tenantId
+                ["FlowId"] = flowId
             }))
             {
                 // NodeName comes from the message state rather than the scope.
@@ -249,7 +246,6 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
         Assert.Equal(2, rows.Count);
         Assert.Equal(executionId, rows[0].FlowExecutionId);
         Assert.Equal(flowId, rows[0].FlowId);
-        Assert.Equal(tenantId, rows[0].TenantId);
         Assert.Equal("Fetch Orders", rows[0].NodeName);
 
         Assert.Null(rows[1].FlowExecutionId);
@@ -444,7 +440,6 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
         string Category,
         string Message,
         string? Exception,
-        Guid? TenantId,
         Guid? FlowExecutionId,
         Guid? FlowId,
         string? NodeName);

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json.Linq;
@@ -30,7 +30,7 @@ public class ForEachTests
         codeExec,
         _executions,
         _crossReferences,
-        NullLogger<FlowExecutor>.Instance);
+        new FakeEmailSender(), NullLogger<FlowExecutor>.Instance);
 
     private FlowExecutor CreateExecutor(ITransportEngine transport) => new(
         _flows,
@@ -38,7 +38,7 @@ public class ForEachTests
         new UnreachableCodeExecutionService(),
         _executions,
         _crossReferences,
-        NullLogger<FlowExecutor>.Instance);
+        new FakeEmailSender(), NullLogger<FlowExecutor>.Instance);
 
     private static AdvancedCodeExecutionService CreateCodeService(int timeoutSeconds = 60)
     {
@@ -101,7 +101,7 @@ public class ForEachTests
     private FlowExecution SeedExecution(IntegrationFlow flow)
     {
         _flows.Seed(flow);
-        var execution = new FlowExecution { FlowId = flow.Id, TenantId = flow.TenantId, TriggerSource = "Test" };
+        var execution = new FlowExecution { FlowId = flow.Id, TriggerSource = "Test" };
         _executions.Seed(execution);
         return execution;
     }
@@ -404,3 +404,5 @@ public class ForEachTests
         Assert.Equal(2, forEachOutput.Count);
     }
 }
+
+

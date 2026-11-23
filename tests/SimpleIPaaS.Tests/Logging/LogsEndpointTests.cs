@@ -1,10 +1,13 @@
-using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Api.Controllers;
+using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
+using SimpleIPaaS.Application.Models.Storage;
 using SimpleIPaaS.Domain.Entities;
+using SimpleIPaaS.Infrastructure.Elasticsearch;
 using SimpleIPaaS.Infrastructure.Persistence;
 using SimpleIPaaS.Shared.Models;
 using SimpleIPaaS.Tests.TestDoubles;
@@ -13,7 +16,6 @@ namespace SimpleIPaaS.Tests.Logging;
 
 public sealed class LogsEndpointTests : IDisposable
 {
-    private static readonly Guid Tenant = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     private readonly SqliteConnection _connection;
     private readonly DbContextOptions<IPaaSContext> _options;
@@ -31,7 +33,7 @@ public sealed class LogsEndpointTests : IDisposable
         seed.Database.EnsureCreated();
     }
 
-    private IPaaSContext CreateContext() => new(_options, new StubTenantContext(Tenant));
+    private IPaaSContext CreateContext() => new(_options);
 
     private LogRepository CreateRepository(IPaaSContext context) => new(context);
 
@@ -406,5 +408,79 @@ public sealed class LogsEndpointTests : IDisposable
             levels!.ToArray());
     }
 
+    // ---------------- elasticsearch backend not ready ----------------
+
+    [Fact]
+    public async Task ElasticsearchLogRepository_WithoutAReadyClient_ThrowsTheRetryableException()
+    {
+        var settings = new StubStorageSettingsProvider(StubStorageSettingsProvider.Snapshot(elasticsearchEnabled: false, logsOnElasticsearch: true));
+        var handler = RecordingElasticsearchHandler.New();
+        using var clients = ElasticsearchClientProvider.ForTests(settings, new HttpClient(handler));
+        var repository = new ElasticsearchLogRepository(clients);
+
+        var exception = await Assert.ThrowsAsync<StorageBackendUnavailableException>(
+            () => repository.GetPageAsync(new LogQuery(), 1, 10));
+
+        Assert.Contains("not ready", exception.Message);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task LogsEndpoint_WhenTheElasticsearchClientIsNotReady_Answers503WithTheCause()
+    {
+        var controller = new LogsController(new ThrowingLogRepository(new StorageBackendUnavailableException(
+            "The logs dataset is on Elasticsearch, but the cluster client is not ready yet. Retry in a moment.")));
+
+        var result = await controller.GetLogs();
+
+        var problem = Assert.IsAssignableFrom<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, problem.StatusCode);
+        var details = Assert.IsType<ProblemDetails>(problem.Value);
+        Assert.Equal("The logs backend is not ready.", details.Title);
+        Assert.Contains("not ready", details.Detail);
+    }
+
+    [Fact]
+    public async Task LogsEndpoint_WhenTheClusterConnectionFails_Answers503WithTheRealCause()
+    {
+        var controller = new LogsController(new ThrowingLogRepository(new ElasticsearchRequestException(
+            "POST", "/fusetor-logs-*/_search", 0, "No connection could be made because the target machine actively refused it.", "connection_failed")));
+
+        var sources = await controller.GetSources();
+        var facets = await controller.Facets();
+
+        foreach (var result in new[] { sources, facets })
+        {
+            var problem = Assert.IsAssignableFrom<ObjectResult>(result);
+            Assert.Equal(StatusCodes.Status503ServiceUnavailable, problem.StatusCode);
+            var details = Assert.IsType<ProblemDetails>(problem.Value);
+            Assert.Contains("connection_failed", details.Detail);
+            Assert.Contains("refused", details.Detail);
+        }
+    }
+
+    private sealed class ThrowingLogRepository : ILogRepository
+    {
+        private readonly Exception _exception;
+
+        public ThrowingLogRepository(Exception exception) => _exception = exception;
+
+        public Task<LogPage> GetPageAsync(LogQuery query, int page, int pageSize, System.Threading.CancellationToken cancellationToken = default) => throw _exception;
+
+        public Task<LogTail> GetTailAsync(long afterId, LogQuery query, int limit, System.Threading.CancellationToken cancellationToken = default) => throw _exception;
+
+        public Task<IReadOnlyList<string>> GetSourcesAsync(System.Threading.CancellationToken cancellationToken = default) => throw _exception;
+
+        public Task<LogFacets> GetFacetsAsync(LogQuery query, System.Threading.CancellationToken cancellationToken = default) => throw _exception;
+
+        public Task<IReadOnlyList<AppLogEntry>> GetExecutionTimelineAsync(Guid executionId, int limit, System.Threading.CancellationToken cancellationToken = default) => throw _exception;
+
+        public Task<TelemetryHealthSnapshot> GetTelemetryHealthAsync(System.Threading.CancellationToken cancellationToken = default) => throw _exception;
+
+        public Task<int> DeleteAsync(DateTime? olderThanUtc, System.Threading.CancellationToken cancellationToken = default) => throw _exception;
+    }
+
     public void Dispose() => _connection.Dispose();
 }
+
+

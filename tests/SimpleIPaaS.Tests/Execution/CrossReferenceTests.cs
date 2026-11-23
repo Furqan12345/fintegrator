@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging.Abstractions;
+﻿using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json.Linq;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
@@ -232,7 +232,7 @@ public class CrossReferenceNodeTests
         new UnreachableCodeExecutionService(),
         _executions,
         _crossReferences,
-        NullLogger<FlowExecutor>.Instance);
+        new FakeEmailSender(), NullLogger<FlowExecutor>.Instance);
 
     private static IntegrationStep Node(string name, StepType stepType) => new()
     {
@@ -248,7 +248,7 @@ public class CrossReferenceNodeTests
     private FlowExecution SeedExecution(IntegrationFlow flow)
     {
         _flows.Seed(flow);
-        var execution = new FlowExecution { FlowId = flow.Id, TenantId = flow.TenantId, TriggerSource = "Test" };
+        var execution = new FlowExecution { FlowId = flow.Id, TriggerSource = "Test" };
         _executions.Seed(execution);
         return execution;
     }
@@ -467,7 +467,7 @@ public class CrossReferenceNodeTests
         var step = Assert.Single(_executions.StepExecutions);
         var result = JObject.Parse(step.ResponsePayload);
 
-        // Structure is preserved — original object shape
+        // Structure is preserved â€” original object shape
         var orders = (JArray)result["orders"]!;
         Assert.NotNull(orders);
         Assert.Equal(2, orders.Count);
@@ -716,3 +716,4 @@ public class CrossReferenceNodeTests
         Assert.Equal("first", emitted[0]!["status"]!.ToString());
     }
 }
+

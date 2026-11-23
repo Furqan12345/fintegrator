@@ -1,6 +1,7 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
@@ -15,6 +16,7 @@ public class DeadLetterRecoveryTests
     private readonly StubIntegrationRepository _flows = new();
     private readonly StubExecutionRepository _executions = new();
     private readonly StubTransportEngine _transport = new();
+    private readonly FakeEmailSender _email = new();
 
     private DeadLetterService CreateService(int? maxAutoRetryAttempts = null)
     {
@@ -24,7 +26,7 @@ public class DeadLetterRecoveryTests
             new UnreachableCodeExecutionService(),
             _executions,
             new StubCrossReferenceRepository(),
-            NullLogger<FlowExecutor>.Instance);
+            _email, NullLogger<FlowExecutor>.Instance);
 
         IConfiguration? configuration = maxAutoRetryAttempts.HasValue
             ? new ConfigurationBuilder()
@@ -103,6 +105,61 @@ public class DeadLetterRecoveryTests
         JsonSerializer.Deserialize<List<AttemptRecord>>(json, AttemptOptions) ?? new List<AttemptRecord>();
 
     [Fact]
+    public async Task ReplayEntryAsync_UsesConfiguredCompletedUpstreamNodeByDefault()
+    {
+        var configuredStart = HttpNode("Preflight");
+        configuredStart.EndpointUrl = "https://example.test/preflight";
+        var failedNode = HttpNode("Push");
+        failedNode.EndpointUrl = "https://example.test/push";
+        var (flow, execution) = SeedFailedRun(configuredStart, failedNode);
+        flow.DefaultDeadLetterResyncStepId = configuredStart.Id;
+        flow.Edges.Add(new IntegrationEdge
+        {
+            SourceNodeId = configuredStart.Id,
+            TargetNodeId = failedNode.Id
+        });
+        _executions.StepExecutions.Add(new StepExecution
+        {
+            FlowExecutionId = execution.Id,
+            StepId = configuredStart.Id,
+            NodeName = configuredStart.NodeName,
+            Status = ExecutionStatus.Success,
+            CompletedAt = DateTime.UtcNow.AddMinutes(-1)
+        });
+        var entry = SeedDeadLetter(execution, failedNode, "Connection refused");
+
+        _transport.Enqueue(200, "{}");
+        _transport.Enqueue(200, "{}");
+        var result = await CreateService().ReplayEntryAsync(entry.Id, force: true);
+
+        Assert.Equal(DeadLetterReplayOutcome.Replayed, result.Outcome);
+        Assert.Equal(new[] { configuredStart.EndpointUrl, failedNode.EndpointUrl }, _transport.RequestedUrls);
+    }
+
+    [Fact]
+    public async Task ReplayEntryAsync_FallsBackToFailedNodeWhenConfiguredNodeWasNotCompleted()
+    {
+        var configuredStart = HttpNode("Preflight");
+        configuredStart.EndpointUrl = "https://example.test/preflight";
+        var failedNode = HttpNode("Push");
+        failedNode.EndpointUrl = "https://example.test/push";
+        var (flow, execution) = SeedFailedRun(configuredStart, failedNode);
+        flow.DefaultDeadLetterResyncStepId = configuredStart.Id;
+        flow.Edges.Add(new IntegrationEdge
+        {
+            SourceNodeId = configuredStart.Id,
+            TargetNodeId = failedNode.Id
+        });
+        var entry = SeedDeadLetter(execution, failedNode, "Connection refused");
+
+        _transport.Enqueue(200, "{}");
+        var result = await CreateService().ReplayEntryAsync(entry.Id, force: true);
+
+        Assert.Equal(DeadLetterReplayOutcome.Replayed, result.Outcome);
+        Assert.Equal(new[] { failedNode.EndpointUrl }, _transport.RequestedUrls);
+    }
+
+    [Fact]
     public async Task ReplayEntryAsync_FlipsTheStepToRecovered_AndKeepsTheOriginalErrorMessage()
     {
         var node = HttpNode("Push");
@@ -118,11 +175,11 @@ public class DeadLetterRecoveryTests
         Assert.NotNull(entry.ResolvedAt);
         Assert.Equal("Connection refused", entry.ErrorMessage);
 
-        var step = Assert.Single(_executions.StepExecutions);
-        Assert.Equal(ExecutionStatus.Recovered, step.Status);
+        var step = Assert.Single(_executions.StepExecutions, item => item.Status == ExecutionStatus.Recovered);
         Assert.Equal("Connection refused", step.ErrorMessage);
         Assert.NotNull(step.RecoveredAt);
         Assert.Equal(entry.Id, step.RecoveredByDeadLetterId);
+        Assert.Single(_executions.StepExecutions, item => item.Status == ExecutionStatus.Success);
     }
 
     [Fact]
@@ -190,7 +247,8 @@ public class DeadLetterRecoveryTests
         Assert.NotNull(execution.RecoveredAt);
         Assert.Equal(0, execution.FailedRecords);
         Assert.Equal(2, execution.SuccessRecords);
-        Assert.All(_executions.StepExecutions, step => Assert.Equal(ExecutionStatus.Recovered, step.Status));
+        Assert.Equal(2, _executions.StepExecutions.Count(step => step.Status == ExecutionStatus.Recovered));
+        Assert.Equal(2, _executions.StepExecutions.Count(step => step.Status == ExecutionStatus.Success));
     }
 
     [Fact]
@@ -208,6 +266,62 @@ public class DeadLetterRecoveryTests
         Assert.Equal("Pending", entry.Status);
         Assert.Equal(0, entry.RetryCount);
         Assert.Empty(_transport.RequestedUrls);
+    }
+
+    private (IntegrationFlow Flow, FlowExecution Execution, DeadLetterEntry Entry) SeedEmailRun(bool allowPostReplay)
+    {
+        var email = new IntegrationStep
+        {
+            Id = Guid.NewGuid(),
+            NodeName = "Notify",
+            StepType = StepType.Email,
+            StepConfig = new EmailStepConfig
+            {
+                To = "ops@example.com",
+                Subject = "Order synced",
+                Body = "Body"
+            }.Write()
+        };
+        var flow = new IntegrationFlow { Name = "Email flow", AllowPostReplay = allowPostReplay };
+        flow.Nodes.Add(email);
+        _flows.Seed(flow);
+
+        var execution = new FlowExecution
+        {
+            Id = Guid.NewGuid(),
+            FlowId = flow.Id,
+            FlowName = flow.Name,
+            Status = ExecutionStatus.Failed,
+            TriggerSource = "Test",
+            TotalRecords = 1,
+            FailedRecords = 1,
+            CompletedAt = DateTime.UtcNow
+        };
+        _executions.Seed(execution);
+
+        return (flow, execution, SeedDeadLetter(execution, email, "invalid"));
+    }
+
+    [Fact]
+    public async Task ReplayEntryAsync_BlocksAnEmailNodeWithoutAllowPostReplay()
+    {
+        var (_, _, entry) = SeedEmailRun(allowPostReplay: false);
+
+        var result = await CreateService().ReplayEntryAsync(entry.Id, force: true);
+
+        Assert.Equal(DeadLetterReplayOutcome.PostReplayNotAllowed, result.Outcome);
+        Assert.Empty(_email.Messages);
+    }
+
+    [Fact]
+    public async Task ReplayEntryAsync_AllowsAnEmailNodeWithAllowPostReplay()
+    {
+        var (_, _, entry) = SeedEmailRun(allowPostReplay: true);
+
+        var result = await CreateService().ReplayEntryAsync(entry.Id, force: true);
+
+        Assert.Equal(DeadLetterReplayOutcome.Replayed, result.Outcome);
+        Assert.Single(_email.Messages);
     }
 
     [Fact]
@@ -235,3 +349,4 @@ public class DeadLetterRecoveryTests
         public string Error { get; set; } = string.Empty;
     }
 }
+

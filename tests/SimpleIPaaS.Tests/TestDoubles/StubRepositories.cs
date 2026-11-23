@@ -71,8 +71,10 @@ public sealed class StubIntegrationRepository : IIntegrationRepository
         return Task.CompletedTask;
     }
 
+    public List<FlowVersion> Versions { get; } = new();
+
     public Task<IReadOnlyList<FlowVersion>> GetVersionsAsync(Guid flowId) =>
-        Task.FromResult<IReadOnlyList<FlowVersion>>(Array.Empty<FlowVersion>());
+        Task.FromResult<IReadOnlyList<FlowVersion>>(Versions.Where(version => version.FlowId == flowId).ToList());
 
     public Task<FlowVersion?> PublishAsync(Guid flowId, string? changeNote = null) =>
         Task.FromResult<FlowVersion?>(null);
@@ -109,8 +111,16 @@ public sealed class StubIntegrationRepository : IIntegrationRepository
 
     public Task<IntegrationFlow?> GetFlowForTriggerAsync(Guid id) => GetByIdAsync(id);
 
-    public Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAcrossTenantsAsync() =>
+    public Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAsync() =>
         Task.FromResult<IEnumerable<IntegrationFlow>>(_flows.Values.Where(f => f.TriggerType == TriggerType.Cron).ToList());
+
+    public Task<IntegrationFlow?> SetScheduleStatusAsync(Guid flowId, FlowStatus status)
+    {
+        if (!_flows.TryGetValue(flowId, out var flow)) return Task.FromResult<IntegrationFlow?>(null);
+        flow.Status = status;
+        flow.NextRunAt = status == FlowStatus.Active && flow.RunAt > DateTime.UtcNow ? flow.RunAt : null;
+        return Task.FromResult<IntegrationFlow?>(flow);
+    }
 }
 
 public sealed class StubExecutionRepository : IExecutionRepository
@@ -125,15 +135,30 @@ public sealed class StubExecutionRepository : IExecutionRepository
 
     public List<DeadLetterEntry> DeadLetters { get; } = new();
 
+    public Exception? StepPacketLogException { get; set; }
+    public Exception? DeadLetterException { get; set; }
+
     public Task<FlowExecution?> GetFlowExecutionAsync(Guid id) =>
         Task.FromResult(_flowExecutions.TryGetValue(id, out var execution) ? execution : null);
 
-    public Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50, Guid? integrationId = null) =>
+    public Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(ExecutionQuery query) =>
         Task.FromResult<IEnumerable<FlowExecution>>(_flowExecutions.Values.ToList());
 
     public Task AddFlowExecutionAsync(FlowExecution execution)
     {
         lock (_lock) { _flowExecutions[execution.Id] = execution; }
+        return Task.CompletedTask;
+    }
+
+    public Task AddFlowExecutionsAsync(IReadOnlyCollection<FlowExecution> executions)
+    {
+        lock (_lock)
+        {
+            foreach (var execution in executions)
+            {
+                _flowExecutions[execution.Id] = execution;
+            }
+        }
         return Task.CompletedTask;
     }
 
@@ -186,6 +211,7 @@ public sealed class StubExecutionRepository : IExecutionRepository
 
     public Task AddStepPacketLogAsync(StepPacketLog packet)
     {
+        if (StepPacketLogException != null) throw StepPacketLogException;
         lock (_lock) { StepPacketLogs.Add(packet); }
         return Task.CompletedTask;
     }
@@ -246,8 +272,51 @@ public sealed class StubExecutionRepository : IExecutionRepository
             .FirstOrDefault());
     }
 
+    public Task<IReadOnlyList<PacketLogListItem>> GetPacketLogPageAsync(PacketLogPageFilter filter)
+    {
+        var rows = StepPacketLogs
+            .Where(packet => packet.Kind == "HTTP")
+            .Join(StepExecutions, packet => packet.StepExecutionId, step => step.Id, (packet, step) => new { packet, step })
+            .Join(_flowExecutions.Values, x => x.step.FlowExecutionId, run => run.Id, (x, run) => new { x.packet, x.step, run })
+            .Where(x => (filter.FlowId == null || x.run.FlowId == filter.FlowId) && (filter.FlowExecutionId == null || x.run.Id == filter.FlowExecutionId))
+            .Where(x => filter.Method == null || x.packet.HttpMethod == filter.Method)
+            .Where(x => string.Equals(filter.Outcome, "success", StringComparison.OrdinalIgnoreCase)
+                ? x.packet.StatusCode != null && x.packet.StatusCode >= 200 && x.packet.StatusCode < 300
+                : !string.Equals(filter.Outcome, "failure", StringComparison.OrdinalIgnoreCase) || x.packet.StatusCode == null || x.packet.StatusCode < 200 || x.packet.StatusCode >= 300)
+            .Where(x => filter.Hours == null || x.packet.StartedAt >= DateTime.UtcNow.AddHours(-filter.Hours.Value))
+            .Where(x => string.IsNullOrWhiteSpace(filter.Search) ||
+                        x.packet.RequestUrl.Contains(filter.Search, StringComparison.OrdinalIgnoreCase) ||
+                        x.run.FlowName.Contains(filter.Search, StringComparison.OrdinalIgnoreCase) ||
+                        x.step.NodeName.Contains(filter.Search, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => x.packet.StartedAt)
+            .Skip((Math.Max(1, filter.Page) - 1) * filter.PageSize)
+            .Take(filter.PageSize)
+            .Select(x => new PacketLogListItem(
+                x.packet.Id, x.run.Id, x.packet.StartedAt, x.run.FlowName, x.run.IntegrationName, x.step.NodeName,
+                null, x.packet.HttpMethod, x.packet.RequestUrl, x.packet.StatusCode, x.packet.DurationMs,
+                x.packet.PageNumber, x.packet.Attempt, x.packet.Error))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<PacketLogListItem>>(rows);
+    }
+
+    public Task<PacketLogDetailItem?> GetPacketLogDetailAsync(Guid packetId)
+    {
+        var row = StepPacketLogs
+            .Where(packet => packet.Id == packetId)
+            .Join(StepExecutions, packet => packet.StepExecutionId, step => step.Id, (packet, step) => new { packet, step })
+            .Join(_flowExecutions.Values, x => x.step.FlowExecutionId, run => run.Id, (x, run) => new { x.packet, x.step, run })
+            .Select(x => new PacketLogDetailItem(
+                x.packet.Id, x.run.Id, x.packet.StartedAt, x.packet.CompletedAt, x.packet.DurationMs,
+                x.run.FlowName, x.run.IntegrationName, x.step.NodeName, null, x.packet.HttpMethod, x.packet.RequestUrl,
+                x.packet.StatusCode, x.packet.PageNumber, x.packet.Attempt, x.packet.Error,
+                x.packet.RequestHeadersJson, x.packet.RequestBody, x.packet.ResponseHeadersJson, x.packet.ResponseBody))
+            .FirstOrDefault();
+        return Task.FromResult(row);
+    }
+
     public Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
     {
+        if (DeadLetterException != null) throw DeadLetterException;
         lock (_lock) { DeadLetters.Add(entry); }
         return Task.CompletedTask;
     }
@@ -277,7 +346,6 @@ public sealed class StubExecutionRepository : IExecutionRepository
             return Task.FromResult<QueuedExecutionClaim?>(new QueuedExecutionClaim(
                 next.Id,
                 next.FlowId,
-                next.TenantId,
                 next.TriggerSource,
                 next.TriggerPayloadJson));
         }
@@ -295,17 +363,52 @@ public sealed class StubExecutionRepository : IExecutionRepository
         }
     }
 
-    public Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAcrossTenantsAsync(int batchSize)
+    public Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAsync(int batchSize)
     {
         lock (_lock)
         {
             IReadOnlyList<DeadLetterEntry> entries = DeadLetters
                 .Where(d => d.Status == "Pending" || d.ReplayRequestedAt != null)
-                .OrderBy(d => d.CreatedAt)
+                .OrderBy(d => d.ReplayRequestedAt == null)
+                .ThenBy(d => d.CreatedAt)
                 .Take(batchSize < 1 ? 100 : batchSize)
                 .ToList();
 
             return Task.FromResult(entries);
+        }
+    }
+
+    public Task<IReadOnlyList<(DeadLetterEntry Entry, Guid? FlowId)>> GetUnalertedDeadLettersAsync(
+        DateTime since, int max)
+    {
+        lock (_lock)
+        {
+            IReadOnlyList<(DeadLetterEntry, Guid?)> rows = DeadLetters
+                .Where(entry => entry.AlertedAt == null && entry.CreatedAt >= since)
+                .OrderBy(entry => entry.CreatedAt)
+                .Take(max < 1 ? 200 : max)
+                .Select(entry => (entry, _flowExecutions.TryGetValue(entry.FlowExecutionId, out var run)
+                    ? (Guid?)run.FlowId
+                    : null))
+                .ToList();
+
+            return Task.FromResult(rows);
+        }
+    }
+
+    public Task<int> MarkDeadLettersAlertedAsync(IReadOnlyCollection<Guid> ids, DateTime at)
+    {
+        lock (_lock)
+        {
+            var matches = DeadLetters
+                .Where(entry => ids.Contains(entry.Id) && entry.AlertedAt == null)
+                .ToList();
+            foreach (var entry in matches)
+            {
+                entry.AlertedAt = at;
+            }
+
+            return Task.FromResult(matches.Count);
         }
     }
 
@@ -316,6 +419,170 @@ public sealed class StubExecutionRepository : IExecutionRepository
         Task.FromResult<IEnumerable<DeadLetterEntry>>(DeadLetters.Where(d => d.FlowExecutionId == flowExecutionId).ToList());
 
     public Task UpdateDeadLetterEntryAsync(DeadLetterEntry entry) => Task.CompletedTask;
+
+    public Task<IReadOnlyList<(DeadLetterEntry Entry, Guid? FlowId)>> GetDeadLetterPageAsync(DeadLetterPageFilter filter)
+    {
+        IEnumerable<DeadLetterEntry> query = DeadLetters;
+        if (!filter.IncludeTests)
+            query = query.Where(entry => !_flowExecutions.TryGetValue(entry.FlowExecutionId, out var run) || !run.IsTest);
+        if (filter.Status != null) query = query.Where(entry => entry.Status == filter.Status);
+        if (filter.FlowId != null)
+            query = query.Where(entry =>
+                _flowExecutions.TryGetValue(entry.FlowExecutionId, out var run) && run.FlowId == filter.FlowId);
+        if (filter.FlowExecutionId != null)
+            query = query.Where(entry => entry.FlowExecutionId == filter.FlowExecutionId);
+        if (filter.StepId != null) query = query.Where(entry => entry.StepId == filter.StepId);
+        if (filter.Hours != null) query = query.Where(entry => entry.CreatedAt >= DateTime.UtcNow.AddHours(-filter.Hours.Value));
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+            query = query.Where(entry =>
+                entry.NodeName.Contains(filter.Search, StringComparison.OrdinalIgnoreCase) ||
+                entry.FlowName.Contains(filter.Search, StringComparison.OrdinalIgnoreCase) ||
+                entry.ErrorMessage.Contains(filter.Search, StringComparison.OrdinalIgnoreCase));
+        var rows = query
+            .OrderByDescending(entry => entry.CreatedAt)
+            .Skip((Math.Max(1, filter.Page) - 1) * filter.PageSize)
+            .Take(filter.PageSize)
+            .Select(entry => (entry, _flowExecutions.TryGetValue(entry.FlowExecutionId, out var run)
+                ? (Guid?)run.FlowId
+                : null))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<(DeadLetterEntry, Guid?)>>(rows);
+    }
+
+    public Task<bool> TryClaimDeadLetterForManualReplayAsync(Guid id)
+    {
+        lock (_lock)
+        {
+            var entry = DeadLetters.FirstOrDefault(item => item.Id == id && item.ReplayRequestedAt != null);
+            if (entry == null) return Task.FromResult(false);
+            entry.ReplayRequestedAt = null;
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> TryClaimDeadLetterForAutoRetryAsync(Guid id)
+    {
+        lock (_lock)
+        {
+            var entry = DeadLetters.FirstOrDefault(item => item.Id == id && item.Status == "Pending");
+            if (entry == null) return Task.FromResult(false);
+            entry.Status = "Retrying";
+            entry.LastRetriedAt = DateTime.UtcNow;
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> TryRequestManualReplayAsync(
+        Guid id,
+        Guid startStepId,
+        DateTime requestedAt,
+        string? flowStateJson = null)
+    {
+        lock (_lock)
+        {
+            var entry = DeadLetters.FirstOrDefault(item => item.Id == id && item.ReplayRequestedAt == null &&
+                (item.Status == "Pending" || item.Status == "Retrying"));
+            if (entry == null) return Task.FromResult(false);
+            entry.Status = "Retrying";
+            entry.ReplayFromStepId = startStepId;
+            entry.ReplayRequestedAt = requestedAt;
+            if (flowStateJson != null)
+            {
+                entry.FlowStateJson = flowStateJson;
+            }
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<int> ResetStaleRetryingDeadLettersAsync(TimeSpan age)
+    {
+        lock (_lock)
+        {
+            var cutoff = DateTime.UtcNow - age;
+            var stale = DeadLetters.Where(entry => entry.Status == "Retrying" && entry.ReplayRequestedAt == null &&
+                (entry.LastRetriedAt == null || entry.LastRetriedAt < cutoff)).ToList();
+            foreach (var entry in stale) entry.Status = "Pending";
+            return Task.FromResult(stale.Count);
+        }
+    }
+}
+
+public sealed class StubFlowTestRepository : IFlowTestRepository
+{
+    private readonly Dictionary<Guid, FlowTestCase> _cases = new();
+    private readonly List<FlowTestRun> _runs = new();
+
+    public IReadOnlyList<FlowTestRun> Runs => _runs;
+    public Exception? TrimException { get; set; }
+
+    public void Seed(FlowTestCase testCase) => _cases[testCase.Id] = testCase;
+
+    public Task<IReadOnlyList<FlowTestCase>> GetByFlowIdAsync(Guid flowId) =>
+        Task.FromResult<IReadOnlyList<FlowTestCase>>(_cases.Values.Where(testCase => testCase.FlowId == flowId).ToList());
+
+    public Task<FlowTestCase?> GetAsync(Guid id) =>
+        Task.FromResult(_cases.TryGetValue(id, out var testCase) ? testCase : null);
+
+    public Task AddAsync(FlowTestCase testCase)
+    {
+        _cases[testCase.Id] = testCase;
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> UpdateAsync(FlowTestCase testCase)
+    {
+        _cases[testCase.Id] = testCase;
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> DeleteAsync(Guid id) => Task.FromResult(_cases.Remove(id));
+
+    public Task AddRunAsync(FlowTestRun run)
+    {
+        _runs.Add(run);
+        return Task.CompletedTask;
+    }
+
+    public Task<FlowTestRun?> GetRunAsync(Guid id) =>
+        Task.FromResult(_runs.FirstOrDefault(run => run.Id == id));
+
+    public Task<IReadOnlyList<FlowTestRun>> GetRunsAsync(Guid testCaseId) =>
+        Task.FromResult<IReadOnlyList<FlowTestRun>>(_runs.Where(run => run.TestCaseId == testCaseId).ToList());
+
+    public Task<IReadOnlyList<FlowTestRun>> GetRunsBySuiteAsync(Guid suiteRunId) =>
+        Task.FromResult<IReadOnlyList<FlowTestRun>>(_runs.Where(run => run.SuiteRunId == suiteRunId).ToList());
+
+    public Task<FlowTestRun?> GetLatestRunAsync(Guid testCaseId) =>
+        Task.FromResult(_runs.Where(run => run.TestCaseId == testCaseId).OrderByDescending(run => run.StartedAt).FirstOrDefault());
+
+    public Task<IReadOnlyList<FlowTestRun>> GetInterruptedRunsAsync() =>
+        Task.FromResult<IReadOnlyList<FlowTestRun>>(_runs.Where(run => run.Status is "Queued" or "Running").ToList());
+
+    public Task UpdateRunAsync(FlowTestRun run)
+    {
+        var index = _runs.FindIndex(candidate => candidate.Id == run.Id);
+        if (index >= 0) _runs[index] = run;
+        return Task.CompletedTask;
+    }
+
+    public Task RecordRunTimestampsAsync(Guid testCaseId, DateTime at, bool passed)
+    {
+        if (_cases.TryGetValue(testCaseId, out var testCase))
+        {
+            testCase.LastRunAt = at;
+            if (passed) testCase.LastPassedAt = at;
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task TrimRunsAsync(Guid testCaseId, int keep = 20)
+    {
+        if (TrimException != null) throw TrimException;
+        var stale = _runs.Where(run => run.TestCaseId == testCaseId)
+            .OrderByDescending(run => run.StartedAt).Skip(keep).ToList();
+        foreach (var run in stale) _runs.Remove(run);
+        return Task.CompletedTask;
+    }
 }
 
 public sealed class StubCrossReferenceRepository : ICrossReferenceRepository
@@ -414,6 +681,75 @@ public sealed class StubCrossReferenceRepository : ICrossReferenceRepository
         Task.FromResult(_entries.RemoveAll(e => e.Id == id) > 0);
 }
 
+public sealed class StubIntegrationCatalogRepository : IIntegrationCatalogRepository
+{
+    private readonly List<Integration> _integrations = new();
+
+    public void Seed(Integration integration) => _integrations.Add(integration);
+
+    public Task<Integration?> GetByIdAsync(Guid id) =>
+        Task.FromResult(_integrations.FirstOrDefault(item => item.Id == id));
+
+    public Task<IEnumerable<Integration>> GetAllAsync() =>
+        Task.FromResult<IEnumerable<Integration>>(_integrations.ToList());
+
+    public Task AddAsync(Integration integration)
+    {
+        _integrations.Add(integration);
+        return Task.CompletedTask;
+    }
+
+    public Task UpdateAsync(Integration integration) => Task.CompletedTask;
+
+    public Task DeleteAsync(Guid id)
+    {
+        _integrations.RemoveAll(item => item.Id == id);
+        return Task.CompletedTask;
+    }
+}
+
+public sealed class StubLogRepository : ILogRepository
+{
+    public List<AppLogEntry> Entries { get; } = new();
+
+    public Task<LogPage> GetPageAsync(LogQuery query, int page, int pageSize, CancellationToken cancellationToken = default)
+    {
+        IEnumerable<AppLogEntry> filtered = Entries;
+        if (!string.IsNullOrWhiteSpace(query.MinimumLevel))
+            filtered = filtered.Where(entry => string.Equals(entry.Level, query.MinimumLevel, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(query.Search))
+            filtered = filtered.Where(entry =>
+                entry.Message.Contains(query.Search, StringComparison.OrdinalIgnoreCase) ||
+                (entry.Exception ?? string.Empty).Contains(query.Search, StringComparison.OrdinalIgnoreCase));
+        if (query.FlowId.HasValue)
+            filtered = filtered.Where(entry => entry.FlowId == query.FlowId);
+        if (query.FlowExecutionId.HasValue)
+            filtered = filtered.Where(entry => entry.FlowExecutionId == query.FlowExecutionId);
+        if (query.SinceUtc.HasValue)
+            filtered = filtered.Where(entry => entry.Timestamp >= query.SinceUtc);
+
+        var items = filtered.OrderByDescending(entry => entry.Timestamp).Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        return Task.FromResult(new LogPage(items, page, pageSize, items.Count, 0));
+    }
+
+    public Task<LogTail> GetTailAsync(long afterId, LogQuery query, int limit, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LogTail(new List<AppLogEntry>(), 0, false));
+
+    public Task<IReadOnlyList<string>> GetSourcesAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<string>>(new List<string>());
+
+    public Task<LogFacets> GetFacetsAsync(LogQuery query, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LogFacets(new List<string>(), new List<string>(), new List<string>(), new List<string>(), new List<string>()));
+
+    public Task<IReadOnlyList<AppLogEntry>> GetExecutionTimelineAsync(Guid executionId, int limit, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<AppLogEntry>>(Entries.Where(entry => entry.FlowExecutionId == executionId).Take(limit).ToList());
+
+    public Task<TelemetryHealthSnapshot> GetTelemetryHealthAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new TelemetryHealthSnapshot(null, Entries.Count, 0));
+
+    public Task<int> DeleteAsync(DateTime? olderThanUtc, CancellationToken cancellationToken = default) => Task.FromResult(0);
+}
+
 public sealed class StubTransportEngine : ITransportEngine
 {
     private readonly Queue<(int StatusCode, string Response)> _responses = new();
@@ -438,27 +774,22 @@ public sealed class UnreachableTransportEngine : ITransportEngine
 
 public sealed class UnreachableCodeExecutionService : IAdvancedCodeExecutionService
 {
-    public Task<string> ExecuteMappingAsync(string csharpCode, string flowStateJson, string persistedStateJson) =>
+    public Task<string> ExecuteMappingAsync(string csharpCode, string flowStateJson, string persistedStateJson, string? helperCode = null) =>
         throw new InvalidOperationException("No script execution was expected in this test.");
 
-    public Task<string> ExecutePostFlightAsync(string csharpCode, string flowStateJson, string persistedStateJson, string httpResponseJson) =>
+    public Task<string> ExecuteEmailAsync(string csharpCode, string flowStateJson, string persistedStateJson, string? helperCode = null) =>
         throw new InvalidOperationException("No script execution was expected in this test.");
 
-    public Task<string> ExecuteUrlAsync(string csharpCode, string flowStateJson, string persistedStateJson) =>
+    public Task<string> ExecutePostFlightAsync(string csharpCode, string flowStateJson, string persistedStateJson, string httpResponseJson, string? helperCode = null) =>
         throw new InvalidOperationException("No script execution was expected in this test.");
 
-    public Task<bool> ExecuteBranchAsync(string csharpCode, string flowStateJson, string persistedStateJson) =>
+    public Task<string> ExecuteUrlAsync(string csharpCode, string flowStateJson, string persistedStateJson, string? helperCode = null) =>
         throw new InvalidOperationException("No script execution was expected in this test.");
+
+    public Task<bool> ExecuteBranchAsync(string csharpCode, string flowStateJson, string persistedStateJson, string? helperCode = null) =>
+        throw new InvalidOperationException("No script execution was expected in this test.");
+
+    public Task ValidateAsync(string csharpCode, System.Threading.CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
 }
 
-public sealed class StubTenantContext : SimpleIPaaS.Infrastructure.MultiTenancy.ITenantContext
-{
-    public StubTenantContext(Guid tenantId)
-    {
-        TenantId = tenantId;
-    }
-
-    public Guid TenantId { get; private set; }
-
-    public void SetTenantId(Guid tenantId) => TenantId = tenantId;
-}

@@ -11,12 +11,15 @@
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Fluxor" Version="6.9.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SimpleIPaaS.Api\SimpleIPaaS.Api.csproj" />
+    <ProjectReference Include="..\..\src\SimpleIPaaS.Client\SimpleIPaaS.Client.csproj" />
+    <ProjectReference Include="..\..\src\SimpleIPaaS.Engine\SimpleIPaaS.Engine.csproj" />
     <ProjectReference Include="..\..\src\SimpleIPaaS.Application\SimpleIPaaS.Application.csproj" />
     <ProjectReference Include="..\..\src\SimpleIPaaS.Domain\SimpleIPaaS.Domain.csproj" />
     <ProjectReference Include="..\..\src\SimpleIPaaS.Infrastructure\SimpleIPaaS.Infrastructure.csproj" />

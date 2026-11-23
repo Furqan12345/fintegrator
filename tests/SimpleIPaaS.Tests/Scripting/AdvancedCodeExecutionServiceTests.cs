@@ -60,6 +60,63 @@ public class AdvancedCodeExecutionServiceTests
     }
 
     [Fact]
+    public async Task ExecuteMappingAsync_UsesFlowHelperDeclarations()
+    {
+        var service = Create();
+        const string helper = """
+            static class FlowHelpers
+            {
+                public static string Stamp(string value) => "HELPER:" + value;
+            }
+            """;
+
+        var result = await service.ExecuteMappingAsync(
+            "return FlowHelpers.Stamp(JObject.Parse(FlowStateJson)[\"id\"].ToString());",
+            "{\"id\":\"42\"}",
+            "{}",
+            helper);
+
+        Assert.Equal("HELPER:42", result);
+    }
+
+    [Fact]
+    public async Task ExecuteMappingAsync_HoistsUsingsFromHelperAndScript()
+    {
+        var service = Create();
+        const string helper = """
+            using System.Globalization;
+
+            static class FlowHelpers
+            {
+                public static string Stamp(decimal value) => value.ToString("0.00", CultureInfo.InvariantCulture);
+            }
+            """;
+
+        var result = await service.ExecuteMappingAsync(
+            """
+            using System;
+            return FlowHelpers.Stamp(12.5m);
+            """,
+            "{}",
+            "{}",
+            helper);
+
+        Assert.Equal("12.50", result);
+    }
+
+    [Fact]
+    public async Task ValidateAsync_AcceptsHelperDeclarationsAndRejectsCompileErrors()
+    {
+        var service = Create();
+
+        await service.ValidateAsync("static class FlowHelpers { public static string Stamp() => \"ok\"; }");
+
+        var exception = await Assert.ThrowsAsync<ScriptExecutionException>(() =>
+            service.ValidateAsync("static class FlowHelpers { public static string Stamp() => missing; }"));
+        Assert.Contains("compile error", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ExecuteMappingAsync_ThrowsScriptExecutionException_WhenScriptThrows()
     {
         var service = Create();
@@ -99,6 +156,21 @@ public class AdvancedCodeExecutionServiceTests
         Assert.Equal(
             "quote \" and newline \n here",
             JsonSerializer.Deserialize<string>($"\"{exception.Message}\""));
+    }
+
+    [Fact]
+    public async Task ExecuteMappingAsync_KeepsApostrophesReadableInsteadOfEscapingThemToU0027()
+    {
+        var service = Create();
+
+        var exception = await Assert.ThrowsAsync<ScriptExecutionException>(() =>
+            service.ExecuteMappingAsync(
+                "throw new InvalidOperationException(\"it's broken\");",
+                "{}",
+                "{}"));
+
+        Assert.Contains("it's broken", exception.Message);
+        Assert.DoesNotContain("u0027", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

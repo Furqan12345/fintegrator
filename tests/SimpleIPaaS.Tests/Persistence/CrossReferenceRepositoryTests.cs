@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.Persistence;
@@ -10,8 +10,6 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
 {
     private const string ListName = "processed-orders";
 
-    private static readonly Guid TenantA = Guid.Parse("11111111-1111-1111-1111-111111111111");
-    private static readonly Guid TenantB = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
     private readonly SqliteConnection _connection;
     private readonly DbContextOptions<IPaaSContext> _options;
@@ -25,14 +23,14 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
             .UseSqlite(_connection)
             .Options;
 
-        using var seedContext = CreateContext(TenantA);
+        using var seedContext = CreateContext();
         seedContext.Database.EnsureCreated();
     }
 
-    private IPaaSContext CreateContext(Guid tenantId) => new(_options, new StubTenantContext(tenantId));
+    private IPaaSContext CreateContext() => new(_options);
 
-    private CrossReferenceRepository CreateRepository(IPaaSContext context, Guid tenantId) =>
-        new(context, new StubTenantContext(tenantId));
+    private CrossReferenceRepository CreateRepository(IPaaSContext context) =>
+        new(context);
 
     private static IReadOnlyCollection<CrossReferenceEntry> Entries(params string[] keys) =>
         keys.Select(key => new CrossReferenceEntry { ListName = ListName, KeyValue = key, ValueJson = "{}" }).ToList();
@@ -40,8 +38,8 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     [Fact]
     public async Task UpsertEntriesAsync_IsIdempotentAcrossRuns()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         await repository.EnsureListAsync(ListName, "Orders already handled");
 
@@ -58,8 +56,8 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     [Fact]
     public async Task UpsertEntriesAsync_CollapsesDuplicateKeysWithinTheSameBatch()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         var inserted = await repository.UpsertEntriesAsync(ListName, Entries("1", "1", "2"));
 
@@ -69,8 +67,8 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     [Fact]
     public async Task GetExistingKeysAsync_ReturnsOnlyTheKeysAlreadyStored()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         await repository.UpsertEntriesAsync(ListName, Entries("1", "2"));
 
@@ -80,25 +78,10 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     }
 
     [Fact]
-    public async Task Entries_AreIsolatedPerTenant()
-    {
-        using (var contextA = CreateContext(TenantA))
-        {
-            await CreateRepository(contextA, TenantA).UpsertEntriesAsync(ListName, Entries("1"));
-        }
-
-        using var contextB = CreateContext(TenantB);
-        var repositoryB = CreateRepository(contextB, TenantB);
-
-        Assert.Empty(await repositoryB.GetExistingKeysAsync(ListName, new[] { "1" }));
-        Assert.Equal(1, await repositoryB.UpsertEntriesAsync(ListName, Entries("1")));
-    }
-
-    [Fact]
     public async Task ClearListAsync_RemovesEveryEntryButKeepsTheList()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         await repository.EnsureListAsync(ListName, string.Empty);
         await repository.UpsertEntriesAsync(ListName, Entries("1", "2", "3"));
@@ -111,8 +94,8 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     [Fact]
     public async Task GetListsAsync_ReportsEntryCounts()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         await repository.EnsureListAsync(ListName, string.Empty);
         await repository.UpsertEntriesAsync(ListName, Entries("1", "2"));
@@ -126,8 +109,8 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     [Fact]
     public async Task GetEntriesAsync_FiltersBySearchTerm()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         await repository.UpsertEntriesAsync(ListName, Entries("order-1", "order-2", "invoice-1"));
 
@@ -140,8 +123,8 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     [Fact]
     public async Task DeleteEntryAsync_RemovesASingleKey()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         await repository.UpsertEntriesAsync(ListName, Entries("1", "2"));
 
@@ -155,8 +138,8 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
     [Fact]
     public async Task DeleteListAsync_RemovesTheListAndItsEntries()
     {
-        using var context = CreateContext(TenantA);
-        var repository = CreateRepository(context, TenantA);
+        using var context = CreateContext();
+        var repository = CreateRepository(context);
 
         await repository.EnsureListAsync(ListName, string.Empty);
         await repository.UpsertEntriesAsync(ListName, Entries("1", "2"));
@@ -168,3 +151,5 @@ public sealed class CrossReferenceRepositoryTests : IDisposable
 
     public void Dispose() => _connection.Dispose();
 }
+
+

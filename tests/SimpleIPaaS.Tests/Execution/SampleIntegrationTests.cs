@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json.Linq;
@@ -87,7 +87,7 @@ public class SampleIntegrationTests
     [Fact]
     public async Task SampleFlow_FanOutPerOrderAndDeduplicatesKnownOrders()
     {
-        // Arrange — load the shipped sample and assert it is structurally valid.
+        // Arrange â€” load the shipped sample and assert it is structurally valid.
         var dto = LoadSample();
         var validationErrors = FlowValidator.Validate(dto);
         Assert.Empty(validationErrors);
@@ -106,10 +106,9 @@ public class SampleIntegrationTests
         });
 
         var flow = dto.ToEntity();
-        flow.TenantId = Guid.NewGuid();
 
         _flows.Seed(flow);
-        var execution = new FlowExecution { FlowId = flow.Id, TenantId = flow.TenantId, TriggerSource = "Test" };
+        var execution = new FlowExecution { FlowId = flow.Id, TriggerSource = "Test" };
         _executions.Seed(execution);
 
         // Simulate a previous night's run: order A111-123 was already processed and is therefore known.
@@ -125,7 +124,7 @@ public class SampleIntegrationTests
         ] } }
         """);
 
-        // Per-order orderItems — order A111 carries a repeat (SKU-A1) + a new SKU-B1.
+        // Per-order orderItems â€” order A111 carries a repeat (SKU-A1) + a new SKU-B1.
         transport.Enqueue(200, """
         { "payload": { "OrderItems": [
             { "SellerSKU": "SKU-A1", "asin": "ASIN-1", "qty": 1 },
@@ -147,12 +146,12 @@ public class SampleIntegrationTests
             CreateCodeService(),
             _executions,
             _crossReferences,
-            NullLogger<FlowExecutor>.Instance);
+            new FakeEmailSender(), NullLogger<FlowExecutor>.Instance);
 
         // Act
         var result = await executor.ExecuteFlowAsync(flow.Id, execution.Id, "{}", CancellationToken.None);
 
-        // Assert — the whole flow completed.
+        // Assert â€” the whole flow completed.
         Assert.Equal(ExecutionStatus.Success, result.Status);
 
         // ForEach N+1 fan-out: getOrderItems was called once per order, the URL carries each AmazonOrderId.
@@ -175,3 +174,6 @@ public class SampleIntegrationTests
         Assert.Contains("A222-456", _crossReferences.Entries.Select(e => e.KeyValue));
     }
 }
+
+
+

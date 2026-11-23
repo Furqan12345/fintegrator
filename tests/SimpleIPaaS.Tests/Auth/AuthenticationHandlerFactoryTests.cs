@@ -1,8 +1,10 @@
 using System.Net;
 using System.Text;
+using Microsoft.Extensions.Options;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Infrastructure.Services.Auth;
+using SimpleIPaaS.Infrastructure.Services.Security;
 using SimpleIPaaS.Tests.TestDoubles;
 
 namespace SimpleIPaaS.Tests.Auth;
@@ -11,10 +13,16 @@ public class AuthenticationHandlerFactoryTests
 {
     private static AuthenticationHandlerFactory CreateFactory(IHttpClientFactory? httpClientFactory = null, StubConnectionRepository? connections = null)
     {
+        var outboundPolicy = new OutboundUrlPolicy(Options.Create(new OutboundOptions
+        {
+            AllowPrivateNetworks = true
+        }));
+
         return new AuthenticationHandlerFactory(
             httpClientFactory ?? StubHttpClientFactory.Unreachable(),
             connections ?? new StubConnectionRepository(),
-            new PassthroughEncryptionService());
+            new PassthroughEncryptionService(),
+            outboundPolicy);
     }
 
     private static HttpRequestMessage Request(string url = "https://api.example.test/orders") =>
@@ -53,9 +61,9 @@ public class AuthenticationHandlerFactoryTests
         var handler = CreateFactory().GetHandler(AuthType.ApiKey);
         using var request = Request();
 
-        await handler.AuthenticateAsync(request, "{\"headerName\":\"X-Tenant-Key\",\"apiKey\":\"abc123\",\"placement\":\"header\"}");
+        await handler.AuthenticateAsync(request, "{\"headerName\":\"X-Custom-Key\",\"apiKey\":\"abc123\",\"placement\":\"header\"}");
 
-        Assert.True(request.Headers.TryGetValues("X-Tenant-Key", out var values));
+        Assert.True(request.Headers.TryGetValues("X-Custom-Key", out var values));
         Assert.Equal("abc123", Assert.Single(values!));
         Assert.Equal("https://api.example.test/orders", request.RequestUri!.ToString());
     }
@@ -82,6 +90,20 @@ public class AuthenticationHandlerFactoryTests
 
         Assert.Empty(request.Headers);
         Assert.Equal("?api_key=a%20b%26c", request.RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task AmazonSpApiHandler_RejectsMissingConnectionCredentialsWithActionableError()
+    {
+        var handler = CreateFactory().GetHandler(AuthType.AmazonSpApi);
+        using var request = Request();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            handler.AuthenticateAsync(request, new AuthenticationContext { ConfigJson = string.Empty }));
+
+        Assert.Equal(
+            "Amazon SP-API connection credentials are not configured. Add the Amazon SP-API auth settings to the connection.",
+            exception.Message);
     }
 
     [Fact]
@@ -231,6 +253,60 @@ public class AuthenticationHandlerFactoryTests
         Assert.Contains("grant_type=client_credentials", body);
         Assert.Contains("client_id=cid", body);
         Assert.Contains("scope=orders.read", body);
+    }
+
+    [Fact]
+    public async Task ShopifyHandler_ExchangesClientCredentialsAndUsesTheShopifyTokenHeader()
+    {
+        var messageHandler = StubHttpMessageHandler.Json("{\"access_token\":\"shopify-token\",\"expires_in\":86399}");
+        using var clientFactory = new StubHttpClientFactory(messageHandler);
+        var handler = CreateFactory(clientFactory).GetHandler(AuthType.Shopify);
+        using var request = Request("https://fintegrator.myshopify.com/admin/api/2026-10/graphql.json");
+        var config = $"{{\"shop\":\"fintegrator.myshopify.com\",\"clientId\":\"cid\",\"clientSecret\":\"csecret\",\"apiVersion\":\"2026-10\",\"nonce\":\"{Guid.NewGuid()}\"}}";
+
+        await handler.AuthenticateAsync(request, new AuthenticationContext
+        {
+            ConnectionId = Guid.NewGuid(),
+            ConfigJson = config
+        });
+
+        Assert.Equal("shopify-token", Assert.Single(request.Headers.GetValues("X-Shopify-Access-Token")));
+        Assert.Null(request.Headers.Authorization);
+
+        var tokenRequest = Assert.Single(messageHandler.Requests);
+        Assert.Equal("https://fintegrator.myshopify.com/admin/oauth/access_token", tokenRequest.RequestUri!.ToString());
+        var body = Assert.Single(messageHandler.RequestBodies);
+        Assert.Contains("grant_type=client_credentials", body);
+        Assert.Contains("client_id=cid", body);
+        Assert.Contains("client_secret=csecret", body);
+    }
+
+    [Fact]
+    public async Task ShopifyHandler_NormalizesAFullShopUrl()
+    {
+        var messageHandler = StubHttpMessageHandler.Json("{\"access_token\":\"shopify-token\",\"expires_in\":86399}");
+        using var clientFactory = new StubHttpClientFactory(messageHandler);
+        var handler = CreateFactory(clientFactory).GetHandler(AuthType.Shopify);
+        using var request = Request();
+        var config = $"{{\"shop\":\"https://Fintegrator.myshopify.com/\",\"clientId\":\"cid\",\"clientSecret\":\"csecret\",\"apiVersion\":\"2026-10\",\"nonce\":\"{Guid.NewGuid()}\"}}";
+
+        await handler.AuthenticateAsync(request, new AuthenticationContext { ConfigJson = config });
+
+        Assert.Equal(
+            "https://fintegrator.myshopify.com/admin/oauth/access_token",
+            Assert.Single(messageHandler.Requests).RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task ShopifyHandler_RejectsMissingCredentials()
+    {
+        var handler = CreateFactory().GetHandler(AuthType.Shopify);
+        using var request = Request();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            handler.AuthenticateAsync(request, new AuthenticationContext { ConfigJson = "{}" }));
+
+        Assert.Contains("Shopify shop domain is required", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
