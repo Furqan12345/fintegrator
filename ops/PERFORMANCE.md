@@ -36,7 +36,7 @@ run the same command.
 | 3-card flow, 4 in parallel | 15.8 runs/s | 63 runs/s |
 | `/api/integrations` payload (4 integrations) | 441 KB | 37.7 KB with `?lite=true` |
 | Dashboard data (cold start, request waterfall) | 4.9 s to 7.3 s | 4.7 s to 5.3 s |
-| Client download, cold, over the API | about 31.8 MB | about 3.2 MB (brotli) |
+| Client download, cold load (65 static files), served by the API | 9.5 MB uncompressed | 3.2 MB with Brotli |
 | `ipaas.db` on the dev machine | 110 MB (87% free pages) | 13 MB after `VACUUM` |
 
 ## What changed and why
