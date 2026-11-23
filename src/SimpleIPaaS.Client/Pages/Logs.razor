@@ -498,7 +498,7 @@
     }
     private async Task RefreshFlowsAsync()
     {
-        var flows = await SafeFetch.GetAsync<IntegrationFlowDto[]>(Http, "api/integrationflow", Dispatcher, "flows");
+        var flows = await SafeFetch.GetAsync<IntegrationFlowDto[]>(Http, "api/integrationflow?lite=true", Dispatcher, "flows");
         if (flows != null)
         {
             _flows = flows

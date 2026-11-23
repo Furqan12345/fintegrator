@@ -235,7 +235,7 @@
     {
         try
         {
-            _flows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+            _flows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow?lite=true") ?? new List<IntegrationFlowDto>();
             _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations?lite=true") ?? new List<IntegrationDto>();
             _connections = await Http.GetFromJsonAsync<List<ConnectionDto>>("api/connections") ?? new List<ConnectionDto>();
         }

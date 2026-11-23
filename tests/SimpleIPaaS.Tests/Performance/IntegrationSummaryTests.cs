@@ -110,4 +110,30 @@ public sealed class IntegrationSummaryTests : IDisposable
         var liteBytes = JsonSerializer.Serialize(lite).Length;
         Assert.True(liteBytes * 20 < fullBytes, $"lite {liteBytes} bytes vs full {fullBytes} bytes");
     }
+
+    [Fact]
+    public async Task FlowSummaries_AreLight_OrderedByRecency_AndKeepOnlyActiveStepIdentity()
+    {
+        await SeedAsync();
+        using var context = new IPaaSContext(_options);
+        var repository = new IntegrationRepository(context);
+
+        var summaries = (await repository.GetAllSummariesAsync()).ToList();
+        Assert.Equal(new[] { "Newer flow", "Older flow" }, summaries.Select(flow => flow.Name).ToArray());
+        Assert.Equal(2, summaries[0].Nodes.Count);                // archived step excluded, like the full list
+        Assert.Contains(summaries[0].Nodes, node => node.StepType == StepType.Schedule);
+        Assert.All(summaries, flow =>
+        {
+            Assert.Empty(flow.Edges);
+            Assert.Equal(string.Empty, flow.HelperCode);
+            Assert.Equal("{}", flow.PersistedStateJson);
+            Assert.All(flow.Nodes, node => Assert.Equal(string.Empty, node.MappingCode));
+        });
+        Assert.Empty(context.ChangeTracker.Entries());
+
+        context.ChangeTracker.Clear();
+        var full = (await repository.GetAllAsync()).ToList();
+        Assert.Equal(full.Select(f => f.Id), summaries.Select(f => f.Id));
+        Assert.Equal(full.Select(f => f.Nodes.Count), summaries.Select(f => f.Nodes.Count));
+    }
 }

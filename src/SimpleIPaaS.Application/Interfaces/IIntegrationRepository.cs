@@ -10,6 +10,10 @@ public interface IIntegrationRepository
 {
     Task<IntegrationFlow?> GetByIdAsync(Guid id);
     Task<IEnumerable<IntegrationFlow>> GetAllAsync();
+
+    // List-page view of every flow: scalar fields plus the non-archived steps reduced to id, name and type. No
+    // scripts, step configuration, edges, helper code or persisted state is loaded.
+    Task<IEnumerable<IntegrationFlow>> GetAllSummariesAsync();
     Task<IEnumerable<IntegrationFlow>> GetByIntegrationIdAsync(Guid integrationId);
     Task AddAsync(IntegrationFlow flow);
     Task<bool> UpdateAsync(IntegrationFlow flow);

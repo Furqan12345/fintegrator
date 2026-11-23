@@ -62,6 +62,8 @@ public sealed class StubIntegrationRepository : IIntegrationRepository
     public Task<IEnumerable<IntegrationFlow>> GetAllAsync() =>
         Task.FromResult<IEnumerable<IntegrationFlow>>(_flows.Values.ToList());
 
+    public Task<IEnumerable<IntegrationFlow>> GetAllSummariesAsync() => GetAllAsync();
+
     public Task<IEnumerable<IntegrationFlow>> GetByIntegrationIdAsync(Guid integrationId) =>
         Task.FromResult<IEnumerable<IntegrationFlow>>(_flows.Values.Where(f => f.IntegrationId == integrationId).ToList());
 

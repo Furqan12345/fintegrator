@@ -482,7 +482,7 @@
         {
             _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations?lite=true") ?? new List<IntegrationDto>();
 
-            var allFlows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow") ?? new List<IntegrationFlowDto>();
+            var allFlows = await Http.GetFromJsonAsync<List<IntegrationFlowDto>>("api/integrationflow?lite=true") ?? new List<IntegrationFlowDto>();
             _standaloneFlows = allFlows.Where(flow => flow.IntegrationId == null).OrderByDescending(flow => flow.UpdatedAt).ToList();
 
             _recentExecutions = (await SafeFetch.GetAsync<List<FlowExecutionDto>>(Http, "api/executions?page=1&pageSize=100", Dispatcher, "recent runs")

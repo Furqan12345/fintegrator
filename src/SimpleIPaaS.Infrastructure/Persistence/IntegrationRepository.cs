@@ -27,6 +27,42 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
             .ToListAsync();
     }
 
+    public async Task<IEnumerable<IntegrationFlow>> GetAllSummariesAsync()
+    {
+        return await _context.IntegrationFlows
+            .AsNoTracking()
+            .OrderByDescending(flow => flow.UpdatedAt)
+            .Select(flow => new IntegrationFlow
+            {
+                Id = flow.Id,
+                IntegrationId = flow.IntegrationId,
+                Name = flow.Name,
+                Description = flow.Description,
+                Status = flow.Status,
+                TriggerType = flow.TriggerType,
+                CronExpression = flow.CronExpression,
+                RunAt = flow.RunAt,
+                NextRunAt = flow.NextRunAt,
+                AllowPostReplay = flow.AllowPostReplay,
+                DefaultDeadLetterResyncStepId = flow.DefaultDeadLetterResyncStepId,
+                PublishedVersion = flow.PublishedVersion,
+                LastPublishedAt = flow.LastPublishedAt,
+                CreatedAt = flow.CreatedAt,
+                UpdatedAt = flow.UpdatedAt,
+                Nodes = flow.Nodes
+                    .Where(node => !node.IsArchived)
+                    .Select(node => new IntegrationStep
+                    {
+                        Id = node.Id,
+                        FlowId = node.FlowId,
+                        StepType = node.StepType,
+                        NodeName = node.NodeName
+                    })
+                    .ToList()
+            })
+            .ToListAsync();
+    }
+
     public async Task<IEnumerable<IntegrationFlow>> GetByIntegrationIdAsync(Guid integrationId)
     {
         return await _context.IntegrationFlows

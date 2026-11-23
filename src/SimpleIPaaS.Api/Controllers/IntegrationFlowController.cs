@@ -56,9 +56,10 @@ public class IntegrationFlowController : ControllerBase
     }
 
     [HttpGet("")]
-    public async Task<IActionResult> GetAll()
+    public async Task<IActionResult> GetAll([FromQuery] bool lite = false)
     {
-        var flows = await _repository.GetAllAsync();
+        // lite=true is the list-page view: no scripts, step configuration or edges (see GetAllSummariesAsync).
+        var flows = lite ? await _repository.GetAllSummariesAsync() : await _repository.GetAllAsync();
         return Ok(flows.Select(flow => flow.ToDto()));
     }
 
