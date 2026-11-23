@@ -24,13 +24,12 @@ namespace SimpleIPaaS.Infrastructure.Logging;
 public sealed class DatabaseLogWriter : IDisposable
 {
     private readonly DatabaseLoggerOptions _options;
-    private readonly string _connectionString;
+    private readonly IAppLogBatchStore _store;
     private readonly IServiceProvider? _services;
     private readonly Channel<AppLogEntry> _channel;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _pump;
 
-    private bool _schemaReady;
     private DateTime _lastPruneUtc = DateTime.MinValue;
     private long _dropped;
     private long _written;
@@ -43,9 +42,15 @@ public sealed class DatabaseLogWriter : IDisposable
     // constructed before the rest of the container is usable, and the policy reads the storage
     // settings (which may themselves need a logger), so it must not be resolved here.
     public DatabaseLogWriter(DatabaseLoggerOptions options, string connectionString, IServiceProvider? services = null)
+        : this(options, new SqliteAppLogBatchStore(connectionString), services)
+    {
+    }
+
+    // The store decides where a batch goes (SQLite INSERTs or a PostgreSQL binary COPY) and how retention runs.
+    public DatabaseLogWriter(DatabaseLoggerOptions options, IAppLogBatchStore store, IServiceProvider? services = null)
     {
         _options = options;
-        _connectionString = connectionString;
+        _store = store;
         _services = services;
 
         var capacity = _options.QueueCapacity < 16 ? 16 : _options.QueueCapacity;
@@ -171,15 +176,11 @@ public sealed class DatabaseLogWriter : IDisposable
             // Never let a sink failure escape into the process. Worst case we lose log rows.
             try
             {
-                using var connection = new SqliteConnection(_connectionString);
-                connection.Open();
-                ApplyConnectionPragmas(connection);
-                EnsureSchema(connection);
-                WriteBatch(connection, batch);
+                _store.Write(batch);
                 Interlocked.Add(ref _written, batch.Count);
                 Interlocked.Exchange(ref _lastSuccessfulWriteTicks, DateTime.UtcNow.Ticks);
                 wroteAnything = true;
-                TryPrune(connection);
+                TryPrune();
             }
             catch (Exception exception)
             {
@@ -196,25 +197,7 @@ public sealed class DatabaseLogWriter : IDisposable
         }
     }
 
-    private static void ApplyConnectionPragmas(SqliteConnection connection)
-    {
-        // Two processes share this file under WAL; wait on the other writer instead of
-        // failing the batch with SQLITE_BUSY.
-        SqliteTuning.Apply(connection);
-    }
-
-    private void EnsureSchema(SqliteConnection connection)
-    {
-        if (_schemaReady)
-        {
-            return;
-        }
-
-        DatabaseSchemaInitializer.EnsureAppLogEntriesTable(connection);
-        _schemaReady = true;
-    }
-
-    private static void WriteBatch(SqliteConnection connection, List<AppLogEntry> batch)
+    internal static void WriteSqliteBatch(SqliteConnection connection, IReadOnlyList<AppLogEntry> batch)
     {
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
@@ -341,13 +324,10 @@ public sealed class DatabaseLogWriter : IDisposable
             return;
         }
 
+        _lastPruneUtc = DateTime.UtcNow;
         try
         {
-            using var connection = new SqliteConnection(_connectionString);
-            connection.Open();
-            ApplyConnectionPragmas(connection);
-            EnsureSchema(connection);
-            TryPrune(connection);
+            _store.Prune(ResolveWindows());
         }
         catch (Exception)
         {
@@ -356,17 +336,6 @@ public sealed class DatabaseLogWriter : IDisposable
     }
 
     private bool IsPruneDue() => DateTime.UtcNow - _lastPruneUtc >= _options.PruneInterval;
-
-    private void TryPrune(SqliteConnection connection)
-    {
-        if (!IsPruneDue())
-        {
-            return;
-        }
-
-        _lastPruneUtc = DateTime.UtcNow;
-        Prune(connection, ResolveWindows());
-    }
 
     // Retention as configured on the storage settings page, falling back to the configuration
     // section when nothing has been configured (or before the settings have been loaded).

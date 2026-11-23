@@ -40,7 +40,8 @@ public static class DatabaseLoggingExtensions
             return builder;
         }
 
-        var connectionString = DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection"));
+        var postgres = DatabaseProvider.Resolve(configuration) == DatabaseProviderKind.PostgreSql;
+        var connectionString = postgres ? string.Empty : DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection"));
 
         // Where the relational writer's retention windows come from: the storage settings page, so
         // "keep logs for N days" has a single answer whether the logs live in the database or in
@@ -57,7 +58,11 @@ public static class DatabaseLoggingExtensions
         builder.Services.AddSingleton<IAppLogWriter>(provider =>
         {
             var runtime = provider.GetRequiredService<StorageRuntime>();
-            var relational = new SqlAppLogWriter(new DatabaseLogWriter(options, connectionString, provider));
+            // SQLite: prepared INSERTs per batch. PostgreSQL: one binary COPY per batch into day partitions.
+            IAppLogBatchStore store = postgres
+                ? new PostgresAppLogBatchStore(() => provider.GetRequiredService<Npgsql.NpgsqlDataSource>())
+                : new SqliteAppLogBatchStore(connectionString);
+            var relational = new SqlAppLogWriter(new DatabaseLogWriter(options, store, provider));
             var elasticsearch = new ElasticsearchLogWriter(runtime, options);
 
             return new RoutingLogWriter(relational, elasticsearch, runtime);

@@ -34,14 +34,7 @@ public static class EngineServiceRegistration
 
         // Shared persistence layer (identical registrations to the API). Both hosts must
         // land on the SAME database file; DefaultDatabasePath prevents per-project splits.
-        services.AddDbContext<IPaaSContext>(options =>
-        {
-            if (string.Equals(configuration["Database:Provider"], "SqlServer", StringComparison.OrdinalIgnoreCase))
-                options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")
-                    ?? throw new InvalidOperationException("SQL Server connection string is required."), sql => sql.EnableRetryOnFailure());
-            else
-                options.UseTunedSqlite(DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection")));
-        });
+        services.AddIPaaSDatabase(configuration);
         services.AddEmailSender(configuration, environment);
 
         services.AddHttpClient();

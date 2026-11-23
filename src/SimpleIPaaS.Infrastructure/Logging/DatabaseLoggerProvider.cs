@@ -30,6 +30,7 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
     {
         "Microsoft.EntityFrameworkCore",
         "Microsoft.Data.Sqlite",
+        "Npgsql",
         "System.Net.Http.HttpClient",
         "SimpleIPaaS.Infrastructure.Logging"
     };

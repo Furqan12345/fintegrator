@@ -78,6 +78,11 @@ public class FlowExecutionWorker : BackgroundService
                     // Write contention with the API process under WAL is transient by design.
                     _logger.LogDebug(ex, "SQLite busy while claiming the next queued execution");
                 }
+                catch (Npgsql.NpgsqlException ex) when (ex.IsTransient)
+                {
+                    // A dropped or restarting PostgreSQL connection: the next poll retries.
+                    _logger.LogWarning(ex, "Transient PostgreSQL error while claiming the next queued execution");
+                }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error claiming the next queued execution");

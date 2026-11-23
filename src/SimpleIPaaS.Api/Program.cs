@@ -35,7 +35,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Mirror API log lines into the shared database alongside the Engine's, so the Debug Logs
 // console shows both tiers. Batched and non-blocking; EF Core's own SQL logging is
 // excluded by the provider to prevent a write/read feedback loop.
-if (!string.Equals(builder.Configuration["Database:Provider"], "SqlServer", StringComparison.OrdinalIgnoreCase))
+if (DatabaseProvider.SupportsDatabaseLogging(builder.Configuration))
     builder.Logging.AddDatabaseLogging(builder.Configuration, "Api");
 
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 2_000_000);
@@ -246,6 +246,9 @@ using (var scope = app.Services.CreateScope())
 
                     if (stepExecutionIds.Count > 0)
                     {
+                        await ColdStorage.DeleteForStepsAsync(db, db.StepExecutions
+                            .Where(step => stepExecutionIds.Contains(step.Id))
+                            .Select(step => step.Id));
                         await db.StepPacketLogs
                             .Where(packet => stepExecutionIds.Contains(packet.StepExecutionId))
                             .ExecuteDeleteAsync();

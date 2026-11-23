@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models.Storage;
 using SimpleIPaaS.Infrastructure.Elasticsearch;
+using SimpleIPaaS.Infrastructure.Persistence;
 
 namespace SimpleIPaaS.Infrastructure.Storage;
 
@@ -44,7 +45,10 @@ public static class StorageServiceCollectionExtensions
         services.AddScoped<SqlPacketLogStore>();
         services.AddScoped<ElasticPacketLogStore>();
         services.AddScoped(provider => new StorageStoreRouter<IPacketLogStore>(
-            provider.GetRequiredService<SqlPacketLogStore>(),
+            // PostgreSQL uses the hot/cold layout with batched COPY ingestion (see PostgresLayout).
+            provider.GetRequiredService<SimpleIPaaS.Infrastructure.Persistence.IPaaSContext>().IsPostgres()
+                ? provider.GetRequiredService<PostgresPacketLogStore>()
+                : provider.GetRequiredService<SqlPacketLogStore>(),
             provider.GetRequiredService<ElasticPacketLogStore>(),
             provider.GetRequiredService<IStorageSettingsProvider>(),
             StorageDatasets.PacketLogs));

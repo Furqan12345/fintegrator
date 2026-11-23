@@ -16,10 +16,13 @@ public class ExecutionRepository : IExecutionRepository
 {
     private readonly IPaaSContext _context;
     private readonly Func<IPacketLogStore> _packetLogStoreSelector;
+    // PostgreSQL keeps step payloads in the cold StepExecutionPayloads table (see PostgresLayout).
+    private readonly bool _postgres;
 
     public ExecutionRepository(IPaaSContext context, Func<IPacketLogStore>? packetLogStoreSelector = null)
     {
         _context = context;
+        _postgres = context.IsPostgres();
 
         // Packet logs (the request/response messages) are the growing half of this repository and
         // can live in Elasticsearch. The selector is asked per call rather than once, so a dataset
@@ -79,8 +82,15 @@ public class ExecutionRepository : IExecutionRepository
             else
             {
                 // EF.Functions.Like maps to SQL LIKE, which is case-insensitive for ASCII in SQLite.
+                // PostgreSQL's LIKE is case-sensitive, so it gets ILIKE to keep the same search behaviour.
                 var pattern = $"%{EscapeLike(search)}%";
-                executions = executions.Where(e =>
+                executions = _postgres
+                    ? executions.Where(e =>
+                        EF.Functions.ILike(e.FlowName, pattern, LikeEscape)
+                        || (e.Identifier != null && EF.Functions.ILike(e.Identifier, pattern, LikeEscape))
+                        || (e.Message != null && EF.Functions.ILike(e.Message, pattern, LikeEscape))
+                        || (e.ErrorMessage != null && EF.Functions.ILike(e.ErrorMessage, pattern, LikeEscape)))
+                    : executions.Where(e =>
                     EF.Functions.Like(e.FlowName, pattern, LikeEscape)
                     || (e.Identifier != null && EF.Functions.Like(e.Identifier, pattern, LikeEscape))
                     || (e.Message != null && EF.Functions.Like(e.Message, pattern, LikeEscape))
@@ -165,33 +175,147 @@ public class ExecutionRepository : IExecutionRepository
     public async Task AddStepExecutionAsync(StepExecution execution)
     {
         _context.StepExecutions.Add(execution);
+        if (_postgres) StageStepPayload(execution, isNew: true);
         await _context.SaveChangesAsync();
     }
 
     public async Task UpdateStepExecutionAsync(StepExecution execution)
     {
         _context.StepExecutions.Update(execution);
-        await _context.SaveChangesAsync();
+        if (!_postgres)
+        {
+            await _context.SaveChangesAsync();
+            return;
+        }
+
+        StageStepPayload(execution, isNew: false);
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException conflict) when (conflict.Entries.All(entry => entry.Entity is StepExecutionPayload))
+        {
+            // The cold row is missing (its partition expired, or the step predates the cold table): write it fresh.
+            foreach (var entry in conflict.Entries)
+            {
+                entry.State = EntityState.Added;
+            }
+
+            await _context.SaveChangesAsync();
+        }
     }
 
     public async Task<IEnumerable<StepExecution>> GetStepExecutionsAsync(Guid flowExecutionId)
     {
-        return await _context.StepExecutions
+        var steps = await _context.StepExecutions
             .Where(s => s.FlowExecutionId == flowExecutionId)
             .OrderBy(s => s.StartedAt)
             .ToListAsync();
+        if (_postgres) await HydrateStepPayloadsAsync(steps);
+        return steps;
     }
 
     public async Task<StepExecution?> GetStepExecutionAsync(Guid flowExecutionId, Guid stepId)
     {
-        return await _context.StepExecutions
+        var step = await _context.StepExecutions
             .Where(s => s.FlowExecutionId == flowExecutionId && s.StepId == stepId)
             .OrderByDescending(s => s.StartedAt)
             .FirstOrDefaultAsync();
+        if (_postgres && step != null) await HydrateStepPayloadsAsync(new[] { step });
+        return step;
+    }
+
+    // PostgreSQL: the hot StepExecutions row carries the payload sizes and the cold row the payloads. Both go in
+    // the same SaveChanges (one round trip, one transaction). The cold key is (step id, StartedAt truncated to the
+    // microsecond PostgreSQL stores), so an update addresses one partition and matches the stored key exactly.
+    private void StageStepPayload(StepExecution step, bool isNew)
+    {
+        var entry = _context.Entry(step);
+        entry.Property(PostgresLayout.ReceivedInputLength).CurrentValue = step.ReceivedInput?.Length ?? 0;
+        entry.Property(PostgresLayout.RequestPayloadLength).CurrentValue = step.RequestPayload?.Length ?? 0;
+        entry.Property(PostgresLayout.ResponsePayloadLength).CurrentValue = step.ResponsePayload?.Length ?? 0;
+
+        var payloads = _context.Set<StepExecutionPayload>();
+        var tracked = payloads.Local.FirstOrDefault(payload => payload.StepExecutionId == step.Id);
+        if (tracked != null)
+        {
+            tracked.ReceivedInput = SimpleIPaaS.Infrastructure.Storage.PostgresPacketIngestor.Clean(step.ReceivedInput);
+            tracked.RequestPayload = SimpleIPaaS.Infrastructure.Storage.PostgresPacketIngestor.Clean(step.RequestPayload);
+            tracked.ResponsePayload = SimpleIPaaS.Infrastructure.Storage.PostgresPacketIngestor.Clean(step.ResponsePayload);
+            return;
+        }
+
+        var cold = new StepExecutionPayload
+        {
+            StepExecutionId = step.Id,
+            CreatedAt = TruncateToMicroseconds(step.StartedAt),
+            ReceivedInput = SimpleIPaaS.Infrastructure.Storage.PostgresPacketIngestor.Clean(step.ReceivedInput),
+            RequestPayload = SimpleIPaaS.Infrastructure.Storage.PostgresPacketIngestor.Clean(step.RequestPayload),
+            ResponsePayload = SimpleIPaaS.Infrastructure.Storage.PostgresPacketIngestor.Clean(step.ResponsePayload),
+        };
+        if (isNew) payloads.Add(cold);
+        else payloads.Update(cold);
+    }
+
+    // Loads the cold payloads of already-loaded steps. Bounded by the steps' own StartedAt range so PostgreSQL
+    // only probes the partitions of the days the run touched.
+    private async Task HydrateStepPayloadsAsync(IReadOnlyCollection<StepExecution> steps)
+    {
+        if (steps.Count == 0) return;
+        var ids = steps.Select(step => step.Id).ToList();
+        var from = TruncateToMicroseconds(steps.Min(step => step.StartedAt));
+        var to = TruncateToMicroseconds(steps.Max(step => step.StartedAt));
+        var payloads = await _context.Set<StepExecutionPayload>()
+            .AsNoTracking()
+            .Where(payload => ids.Contains(payload.StepExecutionId) && payload.CreatedAt >= from && payload.CreatedAt <= to)
+            .ToListAsync();
+        var byStep = payloads
+            .GroupBy(payload => payload.StepExecutionId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(payload => payload.CreatedAt).First());
+        foreach (var step in steps)
+        {
+            if (byStep.TryGetValue(step.Id, out var payload))
+            {
+                step.ReceivedInput = payload.ReceivedInput;
+                step.RequestPayload = payload.RequestPayload;
+                step.ResponsePayload = payload.ResponsePayload;
+            }
+        }
+    }
+
+    internal static DateTime TruncateToMicroseconds(DateTime value)
+    {
+        var utc = value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        return new DateTime(utc.Ticks - utc.Ticks % 10, DateTimeKind.Utc);
     }
 
     public async Task<IReadOnlyList<StepExecutionSummary>> GetStepExecutionSummariesAsync(Guid flowExecutionId)
     {
+        if (_postgres)
+        {
+            // Sizes come from the hot row: listing a run's steps never reads a payload.
+            return await _context.StepExecutions
+                .AsNoTracking()
+                .Where(s => s.FlowExecutionId == flowExecutionId)
+                .OrderBy(s => s.StartedAt)
+                .Select(s => new StepExecutionSummary(
+                    s.Id,
+                    s.FlowExecutionId,
+                    s.StepId,
+                    s.NodeName,
+                    s.Status,
+                    s.StartedAt,
+                    s.CompletedAt,
+                    s.RecoveredAt,
+                    s.RecoveredByDeadLetterId,
+                    s.HttpStatusCode,
+                    s.ErrorMessage,
+                    EF.Property<int>(s, PostgresLayout.ReceivedInputLength),
+                    EF.Property<int>(s, PostgresLayout.RequestPayloadLength),
+                    EF.Property<int>(s, PostgresLayout.ResponsePayloadLength)))
+                .ToListAsync();
+        }
+
         return await _context.StepExecutions
             .AsNoTracking()
             .Where(s => s.FlowExecutionId == flowExecutionId)
@@ -216,6 +340,27 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task<StepPayload?> GetStepPayloadAsync(Guid flowExecutionId, Guid stepExecutionId)
     {
+        if (_postgres)
+        {
+            var step = await _context.StepExecutions
+                .AsNoTracking()
+                .Where(s => s.FlowExecutionId == flowExecutionId && s.Id == stepExecutionId)
+                .Select(s => new { s.Id, s.StartedAt })
+                .FirstOrDefaultAsync();
+            if (step == null) return null;
+
+            var at = TruncateToMicroseconds(step.StartedAt);
+            var payload = await _context.Set<StepExecutionPayload>()
+                .AsNoTracking()
+                .Where(p => p.StepExecutionId == step.Id && p.CreatedAt == at)
+                .FirstOrDefaultAsync();
+            return new StepPayload(
+                step.Id,
+                payload?.ReceivedInput ?? string.Empty,
+                payload?.RequestPayload ?? string.Empty,
+                payload?.ResponsePayload ?? string.Empty);
+        }
+
         return await _context.StepExecutions
             .AsNoTracking()
             .Where(s => s.FlowExecutionId == flowExecutionId && s.Id == stepExecutionId)

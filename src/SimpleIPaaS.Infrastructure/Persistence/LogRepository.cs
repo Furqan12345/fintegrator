@@ -162,7 +162,7 @@ public class LogRepository : ILogRepository
             .MaxAsync(cancellationToken) ?? 0L;
     }
 
-    private static IQueryable<AppLogEntry> Apply(IQueryable<AppLogEntry> source, LogQuery query)
+    private IQueryable<AppLogEntry> Apply(IQueryable<AppLogEntry> source, LogQuery query)
     {
         var allowedLevels = ExpandMinimumLevel(query.MinimumLevel);
         if (allowedLevels != null)
@@ -218,7 +218,22 @@ public class LogRepository : ILogRepository
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
             // EF.Functions.Like maps to SQL LIKE, which is case-insensitive for ASCII in SQLite.
+            // PostgreSQL's LIKE is case-sensitive, so it gets ILIKE to keep the same search behaviour.
             var pattern = $"%{EscapeLike(query.Search.Trim())}%";
+            if (_context.IsPostgres())
+            {
+                return source.Where(entry =>
+                    EF.Functions.ILike(entry.Message, pattern, LikeEscape)
+                    || EF.Functions.ILike(entry.Category, pattern, LikeEscape)
+                    || (entry.NodeName != null && EF.Functions.ILike(entry.NodeName, pattern, LikeEscape))
+                    || (entry.FlowName != null && EF.Functions.ILike(entry.FlowName, pattern, LikeEscape))
+                    || (entry.IntegrationName != null && EF.Functions.ILike(entry.IntegrationName, pattern, LikeEscape))
+                    || EF.Functions.ILike(entry.EventName, pattern, LikeEscape)
+                    || EF.Functions.ILike(entry.Component, pattern, LikeEscape)
+                    || EF.Functions.ILike(entry.Operation, pattern, LikeEscape)
+                    || (entry.Exception != null && EF.Functions.ILike(entry.Exception, pattern, LikeEscape)));
+            }
+
             source = source.Where(entry =>
                 EF.Functions.Like(entry.Message, pattern, LikeEscape)
                 || EF.Functions.Like(entry.Category, pattern, LikeEscape)

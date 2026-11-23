@@ -1,6 +1,7 @@
 using System;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.Security;
 
@@ -49,6 +50,31 @@ public class IPaaSContext : IdentityUserContext<AppUser, Guid>
     // request scope (startup, cron scans, claim loops), and the Debug Logs console has to show
     // them all.
     public DbSet<AppLogEntry> AppLogEntries { get; set; } = null!;
+
+    // PostgreSQL stores DateTime as timestamptz, which only accepts UTC values. The codebase uses UtcNow
+    // throughout, but values that round-trip through SQLite-era code paths can be Kind=Unspecified, and Npgsql
+    // rejects those at write time. Every DateTime is normalised to UTC on the way in and marked UTC on the way out.
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        if (Database.IsNpgsql())
+        {
+            configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+            configurationBuilder.Properties<DateTime?>().HaveConversion<UtcDateTimeConverter>();
+        }
+    }
+
+    private sealed class UtcDateTimeConverter : ValueConverter<DateTime, DateTime>
+    {
+        public UtcDateTimeConverter()
+            : base(
+                value => value.Kind == DateTimeKind.Utc
+                    ? value
+                    : value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc),
+                value => DateTime.SpecifyKind(value, DateTimeKind.Utc))
+        {
+        }
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -197,11 +223,16 @@ public class IPaaSContext : IdentityUserContext<AppUser, Guid>
             .HasForeignKey(e => e.StepId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        modelBuilder.Entity<StepPacketLog>()
-            .HasOne<StepExecution>()
-            .WithMany()
-            .HasForeignKey(e => e.StepExecutionId)
-            .OnDelete(DeleteBehavior.Cascade);
+        // On PostgreSQL StepPacketLogs is partitioned and expires by dropping whole days, so it carries no
+        // foreign key (a cascade from StepExecutions would have to probe every partition).
+        if (!Database.IsNpgsql())
+        {
+            modelBuilder.Entity<StepPacketLog>()
+                .HasOne<StepExecution>()
+                .WithMany()
+                .HasForeignKey(e => e.StepExecutionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        }
 
         modelBuilder.Entity<DeadLetterEntry>()
             .HasOne<FlowExecution>()
@@ -214,5 +245,10 @@ public class IPaaSContext : IdentityUserContext<AppUser, Guid>
             .WithMany()
             .HasForeignKey(e => e.StepId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        if (Database.IsNpgsql())
+        {
+            PostgresLayout.Configure(modelBuilder);
+        }
     }
 }

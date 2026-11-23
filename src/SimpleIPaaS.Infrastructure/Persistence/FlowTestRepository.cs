@@ -120,6 +120,7 @@ public sealed class FlowTestRepository : IFlowTestRepository
             .ToListAsync();
         if (stepIds.Count > 0)
         {
+            await ColdStorage.DeleteForStepsAsync(_context, _context.StepExecutions.Where(step => stepIds.Contains(step.Id)).Select(step => step.Id));
             await _context.StepPacketLogs.Where(packet => stepIds.Contains(packet.StepExecutionId))
                 .ExecuteDeleteAsync();
             await _context.StepExecutions.Where(step => stepIds.Contains(step.Id)).ExecuteDeleteAsync();

@@ -49,16 +49,9 @@ public static class ApiServiceRegistration
         services.AddHostedService<Workers.AiBuildJobWorker>();
         services.AddHostedService<Workers.AiChatWorker>();
 
-        // Configure EF Core SQLite — both this API and SimpleIPaaS.Engine must land on the
-        // SAME database file; DefaultDatabasePath prevents per-project split databases.
-        services.AddDbContext<IPaaSContext>(options =>
-        {
-            if (string.Equals(configuration["Database:Provider"], "SqlServer", StringComparison.OrdinalIgnoreCase))
-                options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")
-                    ?? throw new InvalidOperationException("SQL Server connection string is required."), sql => sql.EnableRetryOnFailure());
-            else
-                options.UseTunedSqlite(DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection")));
-        });
+        // EF Core on SQLite (default), SQL Server or PostgreSQL ("Database:Provider"). This API and
+        // SimpleIPaaS.Engine must land on the SAME database; both register it through AddIPaaSDatabase.
+        services.AddIPaaSDatabase(configuration);
 
         // Retention for the relational datasets and for Elasticsearch indices whose ILM delete phase is
         // switched off. Registered in both hosts: every pass is idempotent, so whichever process is alive

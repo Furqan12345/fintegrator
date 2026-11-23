@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models.Storage;
 using SimpleIPaaS.Infrastructure.Elasticsearch;
@@ -53,6 +54,7 @@ public sealed class StorageRetentionService
     {
         var snapshot = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
         var outcomes = new List<StorageRetentionOutcome>();
+        await EnsurePostgresPartitionsAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (var dataset in StorageDatasets.All)
         {
@@ -151,6 +153,11 @@ public sealed class StorageRetentionService
         {
             using var scope = _scopeFactory.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<IPaaSContext>();
+            if (context.IsPostgres())
+            {
+                return await RunPostgresAsync(dataset, settings, cutoff, context, scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>(), cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
             var removed = dataset switch
             {
@@ -190,6 +197,83 @@ public sealed class StorageRetentionService
         {
             _logger.LogWarning(exception, "Relational retention failed for dataset {Dataset}.", dataset);
             return new StorageRetentionOutcome(dataset, "Database", "Failed", 0, exception.Message);
+        }
+    }
+
+    // PostgreSQL: the append-only tables are partitioned by day, so expired history is dropped a day at a time
+    // (detach concurrently + drop) instead of deleted row by row. Runs and steps are not partitioned (foreign keys
+    // point at them); with their payloads in the cold table they are narrow, so the batched delete stays cheap.
+    private async Task<StorageRetentionOutcome> RunPostgresAsync(
+        string dataset,
+        StorageDatasetSettings settings,
+        DateTime cutoff,
+        IPaaSContext context,
+        NpgsqlDataSource dataSource,
+        CancellationToken cancellationToken)
+    {
+        long removed = 0;
+        var partitions = 0;
+        switch (dataset)
+        {
+            case StorageDatasets.PacketLogs:
+            {
+                var hot = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepPacketLogs, cutoff, cancellationToken).ConfigureAwait(false);
+                var cold = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepPacketPayloads, cutoff, cancellationToken).ConfigureAwait(false);
+                removed = hot.Rows;
+                partitions = hot.Partitions + cold.Partitions;
+                break;
+            }
+
+            case StorageDatasets.Executions:
+            {
+                removed = await DeleteInBatchesAsync(
+                    () => context.FlowExecutions.IgnoreQueryFilters()
+                        .Where(execution => !execution.IsTest && execution.CompletedAt != null && execution.CompletedAt < cutoff)
+                        .Select(execution => execution.Id)
+                        .Take(BatchSize)
+                        .ToListAsync(cancellationToken),
+                    ids => context.FlowExecutions.IgnoreQueryFilters().Where(execution => ids.Contains(execution.Id)).ExecuteDeleteAsync(cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                // Step payloads follow the executions window.
+                var cold = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepExecutionPayloads, cutoff, cancellationToken).ConfigureAwait(false);
+                partitions = cold.Partitions;
+                break;
+            }
+
+            case StorageDatasets.CrossReferences:
+                removed = await DeleteInBatchesAsync(
+                    () => context.CrossReferenceEntries.IgnoreQueryFilters().Where(entry => entry.CreatedAt < cutoff).Select(entry => entry.Id).Take(BatchSize).ToListAsync(cancellationToken),
+                    ids => context.CrossReferenceEntries.IgnoreQueryFilters().Where(entry => ids.Contains(entry.Id)).ExecuteDeleteAsync(cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                break;
+        }
+
+        var status = removed == 0 && partitions == 0
+            ? $"Nothing older than {settings.RetentionDays}d"
+            : partitions > 0
+                ? $"Dropped {partitions} day partition(s) older than {settings.RetentionDays}d"
+                : $"Deleted rows older than {settings.RetentionDays}d";
+        return new StorageRetentionOutcome(dataset, "Database", status, (int)Math.Min(removed, int.MaxValue));
+    }
+
+    // Every pass also keeps a week of future day partitions in place (cheap when they already exist).
+    private async Task EnsurePostgresPartitionsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var dataSource = scope.ServiceProvider.GetService<NpgsqlDataSource>();
+            if (dataSource == null)
+            {
+                return;
+            }
+
+            await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await PostgresPartitions.EnsureAheadAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Creating the upcoming PostgreSQL day partitions failed; writers create a missing day on demand.");
         }
     }
 

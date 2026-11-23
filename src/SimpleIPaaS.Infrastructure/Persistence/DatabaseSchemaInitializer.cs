@@ -15,6 +15,13 @@ public static class DatabaseSchemaInitializer
     public static void EnsureUpToDate(IPaaSContext context, ILogger? logger = null)
     {
         logger ??= NullLogger.Instance;
+        if (context.Database.IsNpgsql())
+        {
+            // A new provider with no legacy schemas to upgrade: the model is the schema (see PostgresSchema).
+            PostgresSchema.EnsureUpToDate(context, logger);
+            return;
+        }
+
         context.Database.EnsureCreated();
         if (context.Database.IsSqlServer())
         {
@@ -157,6 +164,9 @@ public static class DatabaseSchemaInitializer
         ("IX_AppLogEntries_EventName", "AppLogEntries"),
         ("IX_AppLogEntries_Level", "AppLogEntries"),
     };
+
+    internal static IReadOnlyList<(string Name, string Table, string Columns, string? Where)> PerformanceIndexDefinitions => PerformanceIndexes;
+    internal static IReadOnlyList<(string Name, string Table)> RedundantIndexDefinitions => RedundantIndexes;
 
     internal static void EnsurePerformanceIndexes(SqliteConnection connection)
     {

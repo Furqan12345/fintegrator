@@ -643,6 +643,9 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         await _context.DeadLetterEntries
             .Where(entry => executions.Any(e => e.Id == entry.FlowExecutionId))
             .ExecuteDeleteAsync();
+        await ColdStorage.DeleteForStepsAsync(_context, _context.StepExecutions
+            .Where(step => executions.Any(e => e.Id == step.FlowExecutionId))
+            .Select(step => step.Id));
         await _context.StepPacketLogs
             .Where(packet => _context.StepExecutions.Any(step =>
                 step.Id == packet.StepExecutionId && executions.Any(e => e.Id == step.FlowExecutionId)))

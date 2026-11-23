@@ -20,7 +20,7 @@ var builder = Host.CreateApplicationBuilder(args);
 // Mirror every log line into the shared database so the UI's Debug Logs console can tail
 // what this out-of-process worker is doing. Batched and non-blocking; see
 // SimpleIPaaS.Infrastructure.Logging.DatabaseLoggerProvider.
-if (!string.Equals(builder.Configuration["Database:Provider"], "SqlServer", StringComparison.OrdinalIgnoreCase))
+if (DatabaseProvider.SupportsDatabaseLogging(builder.Configuration))
     builder.Logging.AddDatabaseLogging(builder.Configuration, "Engine");
 
 // Every service this host owns, including the ones its hosted workers resolve per tick
