@@ -4,6 +4,8 @@ using SimpleIPaaS.Shared.Models;
 namespace SimpleIPaaS.Client.Store;
 
 public class LoadFlowAction { public Guid Id { get; set; } }
+public class LoadFlowFailedAction { public Guid Id { get; set; } }
+public class LoadFlowsFailedAction { }
 public class LoadFlowResultAction { public IntegrationFlowDto Flow { get; set; } = null!; }
 public class LoadFlowsAction { }
 public class LoadFlowsResultAction { public IEnumerable<IntegrationFlowDto> Flows { get; set; } = Array.Empty<IntegrationFlowDto>(); }

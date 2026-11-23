@@ -69,6 +69,15 @@
         {
             <div class="loading-state">Loading connections…</div>
         }
+        else if (ConnectionState.Value.LoadFailed && !ConnectionState.Value.Connections.Any())
+        {
+            <div class="empty-state empty-state-hero" role="alert">
+                <span class="empty-icon"><AppIcon Name="alert" Class="icon icon-lg" /></span>
+                <h3>Couldn't load connections</h3>
+                <p>The API did not return the connections. Check that it is running, then try again.</p>
+                <button class="btn btn-outline" @onclick="() => Dispatcher.Dispatch(new LoadConnectionsAction())">Try again</button>
+            </div>
+        }
         else if (!ConnectionState.Value.Connections.Any())
         {
             <div class="empty-state empty-state-hero">
@@ -314,7 +323,7 @@
         }
         catch (Exception ex)
         {
-            _deleteError = $"The connection could not be deleted: {ex.Message}";
+            _deleteError = $"The connection could not be deleted. {ErrorText.Describe(ex)}";
         }
         finally
         {

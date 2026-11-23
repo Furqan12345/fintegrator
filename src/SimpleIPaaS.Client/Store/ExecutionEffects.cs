@@ -28,6 +28,10 @@ public class ExecutionEffects
         {
             dispatcher.Dispatch(new LoadExecutionsResultAction { Executions = executions });
         }
+        else
+        {
+            dispatcher.Dispatch(new LoadExecutionsFailedAction());
+        }
     }
 
     [EffectMethod]
@@ -38,6 +42,10 @@ public class ExecutionEffects
         if (steps != null)
         {
             dispatcher.Dispatch(new LoadExecutionDetailsResultAction { StepExecutions = steps });
+        }
+        else
+        {
+            dispatcher.Dispatch(new LoadExecutionDetailsFailedAction());
         }
     }
 

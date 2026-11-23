@@ -2,15 +2,18 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
 @inject HttpClient Http
 
-<PageTitle>Users · fusetor.com</PageTitle>
+<PageTitle>Users — fusetor.com</PageTitle>
 
-<div class="admin-page">
-    <div class="admin-page-header">
-        <div>
+<div class="admin-page page-stack">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="users" Class="icon icon-xs" /> Access</p>
             <h2>Users</h2>
-            <p class="auth-hint">Invite people, assign roles, and recover accounts. Every account must enroll TOTP two-factor authentication on first sign-in.</p>
+            <p class="subtitle">Invite people, assign roles and recover accounts. Every account must enrol TOTP two-factor authentication on first sign-in.</p>
         </div>
-        <button class="btn btn-outline btn-sm" @onclick="LoadAsync" disabled="@_busy">Refresh</button>
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick="LoadAsync" disabled="@_busy">@(_busy ? "Refreshing…" : "Refresh")</button>
+        </div>
     </div>
 
     @if (!string.IsNullOrWhiteSpace(_error))
@@ -37,8 +40,8 @@
     <section class="admin-card">
         <h3>Invite a user</h3>
         <div class="admin-invite-grid">
-            <input class="form-control" placeholder="Full name" @bind="InviteName" />
-            <input class="form-control" type="email" placeholder="email@example.com" @bind="InviteEmail" />
+            <input class="form-control" placeholder="Full name" aria-label="Full name" @bind="InviteName" />
+            <input class="form-control" type="email" placeholder="email@example.com" aria-label="Email address" @bind="InviteEmail" />
             <select class="form-control" @bind="InviteRole">
                 <option value="User">User</option>
                 <option value="Viewer">Viewer</option>
@@ -184,10 +187,20 @@
 
     private async Task InviteAsync()
     {
-        _inviteBusy = true;
         _error = null;
         _message = null;
         _inviteUrl = null;
+        if (string.IsNullOrWhiteSpace(InviteName) || string.IsNullOrWhiteSpace(InviteEmail))
+        {
+            _error = "Enter the person's full name and email address to send an invite.";
+            return;
+        }
+        if (!InviteEmail.Contains('@'))
+        {
+            _error = $"'{InviteEmail.Trim()}' is not a valid email address.";
+            return;
+        }
+        _inviteBusy = true;
         try
         {
             using var response = await Http.PostAsJsonAsync("api/admin/users/invite", new InviteUserRequest

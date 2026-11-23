@@ -10,6 +10,10 @@ public static class DeadLetterReducers
         new DeadLetterState(isLoading: true, deadLetters: state.DeadLetters, statusFilter: action.Status);
 
     [ReducerMethod]
+    public static DeadLetterState ReduceLoadDeadLettersFailedAction(DeadLetterState state, LoadDeadLettersFailedAction action) =>
+        new DeadLetterState(isLoading: false, deadLetters: state.DeadLetters, statusFilter: state.StatusFilter);
+
+    [ReducerMethod]
     public static DeadLetterState ReduceLoadDeadLettersResultAction(DeadLetterState state, LoadDeadLettersResultAction action) =>
         new DeadLetterState(isLoading: false, deadLetters: action.DeadLetters.ToList(), statusFilter: state.StatusFilter);
 

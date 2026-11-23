@@ -24,6 +24,10 @@ public class FlowEffects
         {
             dispatcher.Dispatch(new LoadFlowResultAction { Flow = flow });
         }
+        else
+        {
+            dispatcher.Dispatch(new LoadFlowFailedAction { Id = action.Id });
+        }
     }
 
     [EffectMethod]
@@ -33,6 +37,10 @@ public class FlowEffects
         if (flows != null)
         {
             dispatcher.Dispatch(new LoadFlowsResultAction { Flows = flows });
+        }
+        else
+        {
+            dispatcher.Dispatch(new LoadFlowsFailedAction());
         }
     }
 

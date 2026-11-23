@@ -679,7 +679,7 @@
             // The API is frequently unreachable for a few seconds right after a build/restart.
             // Reset the loading flag and surface a retry instead of pinning the page on
             // "Loading..." until a manual browser refresh (the old behaviour).
-            _loadError = $"Could not reach the API: {ex.Message}";
+            _loadError = $"Could not load the dashboard. {ErrorText.Describe(ex)}";
             _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => InvokeAsync(LoadDataAsync));
         }
         catch (TaskCanceledException)
@@ -689,7 +689,7 @@
         }
         catch (Exception ex)
         {
-            _loadError = $"Could not load integrations: {ex.Message}";
+            _loadError = $"Could not load integrations. {ErrorText.Describe(ex)}";
         }
         finally
         {

@@ -23,6 +23,10 @@ public class ConnectionEffects
         {
             dispatcher.Dispatch(new LoadConnectionsResultAction { Connections = connections });
         }
+        else
+        {
+            dispatcher.Dispatch(new LoadConnectionsFailedAction());
+        }
     }
 
     [EffectMethod]

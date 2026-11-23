@@ -3,15 +3,18 @@
 @using SimpleIPaaS.Shared.Models
 @inject HttpClient Http
 
-<PageTitle>Packet Logs - fusetor.com</PageTitle>
+<PageTitle>Packet Logs — fusetor.com</PageTitle>
 
-<div class="packet-logs-page">
-    <div class="packet-logs-head">
-        <div>
-            <h2>Packet Logs</h2>
-            <p class="text-muted">Every HTTP call the platform made to the outside world — with the flow, integration, node, and connection that made it.</p>
+<div class="packet-logs-page page-stack">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="external" Class="icon icon-xs" /> Outbound traffic</p>
+            <h2>Packet logs</h2>
+            <p class="subtitle">Every HTTP call the platform made to the outside world, with the flow, integration, node and connection that made it.</p>
         </div>
-        <button class="btn btn-outline" @onclick="ReloadAsync" disabled="@_loading">@(_loading ? "Refreshing…" : "Refresh")</button>
+        <div class="header-right">
+            <button class="btn btn-outline" @onclick="ReloadAsync" disabled="@_loading">@(_loading ? "Refreshing…" : "Refresh")</button>
+        </div>
     </div>
 
     <FilterPanel @bind-Expanded="_filtersOpen" ActiveCount="ActiveFilterCount" OnClearAll="ClearFiltersAsync">

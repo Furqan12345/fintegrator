@@ -624,6 +624,7 @@ h1[tabindex="-1"]:focus-visible {
 
 .app-error-boundary h3 { margin: 0 0 var(--space-2) 0; font-size: 1.1rem; }
 .app-error-boundary p { margin: 0 0 var(--space-5) 0; color: var(--text-secondary); }
+.app-error-actions { display: flex; justify-content: center; gap: var(--space-2); flex-wrap: wrap; }
 
 /* â”€â”€ 5. Buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .btn,
@@ -840,6 +841,7 @@ h1[tabindex="-1"]:focus-visible {
 }
 .form-input:hover:not(:disabled):not([readonly]),
 .form-control:hover:not(:disabled):not([readonly]) { border-color: var(--border-strong); }
+.form-control-sm { padding: 5px 8px; font-size: 0.78rem; }
 .form-input:focus,
 .form-control:focus {
     outline: none;
@@ -1027,6 +1029,17 @@ select.form-control {
 }
 
 .header-left { min-width: 0; }
+
+/* A page made of the shared header followed by stacked cards: everything below the header is
+   inset by the page gutter, child component roots included (this rule is global on purpose). */
+.page-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding-bottom: var(--space-8);
+}
+
+.page-stack > :not(.page-header) { margin-inline: var(--page-gutter); }
 
 .header-left h2 {
     margin: 0;
@@ -2260,6 +2273,34 @@ html[data-theme="dark"] .filter-date { color-scheme: dark; }
 }
 .validation-banner ul { margin: var(--space-1) 0; padding-left: 18px; }
 
+/* Inside a form (wizard, modal, settings panel) the banner lines up with the fields and keeps them clear. */
+.wizard-form > .validation-banner,
+.modal-body .validation-banner,
+.panel-content .validation-banner { margin: 0 0 var(--space-4) 0; }
+
+/* Inline status banners (`alert alert-error`, `alert alert-success`) used by pages and modals. */
+.alert {
+    margin: 0;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.alert-error {
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+    color: var(--danger);
+}
+.alert-success {
+    background: var(--success-soft);
+    border-color: color-mix(in srgb, var(--success) 34%, transparent);
+    color: var(--success);
+}
+
 /* Inside the designer the banner floats above the canvas, clear of the
    toolbar (top), zoom controls (bottom-left) and run result (bottom-right). */
 .diagram-container > .validation-banner {
@@ -2354,6 +2395,17 @@ html[data-theme="dark"] .filter-date { color-scheme: dark; }
     font-size: 0.9rem;
     pointer-events: none;
 }
+
+/* The failed-load variant has buttons, so it takes clicks and covers the empty canvas. */
+.designer-load-failed {
+    pointer-events: auto;
+    flex-wrap: wrap;
+    padding: var(--space-4);
+    background: color-mix(in srgb, var(--bg-app) 85%, transparent);
+    color: var(--text-secondary);
+    text-align: center;
+}
+.designer-load-failed .icon { color: var(--danger); }
 
 .designer-loading-spinner {
     width: 1rem;
@@ -4169,13 +4221,14 @@ body.col-resizing * {
     .transaction-card-header, .transaction-card-meta, .transaction-io-grid { padding-left: var(--space-4); padding-right: var(--space-4); }
 }
 
-.flow-doc-page { min-height: 100%; background: var(--bg-page); }
+.flow-doc-page { min-height: 100%; background: var(--bg-app); }
 .flow-doc-hero { position: relative; max-width: 1120px; margin: 0 auto; padding: 34px 42px 30px; border-bottom: 1px solid var(--border-color); }
 .flow-doc-breadcrumb { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; color: var(--text-muted); font-size: .7rem; }
-.flow-doc-breadcrumb a { color: var(--accent); text-decoration: none; }
+.flow-doc-breadcrumb a { color: var(--primary); text-decoration: none; }
 .flow-doc-breadcrumb a:hover { text-decoration: underline; }
 .flow-doc-title-row { display: flex; align-items: flex-start; gap: 15px; max-width: 770px; }
-.flow-doc-title-icon { width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 13px; background: var(--accent-soft); color: var(--accent); }
+.flow-doc-title-icon { width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 13px; background: var(--primary-soft); color: var(--primary); }
+.flow-doc-kicker { color: var(--primary-contrast); font-size: .66rem; font-weight: 720; letter-spacing: .13em; text-transform: uppercase; }
 .flow-doc-title-row h1 { margin: 4px 0 8px; color: var(--text-primary); font-size: clamp(1.65rem, 3vw, 2.3rem); letter-spacing: -.035em; }
 .flow-doc-title-row p { max-width: 680px; margin: 0; color: var(--text-secondary); font-size: .88rem; line-height: 1.6; }
 .flow-doc-actions { position: absolute; top: 77px; right: 42px; }
@@ -4186,12 +4239,12 @@ body.col-resizing * {
 .flow-doc-callout p { margin: 4px 0 0; color: var(--text-secondary); font-size: .77rem; line-height: 1.55; }
 .flow-doc-card { margin-bottom: 17px; padding: 23px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-card); box-shadow: 0 4px 16px rgba(31, 49, 75, .035); }
 .flow-doc-card-heading { display: flex; align-items: flex-start; gap: 13px; margin-bottom: 19px; }
-.flow-doc-step { width: 31px; height: 31px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: .68rem; font-weight: 800; }
+.flow-doc-step { width: 31px; height: 31px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 9px; background: var(--primary-soft); color: var(--primary); font-size: .68rem; font-weight: 800; }
 .flow-doc-card h2 { margin: 1px 0 4px; color: var(--text-primary); font-size: 1.03rem; letter-spacing: -.015em; }
 .flow-doc-card-heading p { margin: 0; color: var(--text-muted); font-size: .76rem; line-height: 1.45; }
 .flow-doc-rule-diagram { display: grid; grid-template-columns: 1fr auto 1fr auto 1.15fr auto 1fr; align-items: center; gap: 10px; }
 .flow-doc-rule-step { min-height: 86px; padding: 13px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-inset); }
-.flow-doc-rule-step span, .flow-doc-mini-label { display: block; margin-bottom: 7px; color: var(--accent); font-size: .59rem; font-weight: 800; letter-spacing: .1em; }
+.flow-doc-rule-step span, .flow-doc-mini-label { display: block; margin-bottom: 7px; color: var(--primary); font-size: .59rem; font-weight: 800; letter-spacing: .1em; }
 .flow-doc-rule-step strong { display: block; color: var(--text-primary); font-size: .77rem; }
 .flow-doc-rule-step small { display: block; margin-top: 5px; color: var(--text-muted); font-size: .66rem; line-height: 1.4; }
 .flow-doc-arrow { color: var(--border-strong); font-size: 1.1rem; }
@@ -4203,7 +4256,7 @@ body.col-resizing * {
 .flow-doc-mini-card > small { display: block; margin-top: 10px; color: var(--text-muted); font-size: .67rem; line-height: 1.45; }
 .flow-doc-example-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 9px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); font-size: .7rem; }
 .flow-doc-example-line span { color: var(--text-primary); font-weight: 700; }
-.flow-doc-example-line b, .flow-doc-example b { color: var(--accent); font-size: .65rem; }
+.flow-doc-example-line b, .flow-doc-example b { color: var(--primary); font-size: .65rem; }
 .flow-doc-example-line strong { color: var(--success); }
 .flow-doc-table-wrap { overflow-x: auto; }
 .flow-doc-table { width: 100%; border-collapse: collapse; font-size: .74rem; }
@@ -4213,23 +4266,23 @@ body.col-resizing * {
 .flow-doc-table code, .flow-doc-scenario code { padding: 3px 6px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-inset); color: var(--text-primary); font-family: var(--font-mono); font-size: .68rem; }
 .flow-doc-operator-list { display: grid; gap: 11px; }
 .flow-doc-operator { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 14px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-inset); }
-.flow-doc-operator-symbol { width: 31px; height: 31px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--bg-card); color: var(--accent); font-size: 1rem; font-weight: 800; }
+.flow-doc-operator-symbol { width: 31px; height: 31px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--bg-card); color: var(--primary); font-size: 1rem; font-weight: 800; }
 .flow-doc-operator h3 { margin: 0 0 4px; color: var(--text-primary); font-size: .8rem; }
 .flow-doc-operator p { margin: 0 0 9px; color: var(--text-secondary); font-size: .72rem; line-height: 1.5; }
 .flow-doc-example { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); color: var(--text-muted); font-size: .68rem; }
 .flow-doc-example code { color: var(--text-primary); font-family: var(--font-mono); }
 .flow-doc-operator-pair { margin-top: 1px; }
 .flow-doc-operator-pair .flow-doc-example { display: grid; grid-template-columns: auto 1fr; }
-.flow-doc-operator-pair .flow-doc-example span { color: var(--accent); font-weight: 700; }
+.flow-doc-operator-pair .flow-doc-example span { color: var(--primary); font-weight: 700; }
 .flow-doc-operator-pair .flow-doc-example code { justify-self: end; }
 .flow-doc-operator-pair .flow-doc-example small { grid-column: 1 / -1; color: var(--text-muted); font-size: .67rem; line-height: 1.4; }
 .flow-doc-scenario-list { display: grid; gap: 9px; }
 .flow-doc-scenario { display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-inset); }
-.flow-doc-scenario > span { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 6px; background: var(--bg-card); color: var(--accent); font-size: .66rem; font-weight: 800; }
+.flow-doc-scenario > span { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 6px; background: var(--bg-card); color: var(--primary); font-size: .66rem; font-weight: 800; }
 .flow-doc-scenario strong { color: var(--text-primary); font-size: .76rem; }
 .flow-doc-scenario p { margin: 4px 0 0; color: var(--text-muted); font-size: .7rem; line-height: 1.45; }
 .flow-doc-scenario em { color: var(--text-secondary); font-style: normal; font-weight: 700; }
-.flow-doc-scenario b { color: var(--accent); font-size: .66rem; }
+.flow-doc-scenario b { color: var(--primary); font-size: .66rem; }
 .flow-doc-mistakes { background: linear-gradient(180deg, var(--bg-card), var(--bg-inset)); }
 .flow-doc-checklist { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .flow-doc-checklist li { position: relative; padding-left: 25px; color: var(--text-secondary); font-size: .74rem; line-height: 1.52; }
@@ -4349,14 +4402,14 @@ body.col-resizing * {
     align-items: center;
     justify-content: center;
     padding: 2rem;
-    background: var(--bg);
+    background: var(--bg-app);
 }
 
 .auth-loading-card,
 .auth-card {
     width: min(440px, 100%);
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 14px;
     padding: 2rem;
     box-shadow: 0 18px 50px rgba(0, 0, 0, .12);
@@ -4477,7 +4530,7 @@ body.col-resizing * {
     gap: .25rem;
     margin-top: .65rem;
     padding-top: .75rem;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--border-color);
 }
 
 .auth-qr {
@@ -4616,31 +4669,15 @@ body.col-resizing * {
     }
 }
 
-.admin-page {
-    padding: 1.25rem;
-    max-width: 1400px;
-    margin: 0 auto;
-}
-
-.admin-page-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 1rem;
-    margin-bottom: 1rem;
-}
-
-.admin-page-header h2,
 .admin-card h3 {
     margin: 0 0 .25rem;
 }
 
 .admin-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     padding: 1rem;
-    margin-bottom: 1rem;
 }
 
 .admin-card-header {
@@ -4686,8 +4723,7 @@ body.col-resizing * {
         grid-template-columns: 1fr;
     }
 
-    .admin-card-header,
-    .admin-page-header {
+    .admin-card-header {
         flex-direction: column;
         align-items: stretch;
     }

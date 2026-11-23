@@ -125,7 +125,7 @@
         }
         catch (Exception ex)
         {
-            Dispatcher.Dispatch(new ShowToastAction { Message = $"Could not load persisted state: {ex.Message}", Level = "error" });
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Could not load persisted state. {ErrorText.Describe(ex)}", Level = "error" });
         }
         finally
         {
@@ -165,7 +165,7 @@
         }
         catch (Exception ex)
         {
-            Dispatcher.Dispatch(new ShowToastAction { Message = $"Persisted state could not be saved: {ex.Message}", Level = "error" });
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Persisted state could not be saved. {ErrorText.Describe(ex)}", Level = "error" });
         }
         finally
         {
@@ -197,7 +197,7 @@
         }
         catch (Exception ex)
         {
-            Dispatcher.Dispatch(new ShowToastAction { Message = $"Persisted state could not be reset: {ex.Message}", Level = "error" });
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Persisted state could not be reset. {ErrorText.Describe(ex)}", Level = "error" });
         }
         finally
         {

@@ -20,7 +20,9 @@ public class CrossReferenceEffects
     public async Task HandleLoadCrossReferenceListsAction(LoadCrossReferenceListsAction action, IDispatcher dispatcher)
     {
         var lists = await SafeFetch.GetAsync<CrossReferenceListDto[]>(_http, "api/crossreferences", dispatcher, "cross-reference lists");
-        dispatcher.Dispatch(new LoadCrossReferenceListsResultAction { Lists = lists ?? Array.Empty<CrossReferenceListDto>() });
+        dispatcher.Dispatch(lists != null
+            ? new LoadCrossReferenceListsResultAction { Lists = lists }
+            : new LoadCrossReferenceListsFailedAction());
     }
 
     [EffectMethod]

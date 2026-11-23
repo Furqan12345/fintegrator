@@ -14,6 +14,14 @@ public static class FlowReducers
         new FlowState(isLoading: false, flows: state.Flows, currentFlow: action.Flow, runResult: state.RunResult, lastExecutionId: state.LastExecutionId);
 
     [ReducerMethod]
+    public static FlowState ReduceLoadFlowFailedAction(FlowState state, LoadFlowFailedAction action) =>
+        new FlowState(isLoading: false, flows: state.Flows, currentFlow: state.CurrentFlow, runResult: state.RunResult, lastExecutionId: state.LastExecutionId);
+
+    [ReducerMethod]
+    public static FlowState ReduceLoadFlowsFailedAction(FlowState state, LoadFlowsFailedAction action) =>
+        new FlowState(isLoading: false, flows: state.Flows, currentFlow: state.CurrentFlow, runResult: state.RunResult, lastExecutionId: state.LastExecutionId);
+
+    [ReducerMethod]
     public static FlowState ReduceLoadFlowsAction(FlowState state, LoadFlowsAction action) =>
         new FlowState(isLoading: true, flows: state.Flows, currentFlow: state.CurrentFlow, runResult: state.RunResult, lastExecutionId: state.LastExecutionId);
 

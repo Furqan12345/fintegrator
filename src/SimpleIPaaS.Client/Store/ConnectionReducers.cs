@@ -16,6 +16,10 @@ public static class ConnectionReducers
         new ConnectionState(isLoading: false, connections: action.Connections.ToList());
 
     [ReducerMethod]
+    public static ConnectionState ReduceLoadConnectionsFailedAction(ConnectionState state, LoadConnectionsFailedAction action) =>
+        new ConnectionState(isLoading: false, connections: state.Connections, loadFailed: true);
+
+    [ReducerMethod]
     public static ConnectionState ReduceSaveConnectionAction(ConnectionState state, SaveConnectionAction action) =>
         new ConnectionState(isLoading: true, connections: state.Connections);
 

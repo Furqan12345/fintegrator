@@ -10,7 +10,7 @@
 @inject HttpClient Http
 @inject IJSRuntime JS
 
-<PageTitle>Transaction History - fusetor.com</PageTitle>
+<PageTitle>Transaction History — fusetor.com</PageTitle>
 
 <div class="page-scroll tx-page">
     <div class="page-header">
@@ -128,6 +128,15 @@
         @if (ExecutionState.Value.IsLoading && !ExecutionState.Value.Executions.Any())
         {
             <div class="loading-state">Loading transaction history…</div>
+        }
+        else if (ExecutionState.Value.LoadFailed && !ExecutionState.Value.Executions.Any())
+        {
+            <div class="empty-state empty-state-hero" role="alert">
+                <span class="empty-icon"><AppIcon Name="alert" Class="icon icon-lg" /></span>
+                <h3>Couldn't load transactions</h3>
+                <p>The API did not return the transactions. Check that it is running, then try again.</p>
+                <button class="btn btn-outline" @onclick="LoadExecutions">Try again</button>
+            </div>
         }
         else if (!ExecutionState.Value.Executions.Any())
         {

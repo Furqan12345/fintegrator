@@ -19,7 +19,7 @@
     padding: 18px;
     border: 1px solid var(--border-color, #dbe2ee);
     border-radius: 12px;
-    background: var(--surface-color, #fff);
+    background: var(--bg-card);
 }
 
 .ai-provider-panel h3,

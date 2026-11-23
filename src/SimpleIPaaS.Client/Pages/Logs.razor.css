@@ -6,34 +6,9 @@
     flex-direction: column;
     width: 100%;
     min-height: 100%;
-    padding: 32px 36px 40px;
-    gap: 20px;
     overflow: auto;
     background: var(--bg-app, #f4f6fa);
     color: var(--text-primary, #0d1526);
-}
-
-.logs-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 24px;
-    padding: 0 2px;
-}
-
-.logs-title h2 {
-    margin: 0;
-    font-size: 1.6rem;
-    font-weight: 700;
-    line-height: 1.25;
-    letter-spacing: -0.02em;
-    color: var(--text-primary, #0d1526);
-}
-
-.logs-subtitle {
-    margin: 6px 0 0;
-    color: var(--text-secondary, #48566d);
-    font-size: 0.88rem;
 }
 
 .logs-actions {
@@ -441,7 +416,6 @@
 .logs-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 1180px) {
-    .logs-page { padding: 28px 24px 32px; }
     .logs-filters { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .logs-field.compact,
     .logs-field.flow-filter { grid-column: span 3; }
@@ -450,8 +424,6 @@
 }
 
 @media (max-width: 760px) {
-    .logs-page { padding: 22px 16px 28px; gap: 16px; }
-    .logs-header { flex-direction: column; gap: 14px; }
     .logs-actions { width: 100%; justify-content: flex-start; }
     .logs-filters { grid-template-columns: 1fr 1fr; gap: 14px; }
     .logs-field.compact,
@@ -464,7 +436,6 @@
 }
 
 @media (max-width: 480px) {
-    .logs-page { padding: 18px 12px 24px; }
     .logs-filters { grid-template-columns: 1fr; }
 }
 /* Structured event columns added by the operational console. */

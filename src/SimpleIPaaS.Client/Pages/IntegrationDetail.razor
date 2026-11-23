@@ -8,7 +8,7 @@
 @inject NavigationManager NavigationManager
 @inject HttpClient Http
 
-<PageTitle>@(_integration?.Name ?? "Integration") - fusetor.com</PageTitle>
+<PageTitle>@(_integration?.Name ?? "Integration") — fusetor.com</PageTitle>
 
 <div class="page-scroll">
     @if (_integration == null)
@@ -518,7 +518,7 @@
         }
         catch (HttpRequestException ex)
         {
-            _loadError = $"Could not reach the API: {ex.Message}";
+            _loadError = $"Could not load this integration. {ErrorText.Describe(ex)}";
         }
         catch (TaskCanceledException)
         {
@@ -526,7 +526,7 @@
         }
         catch (Exception ex)
         {
-            _loadError = $"Could not load this integration: {ex.Message}";
+            _loadError = $"Could not load this integration. {ErrorText.Describe(ex)}";
         }
         finally
         {

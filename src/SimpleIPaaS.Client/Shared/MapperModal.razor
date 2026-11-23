@@ -402,7 +402,7 @@ return JsonConvert.SerializeObject(result);"
         }
         catch (Exception ex)
         {
-            Output = "REQUEST FAILED: " + ex.Message;
+            Output = "REQUEST FAILED: " + ErrorText.Describe(ex);
             _hasError = true;
         }
         finally

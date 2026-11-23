@@ -6,6 +6,8 @@ namespace SimpleIPaaS.Client.Store;
 
 public class LoadCrossReferenceListsAction { }
 
+public class LoadCrossReferenceListsFailedAction { }
+
 public class LoadCrossReferenceListsResultAction
 {
     public IEnumerable<CrossReferenceListDto> Lists { get; set; } = Array.Empty<CrossReferenceListDto>();

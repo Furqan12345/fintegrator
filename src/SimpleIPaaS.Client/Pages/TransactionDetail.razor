@@ -5,7 +5,7 @@
 @inject HttpClient Http
 @inject NavigationManager NavigationManager
 
-<PageTitle>Transaction Details - fusetor.com</PageTitle>
+<PageTitle>Transaction Details — fusetor.com</PageTitle>
 
 <div class="page-scroll">
 <div class="page-header">
@@ -168,7 +168,7 @@
         }
         catch (Exception ex)
         {
-            _error = ex.Message;
+            _error = ErrorText.Describe(ex);
         }
         finally
         {

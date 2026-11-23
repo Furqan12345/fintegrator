@@ -67,12 +67,12 @@
 
             <div class="sidebar-section-label">System</div>
             <AuthorizeView Roles="Admin">
-                <NavLink class="sidebar-link" href="settings" title="Storage &amp; retention">
+                <NavLink class="sidebar-link" href="settings" title="Failure alerts, storage and retention">
                     <span class="sidebar-icon"><AppIcon Name="settings" /></span>
-                    <span>Storage</span>
+                    <span>Settings</span>
                 </NavLink>
                 <NavLink class="sidebar-link" href="admin/users" title="Users and access">
-                    <span class="sidebar-icon"><AppIcon Name="connections" /></span>
+                    <span class="sidebar-icon"><AppIcon Name="users" /></span>
                     <span>Users</span>
                 </NavLink>
             </AuthorizeView>
@@ -137,15 +137,18 @@
 
         <!-- Page content -->
         <main class="app-content">
-            <ErrorBoundary>
+            <ErrorBoundary @ref="_errorBoundary">
                 <ChildContent>
                     @Body
                 </ChildContent>
                 <ErrorContent>
-                    <div class="app-error-boundary">
-                        <h3>Something went wrong</h3>
-                        <p>@context.Message</p>
-                        <button class="btn" onclick="location.reload()">Reload Page</button>
+                    <div class="app-error-boundary" role="alert">
+                        <h3>This page stopped working</h3>
+                        <p>@ErrorText.Describe(context)</p>
+                        <div class="app-error-actions">
+                            <button class="btn btn-primary" @onclick="RecoverPage">Try again</button>
+                            <button class="btn btn-outline" onclick="location.reload()">Reload the app</button>
+                        </div>
                     </div>
                 </ErrorContent>
             </ErrorBoundary>
@@ -295,10 +298,20 @@
         }
     }
 
+    private ErrorBoundary? _errorBoundary;
+
+    // An ErrorBoundary stays in its error state until told otherwise, so without this every page reached
+    // from the sidebar after a crash would keep showing the same error.
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args)
     {
-        InvokeAsync(StateHasChanged);
+        InvokeAsync(() =>
+        {
+            _errorBoundary?.Recover();
+            StateHasChanged();
+        });
     }
+
+    private void RecoverPage() => _errorBoundary?.Recover();
 
     private void OnBuildChanged() => _ = InvokeAsync(StateHasChanged);
 
@@ -347,7 +360,7 @@
             "deadletters" => "Dead Letters",
             "cross-references" => "Cross-References",
             "logs" => "Debug Logs",
-            "settings" => "Storage & Retention",
+            "settings" => "Settings",
             "docs" => "Assertion Guide",
             _ => "fusetor.com"
         };

@@ -15,6 +15,14 @@ public static class ExecutionReducers
         new ExecutionState(isLoading: false, executions: action.Executions.ToList(), currentStepExecutions: state.CurrentStepExecutions);
 
     [ReducerMethod]
+    public static ExecutionState ReduceLoadExecutionsFailedAction(ExecutionState state, LoadExecutionsFailedAction action) =>
+        new ExecutionState(isLoading: false, executions: state.Executions, currentStepExecutions: state.CurrentStepExecutions, loadFailed: true);
+
+    [ReducerMethod]
+    public static ExecutionState ReduceLoadExecutionDetailsFailedAction(ExecutionState state, LoadExecutionDetailsFailedAction action) =>
+        new ExecutionState(isLoading: false, executions: state.Executions, currentStepExecutions: state.CurrentStepExecutions, loadFailed: state.LoadFailed);
+
+    [ReducerMethod]
     public static ExecutionState ReduceLoadExecutionDetailsAction(ExecutionState state, LoadExecutionDetailsAction action) =>
         new ExecutionState(isLoading: true, executions: state.Executions, currentStepExecutions: state.CurrentStepExecutions);
 

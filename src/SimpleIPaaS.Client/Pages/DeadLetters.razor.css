@@ -6,6 +6,7 @@
 
 /* The disclosure card is inset like the list below it. */
 .dead-letters-page ::deep .dl-filter-panel { margin: 0 var(--page-gutter); }
+.dead-letters-page > .alert { margin: 0 var(--page-gutter); }
 
 .dl-notice {
     display: flex;

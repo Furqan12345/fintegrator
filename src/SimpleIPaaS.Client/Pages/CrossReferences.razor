@@ -129,6 +129,15 @@
         {
             <div class="loading-state">Loading cross-reference lists…</div>
         }
+        else if (CrossReferenceState.Value.LoadFailed && !CrossReferenceState.Value.Lists.Any())
+        {
+            <div class="empty-state empty-state-hero" role="alert">
+                <span class="empty-icon"><AppIcon Name="alert" Class="icon icon-lg" /></span>
+                <h3>Couldn't load cross-reference lists</h3>
+                <p>The API did not return the cross-reference lists. Check that it is running, then try again.</p>
+                <button class="btn btn-outline" @onclick="() => Dispatcher.Dispatch(new LoadCrossReferenceListsAction())">Try again</button>
+            </div>
+        }
         else if (!CrossReferenceState.Value.Lists.Any())
         {
             <div class="empty-state empty-state-hero">

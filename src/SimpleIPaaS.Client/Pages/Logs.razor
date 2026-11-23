@@ -14,13 +14,14 @@
 
 <PageTitle>Debug Logs — fusetor.com</PageTitle>
 
-<div class="logs-page">
-    <header class="logs-header">
-        <div class="logs-title">
-            <h2>Debug Logs</h2>
-            <p class="logs-subtitle">Live application log from the Engine and API processes</p>
+<div class="logs-page page-stack">
+    <div class="page-header">
+        <div class="header-left">
+            <p class="page-eyebrow"><AppIcon Name="logs" Class="icon icon-xs" /> Diagnostics</p>
+            <h2>Debug logs</h2>
+            <p class="subtitle">Live application log from the Engine and API processes.</p>
         </div>
-        <div class="logs-actions">
+        <div class="header-right logs-actions">
             <span class="logs-status @(_paused ? "paused" : "live")">
                 <span class="logs-status-dot"></span>
                 @(_paused ? "Paused" : "Live")
@@ -31,7 +32,7 @@
             <button type="button" class="logs-btn" @onclick="RefreshAsync" disabled="@_busy">Refresh</button>
             <button type="button" class="logs-btn danger" @onclick="() => _confirmClear = true">Clear logs</button>
         </div>
-    </header>
+    </div>
 
     @* The toggle, the result count and the active-filter controls all live inside this card so
        the filter area is one bounded unit; closing it never hides the fact that it is filtering. *@

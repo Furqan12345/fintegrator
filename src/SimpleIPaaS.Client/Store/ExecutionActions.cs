@@ -18,7 +18,10 @@ public class LoadExecutionsAction
 }
 public class LoadExecutionsResultAction { public IEnumerable<FlowExecutionDto> Executions { get; set; } = Array.Empty<FlowExecutionDto>(); }
 
+public class LoadExecutionsFailedAction { }
+
 public class LoadExecutionDetailsAction { public Guid ExecutionId { get; set; } }
+public class LoadExecutionDetailsFailedAction { }
 public class LoadExecutionDetailsResultAction { public IEnumerable<StepExecutionDto> StepExecutions { get; set; } = Array.Empty<StepExecutionDto>(); }
 
 public class CancelExecutionAction

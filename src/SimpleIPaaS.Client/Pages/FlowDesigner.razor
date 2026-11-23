@@ -31,7 +31,7 @@
 @inject NavigationManager NavigationManager
 @inject SimpleIPaaS.Client.Services.AiBuildJobTracker AiBuild
 
-<PageTitle>Flow Designer - fusetor.com</PageTitle>
+<PageTitle>Flow Designer — fusetor.com</PageTitle>
 
 <div class="designer-shell">
 @if (!_testMode && _testReturnState != null)
@@ -231,7 +231,16 @@
         </div>
     }
 
-    @if (IsOpeningFlow)
+    @if (IsOpeningFlow && _flowLoadFailed)
+    {
+        <div class="designer-loading designer-load-failed" role="alert">
+            <AppIcon Name="alert" Class="icon icon-md" />
+            <span>This flow could not be loaded. Check that the API is running, then try again.</span>
+            <button class="btn btn-sm btn-primary" @onclick="RetryLoadFlow">Try again</button>
+            <a class="btn btn-sm btn-outline" href="integrations">Back to integrations</a>
+        </div>
+    }
+    else if (IsOpeningFlow)
     {
         <div class="designer-loading" role="status" aria-live="polite">
             <span class="designer-loading-spinner" aria-hidden="true"></span>
@@ -425,7 +434,7 @@
                 <div class="form-group">
                     <label>Flow lifecycle</label>
                     <div class="text-muted">@settingsFlow.Status</div>
-                    <small class="field-hint">Save changes as a draft, then use Publish to make this version active. The currently published version is @(settingsFlow.PublishedVersion.HasValue ? $"v{settingsFlow.PublishedVersion}" : "none").</small>
+                    <small class="field-hint">Save changes as a draft, then use Publish to make this version active. @(settingsFlow.PublishedVersion.HasValue ? $"The published version is v{settingsFlow.PublishedVersion}." : "No version has been published yet.")</small>
                 </div>
                 @if (HasScheduleNode)
                 {
@@ -627,6 +636,10 @@
     private bool _isFullscreen;
     private DotNetObjectReference<FlowDesigner>? _dotnetHelper;
     private Guid? _expectedFlowId;
+    private bool _flowLoadFailed;
+    // The store keeps the last flow it loaded. Drawing that cached copy would show a stale version (and hide a
+    // failed load), so the designer draws only once the fresh copy of the expected flow has arrived.
+    private Guid? _freshFlowId;
     private Guid? _loadedResyncDeadLetterId;
     private DeadLetterDto? _resyncDeadLetter;
     private List<ResyncNodeOptionDto> _resyncOptions = new();
@@ -795,15 +808,28 @@
         AiBuild.Changed += OnAiBuildChanged;
         SetupDiagram();
         _locationChangingRegistration = NavigationManager.RegisterLocationChangingHandler(OnLocationChangingAsync);
-        await LoadLookupsAsync();
+        SubscribeToAction<LoadFlowResultAction>(action =>
+        {
+            _freshFlowId = action.Flow?.Id;
+            _ = InvokeAsync(StateHasChanged);
+        });
+        SubscribeToAction<LoadFlowFailedAction>(action =>
+        {
+            if (action.Id != _expectedFlowId || _isLoaded) return;
+            _flowLoadFailed = true;
+            _ = InvokeAsync(StateHasChanged);
+        });
 
+        // Start the flow request first: the lookups only feed dropdowns, so the flow must not wait on them.
         _expectedFlowId = FlowId;
         if (FlowId.HasValue)
         {
             FlowName = string.Empty;
             Dispatcher.Dispatch(new LoadFlowAction { Id = FlowId.Value });
         }
-        else if (!DeadLetterIdQuery.HasValue)
+        await LoadLookupsAsync();
+
+        if (!FlowId.HasValue && !DeadLetterIdQuery.HasValue)
         {
             Dispatcher.Dispatch(new UpdateFlowStateAction
             {
@@ -861,7 +887,8 @@
         }
 
         var currentFlow = FlowState.Value.CurrentFlow;
-        if (currentFlow != null && _expectedFlowId.HasValue && !_isLoaded && currentFlow.Id == _expectedFlowId.Value)
+        if (currentFlow != null && _expectedFlowId.HasValue && !_isLoaded && currentFlow.Id == _expectedFlowId.Value
+            && _freshFlowId == _expectedFlowId)
         {
             FlowName = currentFlow.Name;
             LoadDiagramFromCurrentFlow();
@@ -964,7 +991,8 @@
 
             _resyncDeadLetter = entry;
             _expectedFlowId = entry.FlowId;
-            if (FlowState.Value.CurrentFlow?.Id != entry.FlowId)
+            // With a flow id in the URL the flow is already being loaded; otherwise fetch it fresh.
+            if (!FlowId.HasValue)
             {
                 Dispatcher.Dispatch(new LoadFlowAction { Id = entry.FlowId });
             }
@@ -1029,10 +1057,26 @@
         }
     }
 
+    private void RetryLoadFlow()
+    {
+        if (!FlowId.HasValue) return;
+        _flowLoadFailed = false;
+        Dispatcher.Dispatch(new LoadFlowAction { Id = FlowId.Value });
+    }
+
+    // The integration picker and the connection dropdowns. Both requests run together; the integration list
+    // only needs names, so it uses the lite view. A failure leaves the dropdown empty instead of crashing the page.
     private async Task LoadLookupsAsync()
     {
-        _integrations = await Http.GetFromJsonAsync<List<IntegrationDto>>("api/integrations") ?? new List<IntegrationDto>();
-        _connections = await Http.GetFromJsonAsync<List<ConnectionDto>>("api/connections") ?? new List<ConnectionDto>();
+        var integrations = SafeFetch.GetAsync<List<IntegrationDto>>(Http, "api/integrations?lite=true", Dispatcher, "integrations");
+        var connections = SafeFetch.GetAsync<List<ConnectionDto>>(Http, "api/connections", Dispatcher, "connections");
+        _integrations = await integrations ?? new List<IntegrationDto>();
+        _connections = await connections ?? new List<ConnectionDto>();
+        // If the flow arrived first, its HTTP cards rendered with an empty connection list.
+        if (_isLoaded)
+        {
+            foreach (var node in Diagram.Nodes) node.Refresh();
+        }
     }
 
     private void LoadDiagramFromCurrentFlow()
@@ -1149,7 +1193,7 @@
         }
         catch (Exception ex)
         {
-            _testSaveError = $"Could not reach the API to save the flow: {ex.Message}";
+            _testSaveError = $"Could not save the flow. {ErrorText.Describe(ex)}";
             _showTestConfirm = true;
             StateHasChanged();
             return;
@@ -2628,7 +2672,7 @@
             }
             catch (JsonException ex)
             {
-                _debugSupplyError = $"Invalid JSON: {ex.Message}";
+                _debugSupplyError = ErrorText.Describe(ex);
                 return;
             }
         }
@@ -3260,8 +3304,8 @@
             return;
         }
 
-        var versions = await Http.GetFromJsonAsync<List<FlowVersionDto>>(
-            $"api/integrationflow/{flow.Id}/versions");
+        var versions = await SafeFetch.GetAsync<List<FlowVersionDto>>(
+            Http, $"api/integrationflow/{flow.Id}/versions", Dispatcher, "the version history");
 
         if (versions != null)
         {
@@ -3291,9 +3335,18 @@
             return;
         }
 
-        var response = await Http.PostAsJsonAsync(
-            $"api/integrationflow/{flow.Id}/rollback/{versionNumber}",
-            new FlowVersionActionDto { ChangeNote = $"Rollback to version {versionNumber}" });
+        HttpResponseMessage response;
+        try
+        {
+            response = await Http.PostAsJsonAsync(
+                $"api/integrationflow/{flow.Id}/rollback/{versionNumber}",
+                new FlowVersionActionDto { ChangeNote = $"Rollback to version {versionNumber}" });
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _validationErrors = new List<string> { $"The selected version could not be restored. {ErrorText.Describe(ex)}" };
+            return;
+        }
 
         if (!response.IsSuccessStatusCode)
         {
@@ -3361,7 +3414,21 @@
 
         _webhookCopied = false;
 
-        var response = await Http.PostAsync($"api/integrationflow/{flow.Id}/webhook-secret", null);
+        HttpResponseMessage response;
+        try
+        {
+            response = await Http.PostAsync($"api/integrationflow/{flow.Id}/webhook-secret", null);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Could not regenerate the webhook secret. {ErrorText.Describe(ex)}", Level = "error" });
+            return;
+        }
+        if (!response.IsSuccessStatusCode)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = await SafeFetch.DescribeFailureAsync(response, "Could not regenerate the webhook secret."), Level = "error" });
+            return;
+        }
         if (response.IsSuccessStatusCode)
         {
             var updated = await response.Content.ReadFromJsonAsync<IntegrationFlowDto>();

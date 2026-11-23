@@ -74,6 +74,8 @@ public static class SafeFetch
     // The API's own actionable text wins over the caller's generic fallback: StorageSettings uses
     // { "message": ... }, ProblemDetails uses detail/title, and validation problems carry an errors
     // map. Dropping that text is how "Could not save the storage settings." hid the real reason.
+    // A validation problem's title is always "One or more validation errors occurred.", so the first
+    // field error is read before the title.
     public static async Task<string> DescribeFailureAsync(HttpResponseMessage response, string fallback)
     {
         try
@@ -94,8 +96,8 @@ public static class SafeFetch
             var message =
                 ReadString(root, "message")
                 ?? ReadString(root, "detail")
-                ?? ReadString(root, "title")
-                ?? ReadFirstValidationError(root);
+                ?? ReadFirstValidationError(root)
+                ?? ReadString(root, "title");
 
             return string.IsNullOrWhiteSpace(message) ? fallback : message;
         }

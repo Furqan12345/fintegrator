@@ -140,6 +140,46 @@
                 };
             })();
 
+            // Modals. Escape closes the top-most one (exactly like clicking its backdrop) and gives focus back to
+            // what opened it; a modal opened by a click gets focus on its first field so keyboard users land
+            // inside it. Two document listeners and a querySelectorAll per click: no observers.
+            (function () {
+                var overlays = '.modal-overlay, .logs-modal-overlay';
+                var fields = 'input:not([type=hidden]):not([disabled]):not([readonly]), textarea:not([disabled]), select:not([disabled])';
+                var opener = null;
+                function count() { return document.querySelectorAll(overlays).length; }
+                function focusInto(overlay) {
+                    if (overlay.contains(document.activeElement)) return;
+                    var target = Array.prototype.find.call(overlay.querySelectorAll(fields), function (el) { return !el.closest('.monaco-editor') && el.offsetParent !== null; })
+                        // A confirm dialog has no field: land on its close/cancel button, never the destructive one.
+                        || overlay.querySelector('.modal-close-btn, .btn-outline, button:not(.danger):not(.btn-danger):not(.btn-primary)');
+                    if (target) target.focus({ preventScroll: true });
+                }
+                document.addEventListener('click', function (e) {
+                    var before = count(), trigger = e.target && e.target.closest ? e.target.closest('button, a') : null;
+                    // Modals that wait for data open later than the click, so look twice.
+                    [60, 450].forEach(function (delay) {
+                        setTimeout(function () {
+                            var list = document.querySelectorAll(overlays);
+                            if (list.length > before) { opener = trigger; focusInto(list[list.length - 1]); before = list.length; }
+                        }, delay);
+                    });
+                }, true);
+                document.addEventListener('keydown', function (e) {
+                    if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+                    // The code editor uses Escape itself (an open native <select> never lets the key reach the page).
+                    if (e.target && e.target.closest && e.target.closest('.monaco-editor')) return;
+                    var list = document.querySelectorAll(overlays);
+                    if (!list.length) return;
+                    e.preventDefault();
+                    list[list.length - 1].click();
+                    setTimeout(function () {
+                        if (!count() && opener && opener.isConnected) opener.focus({ preventScroll: true });
+                        if (!count()) opener = null;
+                    }, 60);
+                });
+            })();
+
             window.simpleIPaaSDesigner = {
                 markHttpErrorLinks: function (errorIds) {
                     var designer = window.simpleIPaaSDesigner;

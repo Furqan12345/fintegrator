@@ -26,6 +26,10 @@ public class DeadLetterEffects
         {
             dispatcher.Dispatch(new LoadDeadLettersResultAction { DeadLetters = deadLetters });
         }
+        else
+        {
+            dispatcher.Dispatch(new LoadDeadLettersFailedAction());
+        }
     }
 
     [EffectMethod]

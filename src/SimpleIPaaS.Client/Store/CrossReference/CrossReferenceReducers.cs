@@ -16,6 +16,10 @@ public static class CrossReferenceReducers
         new(false, action.Lists.ToList(), state.SelectedList, state.Entries, state.TotalCount, state.Page, state.PageSize, state.Search);
 
     [ReducerMethod]
+    public static CrossReferenceState ReduceLoadCrossReferenceListsFailedAction(CrossReferenceState state, LoadCrossReferenceListsFailedAction action) =>
+        new(false, state.Lists, state.SelectedList, state.Entries, state.TotalCount, state.Page, state.PageSize, state.Search, loadFailed: true);
+
+    [ReducerMethod]
     public static CrossReferenceState ReduceCreateCrossReferenceListAction(CrossReferenceState state, CreateCrossReferenceListAction action) =>
         Loading(state);
 

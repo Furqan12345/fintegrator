@@ -15,6 +15,8 @@ public class CrossReferenceState
     public int Page { get; }
     public int PageSize { get; }
     public string Search { get; }
+    /// <summary>The last list load failed; the page shows a retry state instead of "no lists".</summary>
+    public bool LoadFailed { get; }
 
     private CrossReferenceState()
     {
@@ -36,8 +38,10 @@ public class CrossReferenceState
         int totalCount,
         int page,
         int pageSize,
-        string search)
+        string search,
+        bool loadFailed = false)
     {
+        LoadFailed = loadFailed;
         IsLoading = isLoading;
         Lists = lists;
         SelectedList = selectedList;

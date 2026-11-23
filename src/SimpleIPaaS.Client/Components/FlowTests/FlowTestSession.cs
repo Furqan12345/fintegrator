@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using SimpleIPaaS.Client.Services;
 using SimpleIPaaS.Shared.Models;
 
 namespace SimpleIPaaS.Client.Components.FlowTests;
@@ -363,7 +364,7 @@ public sealed class FlowTestSession : IAsyncDisposable
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = ErrorText.Describe(ex);
             IsRunning = false;
         }
         finally
@@ -413,7 +414,7 @@ public sealed class FlowTestSession : IAsyncDisposable
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = ErrorText.Describe(ex);
             IsRunning = false;
         }
         finally
@@ -472,7 +473,7 @@ public sealed class FlowTestSession : IAsyncDisposable
         }
         catch (HttpRequestException ex)
         {
-            Error = ex.Message;
+            Error = ErrorText.Describe(ex);
         }
         Notify();
     }
@@ -594,7 +595,7 @@ public sealed class FlowTestSession : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = ErrorText.Describe(ex);
             Notify();
         }
     }
