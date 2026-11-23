@@ -51,9 +51,20 @@ run the same command.
   a power loss can drop the last transactions but cannot corrupt the file), `temp_store=MEMORY`, a bounded page cache and
   WAL size limit. Applied through an EF connection interceptor and to the log writer.
 - **Garbage collector**: the Web SDK defaults the API to Server GC (a heap and a thread per core). Both hosts now use
-  workstation concurrent GC (`ServerGarbageCollection=false`). Idle memory did not change measurably (API about
-  38 MB private / 125 MB working set either way); the benefit is on a multi-core host under load and in container
-  memory limits. Judge memory by private bytes: the working set also counts shared, mapped assemblies.
+  workstation concurrent GC (`ServerGarbageCollection=false`). Idle memory is the same either way (API about 38 MB
+  private / 125 MB working set), but under load it differs. API private memory 25 s after the same 600 list requests
+  (20 concurrent, fresh process each time):
+
+  | GC setting | Private memory after load |
+  |---|---|
+  | Server GC (the old default) | 324 MB |
+  | Workstation concurrent (now) | 268 MB |
+  | Workstation + `GCConserveMemory=7` | 232 MB |
+  | Workstation non-concurrent | 227 MB |
+
+  The last two save another 15% but trade CPU or pause latency for it, so they were not made the default. The GC keeps
+  committed heap until there is memory pressure, so a container memory limit (which .NET honours) is the right way to
+  cap the API's footprint. Judge memory by private bytes: the working set also counts shared, mapped assemblies.
 - **Engine polling**: one poller gated by a free-slot semaphore instead of one polling loop per worker. An idle Engine
   runs one claim query per interval instead of `MaxConcurrency`; bursts still drain immediately.
 - **Scripts**: LRU-bounded compiled-script caches (the old cache wiped itself completely at 512 entries, the other grew
