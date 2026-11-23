@@ -182,8 +182,8 @@ app.MapHealthChecks("/health", new HealthCheckOptions
 // Ensure the SQLite database exists without wiping persisted local data.
 using (var scope = app.Services.CreateScope())
 {
+    DatabaseStartup.EnsureSchema(app.Configuration, app.Services, app.Logger);
     var db = scope.ServiceProvider.GetRequiredService<IPaaSContext>();
-    DatabaseSchemaInitializer.EnsureUpToDate(db, app.Logger);
 
     // Fail fast if the encryption key is missing/invalid outside Development.
     _ = scope.ServiceProvider.GetRequiredService<IEncryptionService>();

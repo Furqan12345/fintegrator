@@ -682,12 +682,17 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         await _context.SaveChangesAsync();
     }
 
+    // Always the stored value: a tracked query would hand back the copy this context loaded at the start of the
+    // run, which is exactly the stale value a Persisted State card must not compute from.
     public async Task<string> GetPersistedStateAsync(Guid flowId)
     {
-        var flow = await _context.IntegrationFlows
-            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId);
+        var stored = await _context.IntegrationFlows
+            .AsNoTracking()
+            .Where(existingFlow => existingFlow.Id == flowId)
+            .Select(existingFlow => existingFlow.PersistedStateJson)
+            .FirstOrDefaultAsync();
 
-        return flow?.PersistedStateJson ?? "{}";
+        return string.IsNullOrWhiteSpace(stored) ? "{}" : stored;
     }
 
     public async Task<IntegrationFlow?> GetFlowForTriggerAsync(Guid id)

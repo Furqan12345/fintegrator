@@ -57,7 +57,7 @@ public sealed class SqliteAppLogBatchStore : IAppLogBatchStore
 
 // PostgreSQL: one binary COPY per batch into the day-partitioned AppLogEntries. Retention drops whole days that
 // fell out of the longest window and deletes only what a shorter window still covers, in recent partitions.
-public sealed class PostgresAppLogBatchStore : IAppLogBatchStore
+public sealed class PostgresAppLogBatchStore : IAppLogBatchStore, IDisposable
 {
     private const string Columns =
         "\"EventId\", \"EventVersion\", \"Timestamp\", \"Level\", \"Source\", \"Service\", \"HostInstance\", \"EnvironmentName\", " +
@@ -67,11 +67,29 @@ public sealed class PostgresAppLogBatchStore : IAppLogBatchStore
         "\"RetryAttempt\", \"IsTest\", \"TestCaseId\", \"TestRunId\", \"NodeName\", \"PropertiesJson\"";
 
     private readonly Func<NpgsqlDataSource> _dataSource;
+    private readonly Lazy<NpgsqlDataSource>? _owned;
 
-    // The data source is resolved on first use: the log sink is built before the container can resolve it.
+    // Shares a data source (tests).
     public PostgresAppLogBatchStore(Func<NpgsqlDataSource> dataSource)
     {
         _dataSource = dataSource;
+    }
+
+    // Owns a small data source of its own. The container disposes its shared data source before it disposes the
+    // log provider, so the final flush at shutdown used to fail with ObjectDisposedException and lose the last logs.
+    public PostgresAppLogBatchStore(string connectionString)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString) { ApplicationName = "fusetor-logs", MaxPoolSize = 4 };
+        _owned = new Lazy<NpgsqlDataSource>(() => NpgsqlDataSource.Create(builder.ConnectionString));
+        _dataSource = () => _owned.Value;
+    }
+
+    public void Dispose()
+    {
+        if (_owned is { IsValueCreated: true })
+        {
+            _owned.Value.Dispose();
+        }
     }
 
     public void Write(IReadOnlyList<AppLogEntry> batch)

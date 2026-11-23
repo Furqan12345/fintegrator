@@ -29,6 +29,23 @@ public class FlowExecutor
     private readonly ICrossReferenceRepository _crossReferenceRepository;
     private readonly IEmailSender _emailSender;
     private readonly ILogger<FlowExecutor> _logger;
+
+    // Set by the Engine for one run: cancelled when the run hits Execution:MaxFlowDurationSeconds or the Engine
+    // shuts down before the run can finish. Cancellation through this token is a failure, not a user cancel: the
+    // step and run are Failed with the reason and a dead letter is written (so it alerts and can be resynced).
+    private CancellationToken _interruption;
+    private Func<string> _interruptionReason = () => "The run was interrupted.";
+
+    public void UseInterruption(CancellationToken interruption, Func<string> reason)
+    {
+        _interruption = interruption;
+        _interruptionReason = reason;
+    }
+
+    private bool Interrupted => _interruption.IsCancellationRequested;
+
+    private string DescribeFailure(Exception exception) =>
+        exception is OperationCanceledException && Interrupted ? _interruptionReason() : exception.Message;
     private static readonly object _executionLock = new();
 
     public FlowExecutor(
@@ -260,7 +277,7 @@ public class FlowExecutor
             _logger.LogInformation(new EventId(1301, "flow.execution.completed"), "Execution {ExecutionId} completed successfully ({TotalRecords} steps)",
                 executionId, flowExecution.TotalRecords);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!Interrupted)
         {
             flowExecution.Status = ExecutionStatus.Cancelled;
             flowExecution.ErrorMessage = "Execution was cancelled.";
@@ -270,7 +287,7 @@ public class FlowExecutor
         catch (Exception ex)
         {
             flowExecution.Status = ExecutionStatus.Failed;
-            flowExecution.ErrorMessage = ex.Message;
+            flowExecution.ErrorMessage = DescribeFailure(ex);
             flowExecution.CompletedAt = DateTime.UtcNow;
             _logger.LogError(new EventId(1303, "flow.execution.failed"), ex, "Execution {ExecutionId} failed", executionId);
         }
@@ -374,7 +391,7 @@ public class FlowExecutor
             flowExecution.Status = ExecutionStatus.Success;
             flowExecution.CompletedAt = DateTime.UtcNow;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!Interrupted)
         {
             flowExecution.Status = ExecutionStatus.Cancelled;
             flowExecution.ErrorMessage = "Execution was cancelled.";
@@ -383,7 +400,7 @@ public class FlowExecutor
         catch (Exception ex)
         {
             flowExecution.Status = ExecutionStatus.Failed;
-            flowExecution.ErrorMessage = ex.Message;
+            flowExecution.ErrorMessage = DescribeFailure(ex);
             flowExecution.CompletedAt = DateTime.UtcNow;
         }
 
@@ -743,6 +760,17 @@ public class FlowExecutor
             {
                 if (!string.IsNullOrWhiteSpace(node.MappingCode))
                 {
+                    // Durable state belongs to the flow, not to this run. Fan Out children, dead-letter replays and
+                    // queued runs all start from a snapshot taken earlier; computing from that snapshot and writing it
+                    // back lost every concurrent update (12 Fan Out children counted to 1) and let a replay roll a
+                    // watermark back. Read the stored value right before the card runs; runs of one flow are
+                    // serialised, so read-compute-write is consistent.
+                    if (testContext == null && !suppressPersistedStateWrite)
+                    {
+                        persistedStateJson = await _repository.GetPersistedStateAsync(flow.Id);
+                        persistedStateBox.Value = ParseObjectOrEmpty(persistedStateJson);
+                    }
+
                     currentPayload = await RunScriptAsync(node, "PersistedState",
                         () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
                     persistedStateBox.Value = ParseObjectOrEmpty(currentPayload);
@@ -1185,7 +1213,7 @@ public class FlowExecutor
                 (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds,
                 stepExecution.HttpStatusCode, stepExecution.ResponsePayload?.Length ?? 0);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!Interrupted)
         {
             stepExecution.Status = ExecutionStatus.Cancelled;
             stepExecution.ErrorMessage = "Execution was cancelled.";
@@ -1199,8 +1227,9 @@ public class FlowExecutor
         }
         catch (Exception ex)
         {
+            var failure = DescribeFailure(ex);
             stepExecution.Status = ExecutionStatus.Failed;
-            stepExecution.ErrorMessage = ex.Message;
+            stepExecution.ErrorMessage = failure;
             stepExecution.CompletedAt = DateTime.UtcNow;
             lock (_executionLock) { flowExecution.FailedRecords++; }
 
@@ -1222,7 +1251,7 @@ public class FlowExecutor
                     Payload = string.IsNullOrWhiteSpace(stepExecution.RequestPayload) ? stepExecution.ReceivedInput : stepExecution.RequestPayload,
                     FlowStateJson = flowStateJson,
                     PersistedStateJson = persistedStateJson,
-                    ErrorMessage = ex.Message,
+                    ErrorMessage = failure,
                     Status = "Pending"
                 };
                 // The original failure is attempt 0 so the root cause is never lost,
@@ -1233,7 +1262,7 @@ public class FlowExecutor
                     {
                         Attempt = 0,
                         At = DateTime.UtcNow,
-                        Error = ex.Message,
+                        Error = failure,
                         NodeName = deadLetter.NodeName,
                         Kind = "Failure"
                     }

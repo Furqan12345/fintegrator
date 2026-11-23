@@ -22,6 +22,9 @@ public class AdvancedScriptGlobals
     // Cooperative cancellation only: scripts must check this, because Roslyn cannot abort
     // code that is already running.
     public CancellationToken CancellationToken { get; set; }
+
+    // Target of the checks ScriptLoopGuard inserts into loops; not meant to be used by scripts directly.
+    public CancellationToken __FusetorCancellation => CancellationToken;
 }
 
 public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
@@ -64,16 +67,28 @@ public class AdvancedCodeExecutionService : IAdvancedCodeExecutionService
     {
         var cacheKey = ScriptCacheKey.Compute(csharpCode, typeof(AdvancedScriptGlobals), typeof(TResult));
         return (ScriptRunner<TResult>)CompiledScripts.GetOrAdd(cacheKey, () =>
-            CSharpScript.Create<TResult>(csharpCode, BuildOptions(), typeof(AdvancedScriptGlobals)).CreateDelegate());
+            CSharpScript.Create<TResult>(ScriptLoopGuard.Instrument(csharpCode), BuildOptions(), typeof(AdvancedScriptGlobals)).CreateDelegate());
     }
 
     private async Task<TResult> RunAsync<TResult>(string csharpCode, AdvancedScriptGlobals globals)
     {
+        // Compile first: the time limit is for running the script. A cold Roslyn compile takes 0.4-1.3 s and longer
+        // while a host is starting several at once, and counting it made trivial scripts "time out" on the first
+        // runs after a deploy.
+        ScriptRunner<TResult> runner;
+        try
+        {
+            runner = GetRunner<TResult>(csharpCode);
+        }
+        catch (Exception ex)
+        {
+            throw new ScriptExecutionException(ScriptCacheKey.JsonSafe(ex.Message), timedOut: false, innerException: ex);
+        }
+
         using var cts = new CancellationTokenSource(_timeout);
         try
         {
             globals.CancellationToken = cts.Token;
-            var runner = GetRunner<TResult>(csharpCode);
             var scriptTask = Task.Run(() => runner(globals, cts.Token));
             var completed = await Task.WhenAny(scriptTask, Task.Delay(_timeout, cts.Token));
 

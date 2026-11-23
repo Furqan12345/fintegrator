@@ -329,12 +329,38 @@ public sealed class StubExecutionRepository : IExecutionRepository
     public Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize) =>
         Task.FromResult<IEnumerable<DeadLetterEntry>>(DeadLetters.Where(d => d.Status == "Pending").Take(batchSize).ToList());
 
-    public Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync()
+    public Task<bool> ReleaseClaimAsync(Guid executionId)
+    {
+        lock (_lock)
+        {
+            if (!_flowExecutions.TryGetValue(executionId, out var execution) || execution.Status != ExecutionStatus.InProgress) return Task.FromResult(false);
+            execution.Status = ExecutionStatus.Queued;
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<IReadOnlyList<Guid>> FailStaleExecutionsAsync(DateTime startedBefore, DateTime testRunsStartedBefore, string errorMessage)
+    {
+        lock (_lock)
+        {
+            var stale = _flowExecutions.Values.Where(e => e.Status == ExecutionStatus.InProgress
+                && e.StartedAt < (e.IsTest ? testRunsStartedBefore : startedBefore)).ToList();
+            foreach (var execution in stale)
+            {
+                execution.Status = ExecutionStatus.Failed;
+                execution.ErrorMessage = errorMessage;
+                execution.CompletedAt = DateTime.UtcNow;
+            }
+            return Task.FromResult<IReadOnlyList<Guid>>(stale.Select(e => e.Id).ToList());
+        }
+    }
+
+    public Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync(IReadOnlyCollection<Guid>? excludedFlowIds = null)
     {
         lock (_lock)
         {
             var next = _flowExecutions.Values
-                .Where(e => e.Status == ExecutionStatus.Queued)
+                .Where(e => e.Status == ExecutionStatus.Queued && (excludedFlowIds == null || !excludedFlowIds.Contains(e.FlowId)))
                 .OrderBy(e => e.StartedAt)
                 .FirstOrDefault();
             if (next == null)

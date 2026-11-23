@@ -421,5 +421,6 @@ public sealed class DatabaseLogWriter : IDisposable
         }
 
         _shutdown.Dispose();
+        (_store as IDisposable)?.Dispose();
     }
 }

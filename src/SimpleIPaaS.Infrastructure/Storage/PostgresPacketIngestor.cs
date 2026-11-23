@@ -33,6 +33,8 @@ public sealed class PostgresPacketIngestor : BackgroundService
         SingleWriter = false,
     });
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    // Set when the host starts stopping: from then on a database outage may delay shutdown only briefly.
+    private DateTime? _stoppingSince;
     private long _written;
     private long _batches;
     private long _dropped;
@@ -77,6 +79,7 @@ public sealed class PostgresPacketIngestor : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        _stoppingSince = DateTime.UtcNow;
         _channel.Writer.TryComplete();
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
         await DrainAsync(CancellationToken.None).ConfigureAwait(false);
@@ -121,6 +124,18 @@ public sealed class PostgresPacketIngestor : BackgroundService
                 Interlocked.Increment(ref _batches);
                 return;
             }
+            catch (Exception exception) when (DatabaseStartup.IsConnectionFailure(exception) && !GiveUpOnOutage())
+            {
+                // The database is unreachable (restart, failover, network). Keep the batch and wait: the bounded
+                // channel turns a long outage into backpressure on the steps instead of lost packets.
+                if (attempt == 1 || attempt % 20 == 0)
+                {
+                    _logger.LogWarning("Packet log batch of {Count} is waiting for the database ({Reason}); attempt {Attempt}.",
+                        batch.Count, exception.GetBaseException().Message, attempt);
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(500 * attempt, 5000)), cancellationToken).ConfigureAwait(false);
+            }
             catch (Exception exception) when (attempt < MaxAttempts)
             {
                 if (PostgresPartitions.IsMissingPartition(exception))
@@ -140,6 +155,8 @@ public sealed class PostgresPacketIngestor : BackgroundService
             }
         }
     }
+
+    private bool GiveUpOnOutage() => _stoppingSince is { } since && DateTime.UtcNow - since > TimeSpan.FromSeconds(10);
 
     private async Task EnsurePartitionsForAsync(List<StepPacketLog> batch, CancellationToken cancellationToken)
     {

@@ -97,6 +97,7 @@ public static class EngineServiceRegistration
             provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<StorageRetentionWorker>>()));
         services.AddHostedService<Workers.FlowExecutionWorker>();
+        services.AddHostedService<Workers.StaleExecutionRecoveryWorker>();
         services.AddHostedService<Workers.CronTriggerScheduler>();
         services.AddHostedService<Workers.DeadLetterWorker>();
         services.AddHostedService<Workers.FailureAlertWorker>();

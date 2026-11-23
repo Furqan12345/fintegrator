@@ -29,6 +29,11 @@ if (DatabaseProvider.SupportsDatabaseLogging(builder.Configuration))
 // registration fails the build's test run instead of silently breaking a worker.
 builder.Services.AddEngineServices(builder.Configuration, builder.Environment);
 
+// A graceful stop lets in-flight runs finish for Execution:ShutdownDrainSeconds; the host must wait at least that
+// long (plus time to fail what is left and flush the packet queue) before it gives up on its services.
+var drainSeconds = Math.Max(0, builder.Configuration.GetValue("Execution:ShutdownDrainSeconds", 25));
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(drainSeconds + 20));
+
 var host = builder.Build();
 
 // Ensure the shared schema exists / upgrades additively, and fail fast when the
@@ -36,9 +41,8 @@ var host = builder.Build();
 // connection credentials is required to execute authenticated HTTP steps).
 using (var scope = host.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<IPaaSContext>();
     var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-    DatabaseSchemaInitializer.EnsureUpToDate(db, logger);
+    DatabaseStartup.EnsureSchema(builder.Configuration, host.Services, logger);
 
     _ = scope.ServiceProvider.GetRequiredService<IEncryptionService>();
 

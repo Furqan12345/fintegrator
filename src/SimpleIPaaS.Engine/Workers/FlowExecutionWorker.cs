@@ -21,6 +21,15 @@ namespace SimpleIPaaS.Engine.Workers;
 
 // Claims Queued FlowExecution rows straight from the shared database — the exact
 // counterpart of FlowRunService.EnqueueAsync writes performed by the API process.
+//
+// Lifecycle guarantees:
+//  * Runs of one flow never overlap in this Engine, and the claim skips flows that are already running here, so
+//    a claimed run starts immediately instead of waiting on the flow while holding a worker slot.
+//  * A run that exceeds Execution:MaxFlowDurationSeconds is stopped and Failed with a dead letter (not "Cancelled").
+//  * On a graceful stop the Engine stops claiming, lets in-flight runs finish for Execution:ShutdownDrainSeconds,
+//    then stops what is left and Fails it with a shutdown message (dead-lettered, so it can be resynced). A run
+//    claimed but not yet started goes back to the queue. Runs orphaned by a crash are recovered by
+//    StaleExecutionRecoveryWorker.
 public class FlowExecutionWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
@@ -28,6 +37,10 @@ public class FlowExecutionWorker : BackgroundService
     private readonly ExecutionOptions _options;
     private readonly ILogger<FlowExecutionWorker> _logger;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _flowLocks = new();
+    private readonly ConcurrentDictionary<Guid, byte> _runningFlows = new();
+    // Cancelled when the shutdown drain window expires: interrupts whatever is still running.
+    private readonly CancellationTokenSource _abortRuns = new();
+    private volatile bool _stopRequested;
 
     public FlowExecutionWorker(
         IServiceProvider serviceProvider,
@@ -41,13 +54,17 @@ public class FlowExecutionWorker : BackgroundService
         _logger = logger;
     }
 
+    private int MaxDurationSeconds => _options.MaxFlowDurationSeconds < 1 ? 600 : _options.MaxFlowDurationSeconds;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var concurrency = _options.MaxConcurrency < 1 ? 4 : _options.MaxConcurrency;
         var pollInterval = TimeSpan.FromSeconds(_options.PollIntervalSeconds < 1 ? 2 : _options.PollIntervalSeconds);
+        var drain = TimeSpan.FromSeconds(Math.Max(0, _options.ShutdownDrainSeconds));
         _logger.LogInformation(
             "FlowExecutionWorker starting with {MaxConcurrency} workers, polling the database every {PollSeconds}s",
             concurrency, pollInterval.TotalSeconds);
+        using var stopRegistration = stoppingToken.Register(() => _stopRequested = true);
 
         // One poller instead of one polling loop per worker. The poller only asks the database for work when a
         // worker slot is free, so an idle Engine runs one claim query per interval (it used to run MaxConcurrency
@@ -66,7 +83,7 @@ public class FlowExecutionWorker : BackgroundService
                 {
                     using var scope = _serviceProvider.CreateScope();
                     claim = await scope.ServiceProvider.GetRequiredService<IExecutionRepository>()
-                        .TryClaimNextQueuedExecutionAsync();
+                        .TryClaimNextQueuedExecutionAsync(_runningFlows.Keys.ToList());
                 }
                 catch (OperationCanceledException)
                 {
@@ -103,11 +120,14 @@ public class FlowExecutionWorker : BackgroundService
                     continue;
                 }
 
-                var task = RunClaimAsync(claim, stoppingToken);
+                _runningFlows[claim.FlowId] = 0;
+                var flowId = claim.FlowId;
+                var task = RunClaimAsync(claim);
                 running[task] = 0;
                 _ = task.ContinueWith(finished =>
                 {
                     running.TryRemove(finished, out _);
+                    _runningFlows.TryRemove(flowId, out _);
                     slots.Release();
                 }, TaskScheduler.Default);
             }
@@ -117,12 +137,27 @@ public class FlowExecutionWorker : BackgroundService
             // shutting down
         }
 
-        await Task.WhenAll(running.Keys.ToArray());
+        var inFlight = running.Keys.ToArray();
+        if (inFlight.Length == 0)
+        {
+            return;
+        }
+
+        _logger.LogInformation("Engine stopping: waiting up to {DrainSeconds}s for {Count} in-flight run(s) to finish",
+            drain.TotalSeconds, inFlight.Length);
+        var all = Task.WhenAll(inFlight);
+        if (await Task.WhenAny(all, Task.Delay(drain)) != all)
+        {
+            _logger.LogWarning("Engine stopping: {Count} run(s) did not finish within {DrainSeconds}s and are being stopped",
+                running.Count, drain.TotalSeconds);
+            _abortRuns.Cancel();
+            await Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(15)));
+        }
     }
 
     // Runs one claimed execution to completion. Never throws: every failure is logged here so a bad run cannot
     // take the poller down.
-    private async Task RunClaimAsync(QueuedExecutionClaim claim, CancellationToken stoppingToken)
+    private async Task RunClaimAsync(QueuedExecutionClaim claim)
     {
         await Task.Yield();
 
@@ -153,7 +188,7 @@ public class FlowExecutionWorker : BackgroundService
 
         try
         {
-            await ExecuteRequestAsync(claim, stoppingToken);
+            await ExecuteRequestAsync(claim);
             _logger.LogInformation(
                 "Released execution {ExecutionId} for flow {FlowId} after {DurationMs}ms",
                 claim.ExecutionId, claim.FlowId, (long)Stopwatch.GetElapsedTime(claimedAt).TotalMilliseconds);
@@ -163,7 +198,6 @@ public class FlowExecutionWorker : BackgroundService
             _logger.LogWarning(
                 "Execution {ExecutionId} abandoned after {DurationMs}ms because the Engine is shutting down",
                 claim.ExecutionId, (long)Stopwatch.GetElapsedTime(claimedAt).TotalMilliseconds);
-            return;
         }
         catch (Exception ex)
         {
@@ -175,11 +209,13 @@ public class FlowExecutionWorker : BackgroundService
         }
     }
 
-    private async Task ExecuteRequestAsync(QueuedExecutionClaim request, CancellationToken stoppingToken)
+    private async Task ExecuteRequestAsync(QueuedExecutionClaim request)
     {
+        // Runs of one flow are serialised (cross references and persisted state assume it). The claim already skips
+        // flows running here; the lock also covers anything else that runs a flow in this process.
         var flowLock = _flowLocks.GetOrAdd(request.FlowId, _ => new SemaphoreSlim(1, 1));
         var lockWaitStartedAt = Stopwatch.GetTimestamp();
-        await flowLock.WaitAsync(stoppingToken);
+        await flowLock.WaitAsync(_abortRuns.Token);
         var lockWaitMs = (long)Stopwatch.GetElapsedTime(lockWaitStartedAt).TotalMilliseconds;
         if (lockWaitMs > 0)
         {
@@ -190,6 +226,18 @@ public class FlowExecutionWorker : BackgroundService
         {
             using var scope = _serviceProvider.CreateScope();
             var executionRepository = scope.ServiceProvider.GetRequiredService<IExecutionRepository>();
+
+            // Stopping before the run started: hand it back to the queue for the next Engine instead of starting it.
+            if (_stopRequested)
+            {
+                if (await executionRepository.ReleaseClaimAsync(request.ExecutionId))
+                {
+                    _logger.LogInformation("Execution {ExecutionId} returned to the queue because the Engine is stopping", request.ExecutionId);
+                }
+
+                return;
+            }
+
             var execution = await executionRepository.GetFlowExecutionAsync(request.ExecutionId);
             if (execution == null)
             {
@@ -213,9 +261,12 @@ public class FlowExecutionWorker : BackgroundService
                 return;
             }
 
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, stoppingToken);
-            var maxDuration = _options.MaxFlowDurationSeconds < 1 ? 600 : _options.MaxFlowDurationSeconds;
-            linked.CancelAfter(TimeSpan.FromSeconds(maxDuration));
+            // Two ways a run is interrupted, both failures (not user cancels): the maximum run time, and the end of
+            // the shutdown drain window. A user cancel arrives through the registry's token.
+            var maxDuration = MaxDurationSeconds;
+            using var interruption = CancellationTokenSource.CreateLinkedTokenSource(_abortRuns.Token);
+            interruption.CancelAfter(TimeSpan.FromSeconds(maxDuration));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, interruption.Token);
 
             FlowTestContext? testContext = null;
             FlowTestRun? testRun = null;
@@ -236,6 +287,9 @@ public class FlowExecutionWorker : BackgroundService
             }
 
             var executor = scope.ServiceProvider.GetRequiredService<FlowExecutor>();
+            executor.UseInterruption(interruption.Token, () => _abortRuns.IsCancellationRequested
+                ? $"The Engine shut down before this run finished; it was stopped after the {Math.Max(0, _options.ShutdownDrainSeconds)} s shutdown grace period."
+                : $"The run exceeded the maximum run time of {maxDuration} s (Execution:MaxFlowDurationSeconds) and was stopped.");
             var startedAt = Stopwatch.GetTimestamp();
             FlowExecution result;
             if (!string.IsNullOrWhiteSpace(execution.StartStepIdsJson))
@@ -264,7 +318,7 @@ public class FlowExecutionWorker : BackgroundService
                 {
                     var recorder = scope.ServiceProvider.GetRequiredService<FlowTestResultRecorder>();
                     await recorder.RecordAsync(
-                        testRun.Id, testRun.TestCaseId, result, flow, testContext.Definition, stoppingToken);
+                        testRun.Id, testRun.TestCaseId, result, flow, testContext.Definition, CancellationToken.None);
                 }
 
                 _logger.LogInformation("Test case {TestCaseId} {TestStatus} for execution {ExecutionId}",
@@ -288,5 +342,11 @@ public class FlowExecutionWorker : BackgroundService
         {
             flowLock.Release();
         }
+    }
+
+    public override void Dispose()
+    {
+        _abortRuns.Dispose();
+        base.Dispose();
     }
 }

@@ -123,8 +123,17 @@ public interface IExecutionRepository
     Task AddFlowExecutionsAsync(IReadOnlyCollection<FlowExecution> executions);
     Task UpdateFlowExecutionAsync(FlowExecution execution);
 
-    // Cross-process queue: the standalone Engine claims Queued rows atomically.
-    Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync();
+    // Cross-process queue: the standalone Engine claims Queued rows atomically. excludedFlowIds skips flows this
+    // Engine is already running (runs of one flow are serialised), so a claimed run never waits holding a slot.
+    Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync(IReadOnlyCollection<Guid>? excludedFlowIds = null);
+
+    // Hands a claimed run that never started back to the queue (InProgress -> Queued), e.g. on Engine shutdown.
+    Task<bool> ReleaseClaimAsync(Guid executionId);
+
+    // Marks runs that have been InProgress since before the cutoff as Failed (their Engine died: no run can
+    // legitimately last that long). Guarded per row, so several Engines can run it. Returns the runs it failed.
+    // Test runs get their own cutoff: the API runs them in-process with its own limit.
+    Task<IReadOnlyList<Guid>> FailStaleExecutionsAsync(DateTime startedBefore, DateTime testRunsStartedBefore, string errorMessage);
     Task<IReadOnlyList<Guid>> GetCancelledExecutionIdsAsync(IReadOnlyCollection<Guid> executionIds);
 
     Task AddStepExecutionAsync(StepExecution execution);

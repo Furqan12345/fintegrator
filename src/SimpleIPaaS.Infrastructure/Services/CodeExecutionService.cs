@@ -12,6 +12,11 @@ namespace SimpleIPaaS.Infrastructure.Services;
 public class ScriptGlobals
 {
     public string InputJson { get; set; } = string.Empty;
+
+    public CancellationToken CancellationToken { get; set; }
+
+    // Target of the checks ScriptLoopGuard inserts into loops; not meant to be used by scripts directly.
+    public CancellationToken __FusetorCancellation => CancellationToken;
 }
 
 public class CodeExecutionService : ICodeExecutionService
@@ -52,16 +57,26 @@ public class CodeExecutionService : ICodeExecutionService
     {
         var cacheKey = ScriptCacheKey.Compute(csharpCode, typeof(ScriptGlobals), typeof(string));
         return CompiledScripts.GetOrAdd(cacheKey, () =>
-            CSharpScript.Create<string>(csharpCode, BuildOptions(), typeof(ScriptGlobals)).CreateDelegate());
+            CSharpScript.Create<string>(ScriptLoopGuard.Instrument(csharpCode), BuildOptions(), typeof(ScriptGlobals)).CreateDelegate());
     }
 
     public async Task<string> ExecuteMappingAsync(string csharpCode, string inputJson)
     {
+        // Compile outside the time limit (see AdvancedCodeExecutionService.RunAsync).
+        ScriptRunner<string> runner;
+        try
+        {
+            runner = GetRunner(csharpCode);
+        }
+        catch (Exception ex)
+        {
+            throw new ScriptExecutionException(ScriptCacheKey.JsonSafe(ex.Message), timedOut: false, innerException: ex);
+        }
+
         using var cts = new CancellationTokenSource(_timeout);
         try
         {
-            var runner = GetRunner(csharpCode);
-            var scriptTask = Task.Run(() => runner(new ScriptGlobals { InputJson = inputJson }, cts.Token));
+            var scriptTask = Task.Run(() => runner(new ScriptGlobals { InputJson = inputJson, CancellationToken = cts.Token }, cts.Token));
             var completed = await Task.WhenAny(scriptTask, Task.Delay(_timeout, cts.Token));
 
             if (completed != scriptTask)

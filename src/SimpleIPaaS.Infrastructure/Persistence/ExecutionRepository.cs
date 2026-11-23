@@ -390,13 +390,64 @@ public class ExecutionRepository : IExecutionRepository
     public Task<PacketLogDetailItem?> GetPacketLogDetailAsync(Guid packetId) =>
         PacketLogStore.GetDetailAsync(packetId);
 
-    public async Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync()
+    public async Task<bool> ReleaseClaimAsync(Guid executionId) =>
+        await _context.FlowExecutions
+            .Where(e => e.Id == executionId && e.Status == ExecutionStatus.InProgress)
+            .ExecuteUpdateAsync(set => set.SetProperty(e => e.Status, ExecutionStatus.Queued)) == 1;
+
+    public async Task<IReadOnlyList<Guid>> FailStaleExecutionsAsync(DateTime startedBefore, DateTime testRunsStartedBefore, string errorMessage)
+    {
+        var candidates = await _context.FlowExecutions
+            .AsNoTracking()
+            .Where(e => e.Status == ExecutionStatus.InProgress
+                && (e.IsTest ? e.StartedAt < testRunsStartedBefore : e.StartedAt < startedBefore))
+            .OrderBy(e => e.StartedAt)
+            .Select(e => e.Id)
+            .Take(200)
+            .ToListAsync();
+
+        var failed = new List<Guid>();
+        var now = DateTime.UtcNow;
+        foreach (var id in candidates)
+        {
+            var changed = await _context.FlowExecutions
+                .Where(e => e.Id == id && e.Status == ExecutionStatus.InProgress
+                    && (e.IsTest ? e.StartedAt < testRunsStartedBefore : e.StartedAt < startedBefore))
+                .ExecuteUpdateAsync(set => set
+                    .SetProperty(e => e.Status, ExecutionStatus.Failed)
+                    .SetProperty(e => e.ErrorMessage, errorMessage)
+                    .SetProperty(e => e.CompletedAt, now));
+            if (changed == 0)
+            {
+                continue;
+            }
+
+            failed.Add(id);
+            await _context.StepExecutions
+                .Where(step => step.FlowExecutionId == id && step.Status == ExecutionStatus.InProgress)
+                .ExecuteUpdateAsync(set => set
+                    .SetProperty(step => step.Status, ExecutionStatus.Failed)
+                    .SetProperty(step => step.ErrorMessage, errorMessage)
+                    .SetProperty(step => step.CompletedAt, now));
+        }
+
+        return failed;
+    }
+
+    public async Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync(IReadOnlyCollection<Guid>? excludedFlowIds = null)
     {
         // The claim is an atomic guarded UPDATE (WHERE Status = Queued) so two engines can
         // never take the same row.
-        var nextId = await _context.FlowExecutions
+        var excluded = excludedFlowIds is { Count: > 0 } ? excludedFlowIds.ToList() : null;
+        var queued = _context.FlowExecutions
             .AsNoTracking()
-            .Where(e => e.Status == ExecutionStatus.Queued)
+            .Where(e => e.Status == ExecutionStatus.Queued);
+        if (excluded != null)
+        {
+            queued = queued.Where(e => !excluded.Contains(e.FlowId));
+        }
+
+        var nextId = await queued
             .OrderBy(e => e.QueuedAt ?? e.StartedAt)
             .Select(e => (Guid?)e.Id)
             .FirstOrDefaultAsync();
