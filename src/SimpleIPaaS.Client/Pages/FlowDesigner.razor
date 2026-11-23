@@ -955,6 +955,9 @@
             catch (JSException) { }
         }
 
+        // Re-read the flow: an earlier render's OnAfterRenderAsync can resume here after a later one loaded the
+        // flow, with currentFlow still holding the store's empty placeholder.
+        currentFlow = FlowState.Value.CurrentFlow;
         if (_isLoaded && currentFlow != null)
         {
             if (!_testMode && string.Equals(ModeQuery, "test", StringComparison.OrdinalIgnoreCase))
@@ -1776,7 +1779,8 @@
 
     private async Task RefreshTestStatusIfNeededAsync(IntegrationFlowDto flow)
     {
-        if (_statusRefreshBusy || _lastStatusFlowUpdated == flow.UpdatedAt) return;
+        // An unsaved flow has no id yet, so it has no test suite to ask about.
+        if (flow.Id == Guid.Empty || _statusRefreshBusy || _lastStatusFlowUpdated == flow.UpdatedAt) return;
         _statusRefreshBusy = true;
         try
         {
@@ -1795,7 +1799,7 @@
     private async Task<FlowTestSuiteStatusDto?> LoadTestStatusAsync()
     {
         var flow = FlowState.Value.CurrentFlow;
-        if (flow == null) return null;
+        if (flow == null || flow.Id == Guid.Empty) return null;
         try
         {
             _testStatus = await Http.GetFromJsonAsync<FlowTestSuiteStatusDto>(
