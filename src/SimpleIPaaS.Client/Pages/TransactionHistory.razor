@@ -3,6 +3,7 @@
 @using SimpleIPaaS.Shared.Models
 @inherits Fluxor.Blazor.Web.Components.FluxorComponent
 @inject IState<ExecutionState> ExecutionState
+@inject SimpleIPaaS.Client.Services.PageVisibilityService Visibility
 @inject IState<FlowState> FlowState
 @inject IDispatcher Dispatcher
 @inject NavigationManager NavigationManager
@@ -314,7 +315,7 @@
 
     private void RefreshIfActive()
     {
-        if (ExecutionState.Value.Executions.Any(IsActive))
+        if (Visibility.IsVisible && ExecutionState.Value.Executions.Any(IsActive))
         {
             LoadExecutions();
         }

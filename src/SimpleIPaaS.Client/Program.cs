@@ -33,6 +33,7 @@ builder.Services.AddScoped(sp =>
 });
 
 builder.Services.AddScoped<SimpleIPaaS.Client.Services.AiBuildJobTracker>();
+builder.Services.AddScoped<SimpleIPaaS.Client.Services.PageVisibilityService>();
 
 builder.Services.AddFluxor(o => o
     .ScanAssemblies(typeof(Program).Assembly));

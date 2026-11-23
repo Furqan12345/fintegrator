@@ -275,18 +275,39 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAsync(int batchSize)
     {
-        return await (from entry in _context.DeadLetterEntries.AsNoTracking()
-                      join run in _context.FlowExecutions.AsNoTracking()
-                          on entry.FlowExecutionId equals run.Id into runs
-                      from run in runs.DefaultIfEmpty()
-                      where (entry.Status == "Pending" || entry.ReplayRequestedAt != null)
-                            && (run == null || !run.IsTest)
-                      // Manual requests first: an old backlog of Pending entries must never fill the
-                      // whole batch and starve a replay the operator just asked for.
-                      orderby entry.ReplayRequestedAt == null, entry.CreatedAt
-                      select entry)
-            .Take(batchSize < 1 ? 100 : batchSize)
+        var take = batchSize < 1 ? 100 : batchSize;
+
+        // Manual requests first: an old backlog of Pending entries must never fill the whole batch and
+        // starve a replay the operator just asked for. Each half is its own indexed, ordered, limited
+        // query (ReplayRequestedAt index, Status+CreatedAt index). One query with OR and a computed
+        // ORDER BY forced a join and a sort over every pending entry on each scan.
+        var manual = await _context.DeadLetterEntries.AsNoTracking()
+            .Where(entry => entry.ReplayRequestedAt != null
+                && !_context.FlowExecutions.Any(run => run.Id == entry.FlowExecutionId && run.IsTest))
+            .OrderBy(entry => entry.CreatedAt)
+            .Take(take)
             .ToListAsync();
+        if (manual.Count >= take)
+        {
+            return manual;
+        }
+
+        // No "ReplayRequestedAt IS NULL" here on purpose: that predicate lets the planner pick the
+        // ReplayRequestedAt index (nearly every row is NULL) and sort the whole table instead of walking
+        // Status+CreatedAt. Entries that are also manual requests are removed in memory instead.
+        var manualIds = manual.Select(entry => entry.Id).ToHashSet();
+        var pending = (await _context.DeadLetterEntries.AsNoTracking()
+            .Where(entry => entry.Status == "Pending"
+                && !_context.FlowExecutions.Any(run => run.Id == entry.FlowExecutionId && run.IsTest))
+            .OrderBy(entry => entry.CreatedAt)
+            .Take(take)
+            .ToListAsync())
+            .Where(entry => !manualIds.Contains(entry.Id) && entry.ReplayRequestedAt == null)
+            .Take(take - manual.Count)
+            .ToList();
+
+        manual.AddRange(pending);
+        return manual;
     }
 
     public async Task<IReadOnlyList<(DeadLetterEntry Entry, Guid? FlowId)>> GetUnalertedDeadLettersAsync(

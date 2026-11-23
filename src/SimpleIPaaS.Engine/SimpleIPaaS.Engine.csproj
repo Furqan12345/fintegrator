@@ -4,6 +4,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- One small host process per role: workstation concurrent GC. The Web SDK defaults to Server GC, which keeps
+         a heap and a thread per core and holds memory back from the OS (see the optimization report). -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
     <RootNamespace>SimpleIPaaS.Engine</RootNamespace>
     <UserSecretsId>dotnet-SimpleIPaaS.Engine</UserSecretsId>
   </PropertyGroup>

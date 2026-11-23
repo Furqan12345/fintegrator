@@ -43,6 +43,14 @@ builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 
 // Add services to the container.
 builder.Services.AddControllers(options => options.Filters.Add<ViewerReadOnlyFilter>());
 builder.Services.AddProblemDetails();
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+});
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -141,7 +149,10 @@ app.Use(async (context, next) =>
 app.UseDefaultFiles();
 var staticContentTypes = new FileExtensionContentTypeProvider();
 staticContentTypes.Mappings[".dat"] = "application/octet-stream";
-app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = staticContentTypes });
+// Static assets: serve the publish-time .br/.gz twins; everything else (JSON, HTML) goes through response compression.
+SimpleIPaaS.Api.Hosting.PrecompressedStaticFiles.UsePrecompressedStaticFiles(app, app.Environment.WebRootFileProvider);
+app.UseResponseCompression();
+app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = new SimpleIPaaS.Api.Hosting.PrecompressedContentTypeProvider(staticContentTypes) });
 app.UseMiddleware<OperationalMetricsMiddleware>();
 
 app.UseRouting();

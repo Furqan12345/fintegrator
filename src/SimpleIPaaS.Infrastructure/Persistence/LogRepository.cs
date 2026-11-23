@@ -109,9 +109,13 @@ public class LogRepository : ILogRepository
             .ToListAsync(cancellationToken);
     }
 
+    private const int FacetSampleRows = 20_000;
+
     public async Task<LogFacets> GetFacetsAsync(LogQuery query, CancellationToken cancellationToken = default)
     {
-        var filtered = Apply(_context.AppLogEntries.AsNoTracking(), query);
+        // The filter lists describe what is in the log lately, so they are built from the newest FacetSampleRows
+        // matching rows. DISTINCT over the whole table (up to the retention cap) made every list a full scan.
+        var filtered = Apply(_context.AppLogEntries.AsNoTracking(), query).OrderByDescending(item => item.Id).Take(FacetSampleRows);
         var services = await filtered.Where(item => item.Service != "").Select(item => item.Service).Distinct().OrderBy(item => item).Take(100).ToListAsync(cancellationToken);
         var components = await filtered.Where(item => item.Component != "").Select(item => item.Component).Distinct().OrderBy(item => item).Take(200).ToListAsync(cancellationToken);
         var events = await filtered.Where(item => item.EventName != "").Select(item => item.EventName).Distinct().OrderBy(item => item).Take(300).ToListAsync(cancellationToken);

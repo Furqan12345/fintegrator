@@ -40,7 +40,7 @@ public static class EngineServiceRegistration
                 options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")
                     ?? throw new InvalidOperationException("SQL Server connection string is required."), sql => sql.EnableRetryOnFailure());
             else
-                options.UseSqlite(DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection")));
+                options.UseTunedSqlite(DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection")));
         });
         services.AddEmailSender(configuration, environment);
 

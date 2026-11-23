@@ -47,6 +47,7 @@ public static class DatabaseSchemaInitializer
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "Message", "nvarchar(max) NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowTestRuns", "SuiteRunId", "uniqueidentifier NULL");
             EnsureSqlServerIdentityTables(sqlConnection);
+            EnsurePerformanceIndexes(sqlConnection);
             return;
         }
 
@@ -124,7 +125,76 @@ public static class DatabaseSchemaInitializer
         EnsureColumn(connection, "FlowExecutions", "Identifier", "TEXT NULL");
         EnsureColumn(connection, "FlowExecutions", "Message", "TEXT NULL");
         EnsureColumn(connection, "DeadLetterEntries", "ReplayRequestedAt", "TEXT NULL");
+        EnsurePerformanceIndexes(connection);
         EnsureDatabasePragmas(connection);
+    }
+
+    // Indexes for the hot read paths, found by running the Engine claim poll and the UI list queries against
+    // a 60,000-run database (tools/FusetorBench): every one of them was a full table scan plus a sort.
+    //  * Status+StartedAt narrows the Engine's "next queued run" poll (every worker, every 2 seconds) to the few
+    //    Queued rows and also serves the status-filtered run list.
+    //  * StartedAt and FlowId+StartedAt serve the newest-first run lists and their filters.
+    //  * Status+CreatedAt and ReplayRequestedAt serve the dead-letter scans (Engine every minute, UI on open).
+    // Dropped indexes were either redundant (a prefix of a new composite) or low-cardinality columns on a
+    // table that is written on every log line: each one cost an extra b-tree update per insert.
+    private static readonly (string Name, string Table, string Columns, string? Where)[] PerformanceIndexes =
+    {
+        ("IX_FlowExecutions_Status_StartedAt", "FlowExecutions", "Status, StartedAt", null),
+        ("IX_FlowExecutions_StartedAt", "FlowExecutions", "StartedAt", null),
+        ("IX_FlowExecutions_FlowId_StartedAt", "FlowExecutions", "FlowId, StartedAt", null),
+        ("IX_DeadLetterEntries_Status_CreatedAt", "DeadLetterEntries", "Status, CreatedAt", null),
+        // Partial: nearly every row has no manual replay request, so a full index is all NULLs and the planner
+        // ignores it (measured: a full scan plus sort of the whole table). Only requested rows are indexed.
+        ("IX_DeadLetterEntries_ReplayRequested", "DeadLetterEntries", "ReplayRequestedAt", "ReplayRequestedAt IS NOT NULL"),
+    };
+
+    private static readonly (string Name, string Table)[] RedundantIndexes =
+    {
+        ("IX_FlowExecutions_FlowId", "FlowExecutions"),
+        ("IX_StepPacketLogs_StepExecutionId", "StepPacketLogs"),
+        ("IX_AppLogEntries_Service", "AppLogEntries"),
+        ("IX_AppLogEntries_Outcome", "AppLogEntries"),
+        ("IX_AppLogEntries_EventName", "AppLogEntries"),
+        ("IX_AppLogEntries_Level", "AppLogEntries"),
+    };
+
+    internal static void EnsurePerformanceIndexes(SqliteConnection connection)
+    {
+        foreach (var (name, table, columns, where) in PerformanceIndexes)
+        {
+            using var create = connection.CreateCommand();
+            create.CommandText = $"CREATE INDEX IF NOT EXISTS \"{name}\" ON \"{table}\" ({columns})" + (where == null ? ";" : $" WHERE {where};");
+            create.ExecuteNonQuery();
+        }
+
+        foreach (var (name, _) in RedundantIndexes)
+        {
+            using var drop = connection.CreateCommand();
+            drop.CommandText = $"DROP INDEX IF EXISTS \"{name}\";";
+            drop.ExecuteNonQuery();
+        }
+    }
+
+    internal static void EnsurePerformanceIndexes(SqlConnection connection)
+    {
+        foreach (var (name, table, columns, where) in PerformanceIndexes)
+        {
+            var bracketed = string.Join(", ", columns.Split(',').Select(column => $"[{column.Trim()}]"));
+            using var create = connection.CreateCommand();
+            create.CommandText =
+                $"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'{name}' AND object_id = OBJECT_ID(N'dbo.{table}')) " +
+                $"CREATE INDEX [{name}] ON [dbo].[{table}] ({bracketed})" + (where == null ? ";" : $" WHERE [{where.Replace(" IS NOT NULL", "")}] IS NOT NULL;");
+            create.ExecuteNonQuery();
+        }
+
+        foreach (var (name, table) in RedundantIndexes)
+        {
+            using var drop = connection.CreateCommand();
+            drop.CommandText =
+                $"IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'{name}' AND object_id = OBJECT_ID(N'dbo.{table}')) " +
+                $"DROP INDEX [{name}] ON [dbo].[{table}];";
+            drop.ExecuteNonQuery();
+        }
     }
 
     // Host-wide AI build budgets. One row, id = 1.
@@ -241,9 +311,12 @@ public static class DatabaseSchemaInitializer
         walCommand.CommandText = "PRAGMA journal_mode=WAL;";
         walCommand.ExecuteScalar();
 
-        using var busyTimeoutCommand = connection.CreateCommand();
-        busyTimeoutCommand.CommandText = "PRAGMA busy_timeout=8000;";
-        busyTimeoutCommand.ExecuteNonQuery();
+        SqliteTuning.Apply(connection);
+
+        // Refreshes the planner statistics for any index created above; a no-op once they are current.
+        using var optimizeCommand = connection.CreateCommand();
+        optimizeCommand.CommandText = "PRAGMA optimize=0x10002;";
+        optimizeCommand.ExecuteNonQuery();
     }
 
     private static void EnsureHostHeartbeatsTable(SqliteConnection connection)

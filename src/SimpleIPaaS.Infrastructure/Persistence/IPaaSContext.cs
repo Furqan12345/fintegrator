@@ -153,7 +153,6 @@ public class IPaaSContext : IdentityUserContext<AppUser, Guid>
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).ValueGeneratedOnAdd();
             entity.HasIndex(e => e.Timestamp);
-            entity.HasIndex(e => e.Level);
             entity.HasIndex(e => e.FlowExecutionId);
             entity.HasIndex(e => e.IntegrationId);
             entity.HasIndex(e => e.FlowId);

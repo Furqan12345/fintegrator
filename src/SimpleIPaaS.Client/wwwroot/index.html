@@ -125,6 +125,21 @@
                 return fallback();
             };
 
+            window.simpleIPaaSVisibility = (function () {
+                var handler = null;
+                return {
+                    start: function (helper) {
+                        if (handler) { document.removeEventListener('visibilitychange', handler); }
+                        handler = function () { helper.invokeMethodAsync('SetVisible', !document.hidden).catch(function () { }); };
+                        document.addEventListener('visibilitychange', handler);
+                        handler();
+                    },
+                    stop: function () {
+                        if (handler) { document.removeEventListener('visibilitychange', handler); handler = null; }
+                    }
+                };
+            })();
+
             window.simpleIPaaSDesigner = {
                 markHttpErrorLinks: function (errorIds) {
                     var designer = window.simpleIPaaSDesigner;
@@ -142,9 +157,18 @@
                     requestAnimationFrame(apply);
                     setTimeout(apply, 100);
                     setTimeout(apply, 500);
-                    if (!designer._httpErrorObserver) {
-                        designer._httpErrorObserver = new MutationObserver(apply);
-                        designer._httpErrorObserver.observe(document.body, { childList: true, subtree: true });
+                    // Watch only the diagram canvas (not the whole page) and coalesce bursts of mutations into one
+                    // pass per frame; the observer is released in unobserveCanvas when the designer is left.
+                    if (designer._httpErrorObserver) { designer._httpErrorObserver.disconnect(); designer._httpErrorObserver = null; }
+                    var canvas = document.querySelector('.diagram-canvas');
+                    if (canvas) {
+                        var scheduled = false;
+                        designer._httpErrorObserver = new MutationObserver(function () {
+                            if (scheduled) { return; }
+                            scheduled = true;
+                            requestAnimationFrame(function () { scheduled = false; apply(); });
+                        });
+                        designer._httpErrorObserver.observe(canvas, { childList: true, subtree: true });
                     }
                 },
                 applyLinkStyles: function (activeIds, dimIds) {
@@ -223,6 +247,11 @@
                     window.requestAnimationFrame(notify);
                 },
                 unobserveCanvas: function () {
+                    var designer = window.simpleIPaaSDesigner;
+                    if (designer && designer._httpErrorObserver) {
+                        designer._httpErrorObserver.disconnect();
+                        designer._httpErrorObserver = null;
+                    }
                     if (window.__simpleIPaaSCanvasObserver) {
                         window.__simpleIPaaSCanvasObserver.disconnect();
                         window.__simpleIPaaSCanvasObserver = null;

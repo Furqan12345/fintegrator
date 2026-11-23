@@ -6,6 +6,7 @@
 @inject IJSRuntime JSRuntime
 @inject SimpleIPaaS.Client.Services.AiBuildJobTracker BuildTracker
 @inject SimpleIPaaS.Client.Services.AuthSession Auth
+@inject SimpleIPaaS.Client.Services.PageVisibilityService Visibility
 
 <ToastHost />
 
@@ -212,11 +213,12 @@
             return;
         }
 
+        await Visibility.StartAsync();
         await BuildTracker.RestoreActiveJobAsync();
         await LoadThemeAsync();
         await LoadSidebarAsync();
         await CheckHealthAsync();
-        _healthTimer = new System.Threading.Timer(_ => InvokeAsync(CheckHealthAsync), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+        _healthTimer = new System.Threading.Timer(_ => { if (Visibility.IsVisible) _ = InvokeAsync(CheckHealthAsync); }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     private async Task LoadThemeAsync()

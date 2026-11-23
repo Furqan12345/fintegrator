@@ -52,7 +52,7 @@ public static class ApiServiceRegistration
                 options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")
                     ?? throw new InvalidOperationException("SQL Server connection string is required."), sql => sql.EnableRetryOnFailure());
             else
-                options.UseSqlite(DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection")));
+                options.UseTunedSqlite(DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection")));
         });
 
         // Retention for the relational datasets and for Elasticsearch indices whose ILM delete phase is

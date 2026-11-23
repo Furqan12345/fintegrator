@@ -7,6 +7,7 @@
 @using SimpleIPaaS.Shared.Models
 @implements IAsyncDisposable
 @inject HttpClient Http
+@inject SimpleIPaaS.Client.Services.PageVisibilityService Visibility
 @inject IDispatcher Dispatcher
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
@@ -428,7 +429,7 @@
         {
             while (await timer.WaitForNextTickAsync(token))
             {
-                if (_paused || _busy)
+                if (_paused || _busy || !Visibility.IsVisible)
                 {
                     continue;
                 }

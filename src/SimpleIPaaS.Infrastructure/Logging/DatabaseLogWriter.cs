@@ -200,9 +200,7 @@ public sealed class DatabaseLogWriter : IDisposable
     {
         // Two processes share this file under WAL; wait on the other writer instead of
         // failing the batch with SQLITE_BUSY.
-        using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA busy_timeout=5000;";
-        command.ExecuteNonQuery();
+        SqliteTuning.Apply(connection);
     }
 
     private void EnsureSchema(SqliteConnection connection)

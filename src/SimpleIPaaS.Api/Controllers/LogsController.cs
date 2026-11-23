@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,10 +30,12 @@ public sealed class LogsController : ControllerBase
     private readonly ILogRepository _repository;
     private readonly DatabaseLoggerProvider? _databaseLogger;
     private readonly ILogger<LogsController>? _logger;
+    private readonly IMemoryCache? _cache;
 
-    public LogsController(ILogRepository repository, IEnumerable<ILoggerProvider>? providers = null, ILogger<LogsController>? logger = null)
+    public LogsController(ILogRepository repository, IEnumerable<ILoggerProvider>? providers = null, ILogger<LogsController>? logger = null, IMemoryCache? cache = null)
     {
         _repository = repository;
+        _cache = cache;
         _databaseLogger = providers?.OfType<DatabaseLoggerProvider>().FirstOrDefault();
         _logger = logger;
     }
@@ -66,8 +69,14 @@ public sealed class LogsController : ControllerBase
         if (!TryBuildQuery(level, source, service, component, eventName, null, outcome, null, null, null, null, null, null, null, null, null, null, null, null, null, null, out var query, out var problem)) return problem!;
         return await ExecuteAsync(async () =>
         {
+            // The facet lists are five DISTINCT scans over the log table and change slowly, while the console
+            // asks for them whenever a filter changes. A short cache keeps filter changes instant.
+            var cacheKey = $"log-facets|{level}|{source}|{service}|{component}|{eventName}|{outcome}";
+            if (_cache != null && _cache.TryGetValue(cacheKey, out LogFacetsDto? cached) && cached != null) return Ok(cached);
             var facets = await _repository.GetFacetsAsync(query, cancellationToken);
-            return Ok(new LogFacetsDto { Services = facets.Services.ToList(), Components = facets.Components.ToList(), Events = facets.Events.ToList(), Outcomes = facets.Outcomes.ToList(), CardTypes = facets.CardTypes.ToList() });
+            var dto = new LogFacetsDto { Services = facets.Services.ToList(), Components = facets.Components.ToList(), Events = facets.Events.ToList(), Outcomes = facets.Outcomes.ToList(), CardTypes = facets.CardTypes.ToList() };
+            _cache?.Set(cacheKey, dto, TimeSpan.FromSeconds(15));
+            return Ok(dto);
         });
     }
 
