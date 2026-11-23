@@ -1,17 +1,15 @@
 using System;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
+using SimpleIPaaS.Infrastructure.Security;
 
 namespace SimpleIPaaS.Infrastructure.Persistence;
 
-public class IPaaSContext : DbContext
+public class IPaaSContext : IdentityUserContext<AppUser, Guid>
 {
-    private readonly ITenantContext _tenantContext;
-
-    public IPaaSContext(DbContextOptions<IPaaSContext> options, ITenantContext tenantContext) : base(options)
+    public IPaaSContext(DbContextOptions<IPaaSContext> options) : base(options)
     {
-        _tenantContext = tenantContext;
     }
 
     public DbSet<IntegrationFlow> IntegrationFlows { get; set; } = null!;
@@ -29,48 +27,125 @@ public class IPaaSContext : DbContext
     public DbSet<StepPacketLog> StepPacketLogs { get; set; } = null!;
     public DbSet<DeadLetterEntry> DeadLetterEntries { get; set; } = null!;
     public DbSet<ApiKey> ApiKeys { get; set; } = null!;
+    public DbSet<AiProviderSettings> AiProviderSettings { get; set; } = null!;
+    public DbSet<AlertSettings> AlertSettings { get; set; } = null!;
+    public DbSet<AiBuildJob> AiBuildJobs { get; set; } = null!;
+    public DbSet<AiChatSession> AiChatSessions { get; set; } = null!;
+    public DbSet<AiChatMessage> AiChatMessages { get; set; } = null!;
+    // Host-wide build budgets.
+    public DbSet<AiBuildSettings> AiBuildSettings { get; set; } = null!;
     public DbSet<CrossReferenceList> CrossReferenceLists { get; set; } = null!;
     public DbSet<CrossReferenceEntry> CrossReferenceEntries { get; set; } = null!;
 
-    // Host-wide application log. Intentionally NOT tenant-filtered: entries come from
-    // background workers that log outside any tenant scope (startup, cron scans, claim
-    // loops) and the Debug Logs console has to show them all.
+    public DbSet<RefreshToken> RefreshTokens { get; set; } = null!;
+    public DbSet<AuthAuditEntry> AuthAuditEntries { get; set; } = null!;
+
+    // Host-wide storage configuration: which backend serves each growing dataset, and for how long.
+    // The API and the Engine must agree on where a dataset lives, and an Elasticsearch index is
+    // a host-level object.
+    public DbSet<StorageSettings> StorageSettings { get; set; } = null!;
+
+    // Host-wide application log: entries come from background workers that log outside any
+    // request scope (startup, cron scans, claim loops), and the Debug Logs console has to show
+    // them all.
     public DbSet<AppLogEntry> AppLogEntries { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        
-        // Global Query Filters for TenantId
+
+        modelBuilder.Entity<AppUser>(entity =>
+        {
+            entity.Property(user => user.FullName).HasMaxLength(200);
+            entity.Property(user => user.Role).HasMaxLength(32);
+            entity.HasIndex(user => user.Role);
+        });
+
+        modelBuilder.Entity<RefreshToken>(entity =>
+        {
+            entity.HasKey(token => token.Id);
+            entity.Property(token => token.TokenHash).HasMaxLength(64);
+            entity.Property(token => token.ReplacedByTokenHash).HasMaxLength(64);
+            entity.Property(token => token.CreatedByIp).HasMaxLength(64);
+            entity.Property(token => token.UserAgent).HasMaxLength(400);
+            entity.HasIndex(token => token.TokenHash).IsUnique();
+            entity.HasIndex(token => token.UserId);
+            entity.HasOne<AppUser>()
+                .WithMany()
+                .HasForeignKey(token => token.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AuthAuditEntry>(entity =>
+        {
+            entity.HasKey(entry => entry.Id);
+            entity.Property(entry => entry.Email).HasMaxLength(320);
+            entity.Property(entry => entry.EventType).HasMaxLength(64);
+            entity.Property(entry => entry.IpAddress).HasMaxLength(64);
+            entity.Property(entry => entry.UserAgent).HasMaxLength(400);
+            entity.Property(entry => entry.Details).HasMaxLength(1000);
+            entity.HasIndex(entry => entry.TimestampUtc);
+            entity.HasIndex(entry => entry.Email);
+        });
+
         modelBuilder.Entity<HostHeartbeat>()
             .HasIndex(e => new { e.ServiceName, e.InstanceId })
             .IsUnique();
 
         modelBuilder.Entity<FlowVersion>()
-            .HasIndex(e => new { e.TenantId, e.FlowId, e.VersionNumber })
+            .HasIndex(e => new { e.FlowId, e.VersionNumber })
             .IsUnique();
 
+        modelBuilder.Entity<AiProviderSettings>()
+            .Property(e => e.Name)
+            .HasMaxLength(120);
+        modelBuilder.Entity<AiProviderSettings>()
+            .HasIndex(e => e.Name)
+            .IsUnique();
 
-        modelBuilder.Entity<FlowVersion>()
-            .HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
+        // Host-wide, one row (Id = 1): one deployment belongs to one customer.
+        modelBuilder.Entity<AlertSettings>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.Recipients).HasMaxLength(1000);
+        });
 
-        modelBuilder.Entity<IntegrationFlow>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<IntegrationStep>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<IntegrationEdge>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<Integration>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<Connection>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<FlowExecution>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<StepExecution>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<DeadLetterEntry>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<CrossReferenceList>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
-        modelBuilder.Entity<CrossReferenceEntry>().HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
+        modelBuilder.Entity<AiBuildJob>().HasIndex(e => e.CreatedAt);
+        modelBuilder.Entity<AiBuildJob>().HasIndex(e => new { e.Status, e.CreatedAt });
+
+        // Single row: infrastructure configuration shared by both hosts.
+        modelBuilder.Entity<StorageSettings>()
+            .HasKey(e => e.Id);
+        modelBuilder.Entity<StorageSettings>()
+            .Property(e => e.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<StorageSettings>()
+            .Property(e => e.ElasticsearchUrl)
+            .HasMaxLength(500);
+        modelBuilder.Entity<StorageSettings>()
+            .Property(e => e.IndexPrefix)
+            .HasMaxLength(60);
+
+        modelBuilder.Entity<AiBuildSettings>()
+            .HasKey(e => e.Id);
+        modelBuilder.Entity<AiBuildSettings>()
+            .Property(e => e.Id)
+            .ValueGeneratedNever();
+
+        modelBuilder.Entity<AiChatSession>().HasIndex(e => e.UpdatedAt);
+        modelBuilder.Entity<AiChatMessage>().HasIndex(e => new { e.SessionId, e.CreatedAt });
+        modelBuilder.Entity<AiChatMessage>().HasIndex(e => new { e.Status, e.CreatedAt });
+
+        // Archived nodes stay out of editable/runtime graphs.
+        modelBuilder.Entity<IntegrationStep>().HasQueryFilter(e => !e.IsArchived);
 
         modelBuilder.Entity<CrossReferenceList>()
-            .HasIndex(e => new { e.TenantId, e.Name })
+            .HasIndex(e => e.Name)
             .IsUnique();
 
         modelBuilder.Entity<CrossReferenceEntry>()
-            .HasIndex(e => new { e.TenantId, e.ListName, e.KeyValue })
+            .HasIndex(e => new { e.ListName, e.KeyValue })
             .IsUnique();
 
         modelBuilder.Entity<AppLogEntry>(entity =>
@@ -128,9 +203,6 @@ public class IPaaSContext : DbContext
             .WithMany()
             .HasForeignKey(e => e.StepExecutionId)
             .OnDelete(DeleteBehavior.Cascade);
-
-        modelBuilder.Entity<StepPacketLog>()
-            .HasQueryFilter(e => e.TenantId == _tenantContext.TenantId);
 
         modelBuilder.Entity<DeadLetterEntry>()
             .HasOne<FlowExecution>()

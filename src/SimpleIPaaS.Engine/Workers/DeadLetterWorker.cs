@@ -10,7 +10,6 @@ using Microsoft.Extensions.Logging;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Engine.Workers;
 
@@ -69,7 +68,12 @@ public class DeadLetterWorker : BackgroundService
         {
             var executionRepository = scanScope.ServiceProvider.GetRequiredService<IExecutionRepository>();
             var deadLetterService = scanScope.ServiceProvider.GetRequiredService<DeadLetterService>();
-            var candidates = await executionRepository.GetReplayableDeadLettersAcrossTenantsAsync(100);
+
+            // Heal entries left in Retrying with no marker (crashed replays) so they
+            // are picked up again instead of silently wedging forever.
+            await executionRepository.ResetStaleRetryingDeadLettersAsync(TimeSpan.FromMinutes(30));
+
+            var candidates = await executionRepository.GetReplayableDeadLettersAsync(100);
 
             work = new List<(DeadLetterEntry, bool)>();
 
@@ -77,20 +81,24 @@ public class DeadLetterWorker : BackgroundService
             {
                 if (candidate.ReplayRequestedAt != null)
                 {
-                    // Manual replay request made through the API: clear the marker first,
-                    // then execute with force semantics (bypasses auto-retry limits).
-                    var tracked = await executionRepository.GetDeadLetterAsync(candidate.Id);
-                    if (tracked == null || tracked.ReplayRequestedAt == null)
+                    // Manual replay request made through the API. The atomic claim
+                    // clears the marker — exactly one engine wins.
+                    if (!await executionRepository.TryClaimDeadLetterForManualReplayAsync(candidate.Id))
                     {
                         continue; // another engine instance already claimed it
                     }
 
-                    tracked.ReplayRequestedAt = null;
-                    await executionRepository.UpdateDeadLetterEntryAsync(tracked);
-                    work.Add((tracked, true));
+                    candidate.ReplayRequestedAt = null;
+                    work.Add((candidate, true));
                 }
                 else if (deadLetterService.CanAutoRetry(candidate))
                 {
+                    if (!await executionRepository.TryClaimDeadLetterForAutoRetryAsync(candidate.Id))
+                    {
+                        continue;
+                    }
+
+                    candidate.Status = "Retrying";
                     work.Add((candidate, false));
                 }
             }
@@ -110,7 +118,6 @@ public class DeadLetterWorker : BackgroundService
             using var correlationScope = _logger.BeginScope(new Dictionary<string, object>
             {
                 ["FlowExecutionId"] = entry.FlowExecutionId,
-                ["TenantId"] = entry.TenantId,
                 ["NodeName"] = entry.NodeName ?? string.Empty
             });
 
@@ -122,11 +129,8 @@ public class DeadLetterWorker : BackgroundService
             try
             {
                 using var scope = _serviceProvider.CreateScope();
-                var tenantContext = scope.ServiceProvider.GetRequiredService<ITenantContext>();
-                tenantContext.SetTenantId(entry.TenantId);
-
                 var deadLetterService = scope.ServiceProvider.GetRequiredService<DeadLetterService>();
-                await deadLetterService.ReplayEntryAsync(entry.Id, force, stoppingToken);
+                await deadLetterService.ReplayEntryAsync(entry.Id, force, entry.ReplayFromStepId, stoppingToken);
 
                 _logger.LogInformation(
                     "Dead letter {DeadLetterId} replay finished in {DurationMs}ms",

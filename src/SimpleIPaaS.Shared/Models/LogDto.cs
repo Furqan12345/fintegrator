@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace SimpleIPaaS.Shared.Models;
@@ -26,7 +26,6 @@ public class AppLogEntryDto
     public string? ParentSpanId { get; set; }
     public string Message { get; set; } = string.Empty;
     public string? Exception { get; set; }
-    public Guid? TenantId { get; set; }
     public Guid? FlowExecutionId { get; set; }
     public Guid? FlowId { get; set; }
     public string? FlowName { get; set; }

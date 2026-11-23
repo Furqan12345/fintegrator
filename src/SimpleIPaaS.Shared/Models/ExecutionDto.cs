@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace SimpleIPaaS.Shared.Models;
@@ -7,7 +7,6 @@ public class FlowExecutionDto
 {
     public Guid Id { get; set; }
     public Guid FlowId { get; set; }
-    public Guid TenantId { get; set; }
     public string FlowName { get; set; } = string.Empty;
     public Guid? IntegrationId { get; set; }
     public string IntegrationName { get; set; } = string.Empty;
@@ -20,9 +19,17 @@ public class FlowExecutionDto
     public bool IsTest { get; set; }
     public Guid? TestCaseId { get; set; }
     public Guid? TestRunId { get; set; }
+    public Guid? ParentExecutionId { get; set; }
+    public Guid? FanOutNodeId { get; set; }
+    public string FanOutNodeName { get; set; } = string.Empty;
+    public int? FanOutItemIndex { get; set; }
+    public int? FanOutItemCount { get; set; }
+    public string? FanOutItemJson { get; set; }
     public int TotalRecords { get; set; }
     public int SuccessRecords { get; set; }
     public int FailedRecords { get; set; }
+    public string? Identifier { get; set; }
+    public string? Message { get; set; }
 }
 
 public class StepExecutionDto

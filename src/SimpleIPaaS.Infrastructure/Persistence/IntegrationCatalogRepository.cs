@@ -5,19 +5,16 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Infrastructure.Persistence;
 
 public class IntegrationCatalogRepository : IIntegrationCatalogRepository
 {
     private readonly IPaaSContext _context;
-    private readonly ITenantContext _tenantContext;
 
-    public IntegrationCatalogRepository(IPaaSContext context, ITenantContext tenantContext)
+    public IntegrationCatalogRepository(IPaaSContext context)
     {
         _context = context;
-        _tenantContext = tenantContext;
     }
 
     public async Task<Integration?> GetByIdAsync(Guid id)
@@ -43,7 +40,6 @@ public class IntegrationCatalogRepository : IIntegrationCatalogRepository
 
     public async Task AddAsync(Integration integration)
     {
-        integration.TenantId = _tenantContext.TenantId;
         _context.Integrations.Add(integration);
         await _context.SaveChangesAsync();
     }

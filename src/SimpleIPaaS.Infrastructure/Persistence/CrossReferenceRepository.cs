@@ -5,22 +5,26 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
+using SimpleIPaaS.Infrastructure.Storage;
 
 namespace SimpleIPaaS.Infrastructure.Persistence;
 
 public class CrossReferenceRepository : ICrossReferenceRepository
 {
-    private const int KeyLookupBatchSize = 400;
-
     private readonly IPaaSContext _context;
-    private readonly ITenantContext _tenantContext;
+    private readonly Func<ICrossReferenceEntryStore> _entryStoreSelector;
 
-    public CrossReferenceRepository(IPaaSContext context, ITenantContext tenantContext)
+    public CrossReferenceRepository(IPaaSContext context, Func<ICrossReferenceEntryStore>? entryStoreSelector = null)
     {
         _context = context;
-        _tenantContext = tenantContext;
+
+        // Lists stay in the relational database (few rows, read constantly by the designer); the
+        // entries are the growing part and can be served by Elasticsearch. Asked per call so a
+        // backend change applies immediately.
+        _entryStoreSelector = entryStoreSelector ?? (() => new SqlCrossReferenceEntryStore(context));
     }
+
+    private ICrossReferenceEntryStore EntryStore => _entryStoreSelector();
 
     public async Task<IReadOnlyList<CrossReferenceListSummary>> GetListsAsync()
     {
@@ -29,16 +33,12 @@ public class CrossReferenceRepository : ICrossReferenceRepository
             .OrderBy(l => l.Name)
             .ToListAsync();
 
-        var counts = await _context.CrossReferenceEntries
-            .AsNoTracking()
-            .GroupBy(e => e.ListName)
-            .Select(g => new { ListName = g.Key, Count = g.Count() })
-            .ToListAsync();
-
-        var countByName = counts.ToDictionary(c => c.ListName, c => c.Count, StringComparer.OrdinalIgnoreCase);
+        var counts = await EntryStore.CountByListAsync();
 
         return lists
-            .Select(list => new CrossReferenceListSummary(list, countByName.TryGetValue(list.Name, out var count) ? count : 0))
+            .Select(list => new CrossReferenceListSummary(
+                list,
+                counts.TryGetValue(list.Name, out var count) ? (int)Math.Min(count, int.MaxValue) : 0))
             .ToList();
     }
 
@@ -63,7 +63,6 @@ public class CrossReferenceRepository : ICrossReferenceRepository
 
         var list = new CrossReferenceList
         {
-            TenantId = _tenantContext.TenantId,
             Name = name,
             Description = description ?? string.Empty
         };
@@ -106,141 +105,26 @@ public class CrossReferenceRepository : ICrossReferenceRepository
 
     public async Task<int> ClearListAsync(string name)
     {
-        return await _context.CrossReferenceEntries
-            .Where(e => e.ListName == name)
-            .ExecuteDeleteAsync();
+        return await EntryStore.ClearListAsync(name);
     }
 
     public async Task<IReadOnlyCollection<string>> GetExistingKeysAsync(string listName, IReadOnlyCollection<string> keys)
     {
-        var found = new HashSet<string>(StringComparer.Ordinal);
-        if (keys.Count == 0)
-        {
-            return found;
-        }
-
-        foreach (var batch in keys.Distinct(StringComparer.Ordinal).Chunk(KeyLookupBatchSize))
-        {
-            var matches = await _context.CrossReferenceEntries
-                .AsNoTracking()
-                .Where(e => e.ListName == listName && batch.Contains(e.KeyValue))
-                .Select(e => e.KeyValue)
-                .ToListAsync();
-
-            foreach (var match in matches)
-            {
-                found.Add(match);
-            }
-        }
-
-        return found;
+        return await EntryStore.GetExistingKeysAsync(listName, keys);
     }
 
     public async Task<int> UpsertEntriesAsync(string listName, IReadOnlyCollection<CrossReferenceEntry> entries)
     {
-        if (entries.Count == 0)
-        {
-            return 0;
-        }
-
-        var existing = await GetExistingKeysAsync(listName, entries.Select(e => e.KeyValue).ToList());
-
-        var additions = entries
-            .Where(entry => !existing.Contains(entry.KeyValue))
-            .GroupBy(entry => entry.KeyValue, StringComparer.Ordinal)
-            .Select(group => group.First())
-            .ToList();
-
-        if (additions.Count == 0)
-        {
-            return 0;
-        }
-
-        foreach (var entry in additions)
-        {
-            entry.ListName = listName;
-            if (entry.TenantId == Guid.Empty)
-            {
-                entry.TenantId = _tenantContext.TenantId;
-            }
-        }
-
-        _context.CrossReferenceEntries.AddRange(additions);
-
-        try
-        {
-            await _context.SaveChangesAsync();
-            return additions.Count;
-        }
-        catch (DbUpdateException)
-        {
-            foreach (var entry in additions)
-            {
-                _context.Entry(entry).State = EntityState.Detached;
-            }
-
-            return await InsertOneByOneAsync(additions);
-        }
+        return await EntryStore.UpsertEntriesAsync(listName, entries);
     }
 
     public async Task<CrossReferenceEntryPage> GetEntriesAsync(string listName, string? search, int page, int pageSize)
     {
-        page = page < 1 ? 1 : page;
-        pageSize = pageSize < 1 ? 50 : Math.Min(pageSize, 200);
-
-        var query = _context.CrossReferenceEntries
-            .AsNoTracking()
-            .Where(e => e.ListName == listName);
-
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var term = search.Trim();
-            query = query.Where(e => EF.Functions.Like(e.KeyValue, $"%{term}%") || EF.Functions.Like(e.ValueJson, $"%{term}%"));
-        }
-
-        var total = await query.CountAsync();
-
-        var entries = await query
-            .OrderByDescending(e => e.CreatedAt)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .ToListAsync();
-
-        return new CrossReferenceEntryPage(entries, total);
+        return await EntryStore.GetEntriesAsync(listName, search, page, pageSize);
     }
 
     public async Task<bool> DeleteEntryAsync(Guid id)
     {
-        var entry = await _context.CrossReferenceEntries.FirstOrDefaultAsync(e => e.Id == id);
-        if (entry == null)
-        {
-            return false;
-        }
-
-        _context.CrossReferenceEntries.Remove(entry);
-        await _context.SaveChangesAsync();
-        return true;
-    }
-
-    private async Task<int> InsertOneByOneAsync(IEnumerable<CrossReferenceEntry> entries)
-    {
-        var inserted = 0;
-
-        foreach (var entry in entries)
-        {
-            _context.CrossReferenceEntries.Add(entry);
-
-            try
-            {
-                await _context.SaveChangesAsync();
-                inserted++;
-            }
-            catch (DbUpdateException)
-            {
-                _context.Entry(entry).State = EntityState.Detached;
-            }
-        }
-
-        return inserted;
+        return await EntryStore.DeleteEntryAsync(id);
     }
 }

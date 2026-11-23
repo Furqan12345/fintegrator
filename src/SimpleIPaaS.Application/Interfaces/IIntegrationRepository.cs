@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 
 namespace SimpleIPaaS.Application.Interfaces;
@@ -20,10 +21,11 @@ public interface IIntegrationRepository
     Task<string> GetPersistedStateAsync(Guid flowId);
     Task<bool> UpdateWebhookSecretAsync(Guid flowId, string webhookSecret);
     Task<IntegrationFlow?> GetFlowForTriggerAsync(Guid id);
-    Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAcrossTenantsAsync();
+    Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAsync();
+    Task<IntegrationFlow?> SetScheduleStatusAsync(Guid flowId, FlowStatus status);
 }
 
 public interface ICronScheduleRepository
 {
-    Task UpdateNextRunAtAsync(Guid flowId, Guid tenantId, DateTime? nextRunAt);
+    Task UpdateNextRunAtAsync(Guid flowId, DateTime? nextRunAt);
 }

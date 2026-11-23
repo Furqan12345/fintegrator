@@ -25,7 +25,7 @@ public class FlowRunService
         _logger = logger;
     }
 
-    public async Task<Guid> EnqueueAsync(Guid flowId, Guid tenantId, string triggerSource, string? triggerPayload, CancellationToken cancellationToken = default, bool isTest = false, Guid? testCaseId = null, Guid? testRunId = null, string? testDefinitionJson = null)
+    public async Task<Guid> EnqueueAsync(Guid flowId, string triggerSource, string? triggerPayload, CancellationToken cancellationToken = default, bool isTest = false, Guid? testCaseId = null, Guid? testRunId = null, string? testDefinitionJson = null)
     {
         using var activity = new Activity("flow.enqueue");
         activity.SetIdFormat(ActivityIdFormat.W3C);
@@ -45,7 +45,6 @@ public class FlowRunService
         {
             Id = Guid.NewGuid(),
             FlowId = flowId,
-            TenantId = tenantId,
             FlowName = flow?.Name ?? string.Empty,
             IntegrationId = flow?.IntegrationId,
             IntegrationName = integrationName,
@@ -70,7 +69,6 @@ public class FlowRunService
             ["IntegrationId"] = execution.IntegrationId,
             ["IntegrationName"] = execution.IntegrationName,
             ["ExecutionId"] = execution.Id,
-            ["TenantId"] = tenantId,
             ["IsTest"] = isTest,
             ["TestCaseId"] = testCaseId,
             ["TestRunId"] = testRunId

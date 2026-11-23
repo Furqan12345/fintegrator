@@ -17,6 +17,7 @@ public sealed class FlowTestDefinition
     public List<FlowTestAssertion> Assertions { get; set; } = new();
     public List<FlowTestCardOverride> CardOverrides { get; set; } = new();
     public string ResponseExhaustionBehavior { get; set; } = "RepeatFinalResponse";
+    public string ExpectedRunResult { get; set; } = "Success";
 }
 
 public sealed class FlowTestCardOverride

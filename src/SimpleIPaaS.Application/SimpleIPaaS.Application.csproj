@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SimpleIPaaS.Domain\SimpleIPaaS.Domain.csproj" />
+    <ProjectReference Include="..\SimpleIPaaS.Shared\SimpleIPaaS.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>

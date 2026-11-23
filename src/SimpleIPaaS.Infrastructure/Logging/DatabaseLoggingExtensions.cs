@@ -2,7 +2,10 @@ using System;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Infrastructure.Elasticsearch;
 using SimpleIPaaS.Infrastructure.Persistence;
+using SimpleIPaaS.Infrastructure.Storage;
 
 namespace SimpleIPaaS.Infrastructure.Logging;
 
@@ -39,10 +42,31 @@ public static class DatabaseLoggingExtensions
 
         var connectionString = DefaultDatabasePath.Resolve(configuration.GetConnectionString("DefaultConnection"));
 
+        // Where the relational writer's retention windows come from: the storage settings page, so
+        // "keep logs for N days" has a single answer whether the logs live in the database or in
+        // Elasticsearch.
+        builder.Services.AddSingleton<ILogRetentionPolicy>(provider =>
+            new SettingsLogRetentionPolicy(provider.GetRequiredService<IStorageSettingsProvider>()));
+
+        // The sink stack: one writer per backend, each with its own queue and counters, and a
+        // router that sends each entry to whichever backend the logs dataset is configured for.
+        //
+        // Nothing here resolves the storage settings (or anything that logs) at construction time:
+        // the logging pipeline is built first, so touching that graph from here would be a cycle.
+        // Each writer resolves what it needs lazily, on first use.
+        builder.Services.AddSingleton<IAppLogWriter>(provider =>
+        {
+            var runtime = provider.GetRequiredService<StorageRuntime>();
+            var relational = new SqlAppLogWriter(new DatabaseLogWriter(options, connectionString, provider));
+            var elasticsearch = new ElasticsearchLogWriter(runtime, options);
+
+            return new RoutingLogWriter(relational, elasticsearch, runtime);
+        });
+
         // Registered through a factory so the DI container owns the instance and disposes it
         // on shutdown — Dispose performs the final synchronous flush of any queued entries.
-        builder.Services.AddSingleton<ILoggerProvider>(_ =>
-            new DatabaseLoggerProvider(options, source, connectionString));
+        builder.Services.AddSingleton<ILoggerProvider>(provider =>
+            new DatabaseLoggerProvider(options, source, provider.GetRequiredService<IAppLogWriter>()));
 
         return builder;
     }

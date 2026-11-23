@@ -1,24 +1,30 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json.Linq;
+using SimpleIPaaS.Api;
 using SimpleIPaaS.Api.HealthChecks;
 using SimpleIPaaS.Api.Mappings;
 using SimpleIPaaS.Api.Observability;
+using SimpleIPaaS.Api.Security;
+using SimpleIPaaS.Api.Services;
 using SimpleIPaaS.Api.Middleware;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.Logging;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 using SimpleIPaaS.Infrastructure.Persistence;
+using SimpleIPaaS.Infrastructure.Storage;
 using SimpleIPaaS.Infrastructure.Services;
 using SimpleIPaaS.Infrastructure.Services.Auth;
 using SimpleIPaaS.Infrastructure.Services.Security;
@@ -29,13 +35,22 @@ var builder = WebApplication.CreateBuilder(args);
 // Mirror API log lines into the shared database alongside the Engine's, so the Debug Logs
 // console shows both tiers. Batched and non-blocking; EF Core's own SQL logging is
 // excluded by the provider to prevent a write/read feedback loop.
-builder.Logging.AddDatabaseLogging(builder.Configuration, "Api");
+if (!string.Equals(builder.Configuration["Database:Provider"], "SqlServer", StringComparison.OrdinalIgnoreCase))
+    builder.Logging.AddDatabaseLogging(builder.Configuration, "Api");
+
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 2_000_000);
 
 // Add services to the container.
-builder.Services.AddControllers();
+builder.Services.AddControllers(options => options.Filters.Add<ViewerReadOnlyFilter>());
 builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// Platform service graph (persistence, repositories, transport, AI workers, health checks).
+// Kept in ApiServiceRegistration so the registration guard test builds the same container the
+// running host uses.
+builder.Services.AddApiPlatformServices(builder.Configuration);
+builder.Services.AddAppAuthentication(builder.Configuration, builder.Environment);
 
 // Configure CORS allow-list for the Blazor WASM client
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
@@ -52,48 +67,8 @@ builder.Services.AddCors(options =>
         });
 });
 
-// Configure EF Core SQLite — both this API and SimpleIPaaS.Engine must land on the
-// SAME database file; DefaultDatabasePath prevents per-project split databases.
-builder.Services.AddDbContext<IPaaSContext>(options =>
-    options.UseSqlite(DefaultDatabasePath.Resolve(builder.Configuration.GetConnectionString("DefaultConnection"))));
-
-
-// Multi-tenancy
-builder.Services.AddScoped<ITenantContext, TenantContext>();
-
-// Dependency Injection
-builder.Services.AddHttpClient();
-builder.Services.AddScoped<IIntegrationRepository, IntegrationRepository>();
-builder.Services.AddScoped<ICronScheduleRepository, IntegrationRepository>();
-builder.Services.AddScoped<IIntegrationCatalogRepository, IntegrationCatalogRepository>();
-builder.Services.AddScoped<IConnectionRepository, ConnectionRepository>();
-builder.Services.AddScoped<IExecutionRepository, ExecutionRepository>();
-builder.Services.AddScoped<ICrossReferenceRepository, CrossReferenceRepository>();
-builder.Services.AddScoped<IFlowTestRepository, FlowTestRepository>();
-builder.Services.AddScoped<ILogRepository, LogRepository>();
-
-builder.Services.AddScoped<ITransportEngine, TransportEngine>();
-builder.Services.AddScoped<IAuthenticationHandlerFactory, AuthenticationHandlerFactory>();
-builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
-builder.Services.AddScoped<ICodeExecutionService, CodeExecutionService>();
-builder.Services.AddScoped<IAdvancedCodeExecutionService, AdvancedCodeExecutionService>();
-
-// FlowRunService only *persists runs*: it writes a Queued FlowExecution row that the
-// standalone SimpleIPaaS.Engine claims from the shared database. The API process hosts
-// no executor, no scheduler and no dead-letter worker anymore.
-builder.Services.AddScoped<FlowRunService>();
-
-
-// Health checks
-builder.Services.Configure<OperationsOptions>(builder.Configuration.GetSection("Operations"));
-
-builder.Services.AddSingleton<OperationalMetrics>();
-
-builder.Services.AddHealthChecks()
-    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "self", "ready" })
-    .AddCheck<EngineHealthCheck>("engine", tags: new[] { "ready" });
-
 var app = builder.Build();
+
 
 app.UseExceptionHandler(errorApp =>
 {
@@ -102,11 +77,13 @@ app.UseExceptionHandler(errorApp =>
         var feature = context.Features.Get<IExceptionHandlerFeature>();
         if (feature?.Error != null)
         {
-            app.Logger.LogError(
-                feature.Error,
-                "Unhandled exception processing {Method} {Path}",
-                context.Request.Method,
-                feature.Path ?? context.Request.Path.Value);
+            // Log through the request's logger factory under an explicit category so the entry is
+            // never filtered out and reaches the same sink as the rest of the request's logs
+            // (database or Elasticsearch). The message carries the trace id in text form so
+            // /api/logs?search=<traceId> finds it.
+            var loggerFactory = context.RequestServices.GetService<ILoggerFactory>();
+            var logger = loggerFactory?.CreateLogger(UnhandledExceptionLogger.CategoryName) ?? app.Logger;
+            UnhandledExceptionLogger.Log(logger, context, feature.Error);
         }
 
         if (context.Response.HasStarted)
@@ -138,60 +115,72 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// The API is only reachable through Caddy/App Service; trust the proxy headers for scheme/IP.
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    KnownIPNetworks = { },
+    KnownProxies = { }
+});
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.TryAdd("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.TryAdd("X-Frame-Options", "DENY");
+    context.Response.Headers.TryAdd("Referrer-Policy", "no-referrer");
+    context.Response.Headers.TryAdd("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    await next();
+});
+
+app.UseDefaultFiles();
+var staticContentTypes = new FileExtensionContentTypeProvider();
+staticContentTypes.Mappings[".dat"] = "application/octet-stream";
+app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = staticContentTypes });
 app.UseMiddleware<OperationalMetricsMiddleware>();
 
+app.UseRouting();
 app.UseCors("Default");
-
-// API-key authentication + tenant resolution
-app.UseMiddleware<ApiKeyAuthenticationMiddleware>();
-
+app.UseAuthentication();
+app.UseMiddleware<AuthContextMiddleware>();
+app.UseRateLimiter();
+app.UseMiddleware<MetricsAuthMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();
+if (app.Configuration.GetValue<bool>("Gateway:Enabled"))
+    app.MapFallbackToFile("index.html").AllowAnonymous();
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
     Predicate = _ => false
-});
+}).AllowAnonymous();
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("ready")
-});
+}).AllowAnonymous();
 app.MapHealthChecks("/health", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("self")
-});
+}).AllowAnonymous();
 
 // Ensure the SQLite database exists without wiping persisted local data.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<IPaaSContext>();
-    DatabaseSchemaInitializer.EnsureUpToDate(db);
+    DatabaseSchemaInitializer.EnsureUpToDate(db, app.Logger);
 
     // Fail fast if the encryption key is missing/invalid outside Development.
     _ = scope.ServiceProvider.GetRequiredService<IEncryptionService>();
 
     if (app.Environment.IsDevelopment())
     {
-        const string devApiKey = "dev-api-key";
-        var devKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(devApiKey)));
-        if (!await db.ApiKeys.AnyAsync(k => k.KeyHash == devKeyHash))
-        {
-            db.ApiKeys.Add(new ApiKey
-            {
-                Id = Guid.NewGuid(),
-                TenantId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-                Name = "Development",
-                KeyHash = devKeyHash,
-                CreatedAt = DateTime.UtcNow
-            });
-            await db.SaveChangesAsync();
-        }
-
-        app.Logger.LogInformation("Development API key provisioned. Send it via the X-Api-Key header: {ApiKey}", devApiKey);
-
         // Seed the shipped demo flow (SP-API N+1 fan-out + nested cross-reference filter)
-        // for the dev tenant so it is runnable from the Flow Designer immediately.
-        var devTenantId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        // so it is runnable from the Flow Designer immediately.
         // Destructive demo reseed is opt-in: it drops the sample flow and every execution,
         // step, packet log and dead-letter row belonging to it. Enable with
         // "Demo:ReseedOnStartup": true in appsettings.Development.json, or DEMO_RESEED=true.
@@ -203,17 +192,16 @@ using (var scope = app.Services.CreateScope())
             const string sampleFlowName = "Amazon SP-API Orders N+1 Sync + Nested Dedup";
 
             var existing = await db.IntegrationFlows
-
-                .IgnoreQueryFilters()
                 .Include(flow => flow.Nodes)
-                .FirstOrDefaultAsync(f => f.Name == sampleFlowName && f.TenantId == devTenantId);
+                .FirstOrDefaultAsync(f => f.Name == sampleFlowName);
 
             IntegrationFlow? demoFlow = existing;
 
             if (existing != null)
             {
+                // Archived nodes are included on purpose: a demo repair may need to see them.
                 existing.Nodes = await db.IntegrationSteps.IgnoreQueryFilters()
-                    .Where(node => node.FlowId == existing.Id && node.TenantId == devTenantId)
+                    .Where(node => node.FlowId == existing.Id)
                     .ToListAsync();
             }
 
@@ -232,8 +220,7 @@ using (var scope = app.Services.CreateScope())
             else if (existing != null)
             {
                 var executionIds = await db.FlowExecutions
-                    .IgnoreQueryFilters()
-                    .Where(execution => execution.FlowId == existing.Id && execution.TenantId == devTenantId)
+                    .Where(execution => execution.FlowId == existing.Id)
                     .Select(execution => execution.Id)
                     .ToListAsync();
 
@@ -242,7 +229,6 @@ using (var scope = app.Services.CreateScope())
                     // Packet logs hang off step executions, not flow executions, so they have to be
                     // resolved through the step ids or they survive the reseed as orphans.
                     var stepExecutionIds = await db.StepExecutions
-                        .IgnoreQueryFilters()
                         .Where(step => executionIds.Contains(step.FlowExecutionId))
                         .Select(step => step.Id)
                         .ToListAsync();
@@ -250,37 +236,32 @@ using (var scope = app.Services.CreateScope())
                     if (stepExecutionIds.Count > 0)
                     {
                         await db.StepPacketLogs
-                            .IgnoreQueryFilters()
                             .Where(packet => stepExecutionIds.Contains(packet.StepExecutionId))
                             .ExecuteDeleteAsync();
                     }
 
                     await db.DeadLetterEntries
-                        .IgnoreQueryFilters()
                         .Where(entry => executionIds.Contains(entry.FlowExecutionId))
                         .ExecuteDeleteAsync();
                     await db.StepExecutions
-                        .IgnoreQueryFilters()
                         .Where(step => executionIds.Contains(step.FlowExecutionId))
                         .ExecuteDeleteAsync();
                     await db.FlowExecutions
-                        .IgnoreQueryFilters()
                         .Where(execution => executionIds.Contains(execution.Id))
                         .ExecuteDeleteAsync();
                 }
 
                 var oldTestCaseIds = await db.FlowTestCases
-                    .IgnoreQueryFilters()
-                    .Where(test => test.FlowId == existing.Id && test.TenantId == devTenantId)
+                    .Where(test => test.FlowId == existing.Id)
                     .Select(test => test.Id)
                     .ToListAsync();
                 if (oldTestCaseIds.Count > 0)
                 {
-                    await db.FlowTestRuns.IgnoreQueryFilters()
-                        .Where(run => oldTestCaseIds.Contains(run.TestCaseId) && run.TenantId == devTenantId)
+                    await db.FlowTestRuns
+                        .Where(run => oldTestCaseIds.Contains(run.TestCaseId))
                         .ExecuteDeleteAsync();
-                    await db.FlowTestCases.IgnoreQueryFilters()
-                        .Where(test => oldTestCaseIds.Contains(test.Id) && test.TenantId == devTenantId)
+                    await db.FlowTestCases
+                        .Where(test => oldTestCaseIds.Contains(test.Id))
                         .ExecuteDeleteAsync();
                 }
 
@@ -299,28 +280,39 @@ using (var scope = app.Services.CreateScope())
                     ?? throw new InvalidOperationException("Sample flow failed to deserialize.");
 
                 var flow = sampleDto.ToEntity();
-                flow.TenantId = devTenantId;
-                foreach (var node in flow.Nodes)
+                // The shipped sample carries fixed GUIDs. If they are already present (for
+                // example in a database migrated from another environment) inserting it again
+                // would collide with existing rows, so leave the data untouched.
+                var sampleNodeIds = flow.Nodes.Select(node => node.Id).ToList();
+                // Include archived nodes too: a fixed sample GUID must not collide with one.
+                if (await db.IntegrationSteps.IgnoreQueryFilters().AnyAsync(node => sampleNodeIds.Contains(node.Id)))
                 {
-                    node.TenantId = devTenantId;
-                    node.FlowId = flow.Id;
+                    app.Logger.LogInformation(
+                        "Demo sample node ids already exist in this database; skipping demo seeding to avoid colliding with existing flows.");
+                    demoFlow = null;
                 }
-
-                foreach (var edge in flow.Edges)
+                else
                 {
-                    edge.TenantId = devTenantId;
-                    edge.FlowId = flow.Id;
-                }
+                    foreach (var node in flow.Nodes)
+                    {
+                        node.FlowId = flow.Id;
+                    }
 
-                db.IntegrationFlows.Add(flow);
-                demoFlow = flow;
-                await db.SaveChangesAsync();
-                app.Logger.LogInformation(
-                    "Seeded demo flow '{FlowName}' (id={FlowId}) for dev tenant {TenantId}",
-                    flow.Name, flow.Id, devTenantId);
+                    foreach (var edge in flow.Edges)
+                    {
+                        edge.FlowId = flow.Id;
+                    }
+
+                    db.IntegrationFlows.Add(flow);
+                    demoFlow = flow;
+                    await db.SaveChangesAsync();
+                    app.Logger.LogInformation(
+                        "Seeded demo flow '{FlowName}' (id={FlowId})",
+                        flow.Name, flow.Id);
+                }
             }
 
-            await SeedAmazonDemoTestAsync(db, demoFlow, devTenantId);
+            await SeedAmazonDemoTestAsync(db, demoFlow);
         }
         else
         {
@@ -365,13 +357,13 @@ static bool RepairAmazonDemoFlow(IntegrationFlow flow)
 
     return changed;
 }
-static async Task SeedAmazonDemoTestAsync(IPaaSContext db, IntegrationFlow? flow, Guid tenantId)
+static async Task SeedAmazonDemoTestAsync(IPaaSContext db, IntegrationFlow? flow)
 {
     if (flow == null) return;
 
     const string testName = "Amazon SP-API offline happy path";
-    var existingTest = await db.FlowTestCases.IgnoreQueryFilters().FirstOrDefaultAsync(test =>
-        test.FlowId == flow.Id && test.TenantId == tenantId && test.Name == testName);
+    var existingTest = await db.FlowTestCases.FirstOrDefaultAsync(test =>
+        test.FlowId == flow.Id && test.Name == testName);
     var fetchOrders = flow.Nodes.FirstOrDefault(node => node.NodeName == "FetchOrders");
     var fetchLineItems = flow.Nodes.FirstOrDefault(node => node.NodeName == "FetchLineItems");
     var filterNode = flow.Nodes.FirstOrDefault(node => node.NodeName == "FilterNewOrders")
@@ -458,7 +450,6 @@ static async Task SeedAmazonDemoTestAsync(IPaaSContext db, IntegrationFlow? flow
     {
         Id = Guid.NewGuid(),
         FlowId = flow.Id,
-        TenantId = tenantId,
         Name = testName,
         Description = "Runs the Amazon SP-API demo entirely offline with mocked orders, line items, and a seeded processed-order key.",
         Enabled = true,
@@ -486,3 +477,5 @@ static string? ResolveSamplePath()
 }
 
 app.Run();
+
+public partial class Program { }

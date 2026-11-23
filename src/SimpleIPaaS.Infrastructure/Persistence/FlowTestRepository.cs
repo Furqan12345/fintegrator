@@ -5,19 +5,16 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Infrastructure.Persistence;
 
 public sealed class FlowTestRepository : IFlowTestRepository
 {
     private readonly IPaaSContext _context;
-    private readonly ITenantContext _tenantContext;
 
-    public FlowTestRepository(IPaaSContext context, ITenantContext tenantContext)
+    public FlowTestRepository(IPaaSContext context)
     {
         _context = context;
-        _tenantContext = tenantContext;
     }
 
     public async Task<IReadOnlyList<FlowTestCase>> GetByFlowIdAsync(Guid flowId) =>
@@ -27,7 +24,6 @@ public sealed class FlowTestRepository : IFlowTestRepository
 
     public async Task AddAsync(FlowTestCase testCase)
     {
-        if (testCase.TenantId == Guid.Empty) testCase.TenantId = _tenantContext.TenantId;
         _context.FlowTestCases.Add(testCase);
         await _context.SaveChangesAsync();
     }
@@ -50,6 +46,10 @@ public sealed class FlowTestRepository : IFlowTestRepository
     {
         var test = await _context.FlowTestCases.FirstOrDefaultAsync(candidate => candidate.Id == id);
         if (test == null) return false;
+
+        var runs = await _context.FlowTestRuns.Where(run => run.TestCaseId == id).ToListAsync();
+        await DeleteRunArtifactsAsync(runs);
+        _context.FlowTestRuns.RemoveRange(runs);
         _context.FlowTestCases.Remove(test);
         await _context.SaveChangesAsync();
         return true;
@@ -57,7 +57,6 @@ public sealed class FlowTestRepository : IFlowTestRepository
 
     public async Task AddRunAsync(FlowTestRun run)
     {
-        if (run.TenantId == Guid.Empty) run.TenantId = _tenantContext.TenantId;
         _context.FlowTestRuns.Add(run);
         await _context.SaveChangesAsync();
     }
@@ -66,14 +65,67 @@ public sealed class FlowTestRepository : IFlowTestRepository
 
     public async Task<IReadOnlyList<FlowTestRun>> GetRunsAsync(Guid testCaseId) =>
         await _context.FlowTestRuns.AsNoTracking().Where(run => run.TestCaseId == testCaseId)
-            .OrderByDescending(run => run.StartedAt).Take(50).ToListAsync();
+            .OrderByDescending(run => run.StartedAt).Take(20).ToListAsync();
+
+    public async Task<IReadOnlyList<FlowTestRun>> GetRunsBySuiteAsync(Guid suiteRunId) =>
+        await _context.FlowTestRuns.AsNoTracking().Where(run => run.SuiteRunId == suiteRunId)
+            .OrderBy(run => run.StartedAt).ToListAsync();
 
     public Task<FlowTestRun?> GetLatestRunAsync(Guid testCaseId) =>
         _context.FlowTestRuns.Where(run => run.TestCaseId == testCaseId).OrderByDescending(run => run.StartedAt).FirstOrDefaultAsync();
+
+    public async Task<IReadOnlyList<FlowTestRun>> GetInterruptedRunsAsync() =>
+        await _context.FlowTestRuns.Where(run => run.Status == "Queued" || run.Status == "Running").ToListAsync();
 
     public async Task UpdateRunAsync(FlowTestRun run)
     {
         _context.FlowTestRuns.Update(run);
         await _context.SaveChangesAsync();
+    }
+
+    public async Task RecordRunTimestampsAsync(Guid testCaseId, DateTime at, bool passed)
+    {
+        await _context.FlowTestCases.Where(test => test.Id == testCaseId).ExecuteUpdateAsync(setters =>
+        {
+            setters.SetProperty(test => test.LastRunAt, at);
+            if (passed) setters.SetProperty(test => test.LastPassedAt, at);
+        });
+    }
+
+    public async Task TrimRunsAsync(Guid testCaseId, int keep = 20)
+    {
+        var stale = await _context.FlowTestRuns.Where(run => run.TestCaseId == testCaseId)
+            .OrderByDescending(run => run.StartedAt).Skip(keep).ToListAsync();
+        if (stale.Count == 0) return;
+
+        await DeleteRunArtifactsAsync(stale);
+        _context.FlowTestRuns.RemoveRange(stale);
+        await _context.SaveChangesAsync();
+    }
+
+    private async Task DeleteRunArtifactsAsync(IReadOnlyCollection<FlowTestRun> runs)
+    {
+        var executionIds = runs.Select(run => run.FlowExecutionId).Where(id => id != Guid.Empty).Distinct().ToList();
+        if (executionIds.Count == 0) return;
+
+        var testExecutionIds = await _context.FlowExecutions
+            .Where(execution => executionIds.Contains(execution.Id) && execution.IsTest)
+            .Select(execution => execution.Id)
+            .ToListAsync();
+        if (testExecutionIds.Count == 0) return;
+
+        var stepIds = await _context.StepExecutions
+            .Where(step => testExecutionIds.Contains(step.FlowExecutionId))
+            .Select(step => step.Id)
+            .ToListAsync();
+        if (stepIds.Count > 0)
+        {
+            await _context.StepPacketLogs.Where(packet => stepIds.Contains(packet.StepExecutionId))
+                .ExecuteDeleteAsync();
+            await _context.StepExecutions.Where(step => stepIds.Contains(step.Id)).ExecuteDeleteAsync();
+        }
+
+        await _context.FlowExecutions.Where(execution => testExecutionIds.Contains(execution.Id))
+            .ExecuteDeleteAsync();
     }
 }

@@ -5,7 +5,6 @@ namespace SimpleIPaaS.Application.Models;
 public record QueuedExecutionClaim(
     Guid ExecutionId,
     Guid FlowId,
-    Guid TenantId,
     string TriggerSource,
     string? TriggerPayload,
     string FlowName = "",

@@ -6,12 +6,15 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
+using SimpleIPaaS.Infrastructure.Services.Security;
 
 namespace SimpleIPaaS.Infrastructure.Services.Auth;
 
@@ -85,17 +88,23 @@ internal static class OAuthTokenCache
 
 internal static class OAuthTokenClient
 {
-    internal static async Task<JObject> RequestTokenAsync(IHttpClientFactory httpClientFactory, string tokenUrl, Dictionary<string, string> form)
+    internal static async Task<JObject> RequestTokenAsync(
+        IHttpClientFactory httpClientFactory,
+        OutboundUrlPolicy outboundUrlPolicy,
+        string tokenUrl,
+        Dictionary<string, string> form,
+        CancellationToken cancellationToken)
     {
-        var client = httpClientFactory.CreateClient();
+        await outboundUrlPolicy.ValidateAsync(tokenUrl, cancellationToken);
+        var client = httpClientFactory.CreateClient("Outbound");
 
         var tokenRequest = new HttpRequestMessage(HttpMethod.Post, tokenUrl);
         tokenRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         tokenRequest.Content = new FormUrlEncodedContent(form);
         tokenRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-www-form-urlencoded");
 
-        var tokenResponse = await client.SendAsync(tokenRequest);
-        var responseContent = await tokenResponse.Content.ReadAsStringAsync();
+        var tokenResponse = await client.SendAsync(tokenRequest, cancellationToken);
+        var responseContent = await tokenResponse.Content.ReadAsStringAsync(cancellationToken);
 
         if (!tokenResponse.IsSuccessStatusCode)
         {
@@ -159,10 +168,12 @@ public class BearerAuthHandler : AuthenticationHandlerBase
 public class OAuth2ClientCredentialsHandler : AuthenticationHandlerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly OutboundUrlPolicy _outboundUrlPolicy;
 
-    public OAuth2ClientCredentialsHandler(IHttpClientFactory httpClientFactory)
+    public OAuth2ClientCredentialsHandler(IHttpClientFactory httpClientFactory, OutboundUrlPolicy? outboundUrlPolicy = null)
     {
         _httpClientFactory = httpClientFactory;
+        _outboundUrlPolicy = outboundUrlPolicy ?? OutboundPolicyDefaults.Create();
     }
 
     public override async Task AuthenticateAsync(HttpRequestMessage request, AuthenticationContext context)
@@ -207,7 +218,8 @@ public class OAuth2ClientCredentialsHandler : AuthenticationHandlerBase
             form["scope"] = scope;
         }
 
-        var responseJson = await OAuthTokenClient.RequestTokenAsync(_httpClientFactory, tokenUrl, form);
+        var responseJson = await OAuthTokenClient.RequestTokenAsync(
+            _httpClientFactory, _outboundUrlPolicy, tokenUrl, form, CancellationToken.None);
         var accessToken = responseJson["access_token"]?.ToString();
 
         if (string.IsNullOrWhiteSpace(accessToken))
@@ -227,18 +239,21 @@ public class OAuth2RefreshTokenHandler : AuthenticationHandlerBase
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConnectionRepository _connectionRepository;
     private readonly IEncryptionService _encryptionService;
+    private readonly OutboundUrlPolicy _outboundUrlPolicy;
     private readonly bool _useAuthorizationHeader;
 
     public OAuth2RefreshTokenHandler(
         IHttpClientFactory httpClientFactory,
         IConnectionRepository connectionRepository,
         IEncryptionService encryptionService,
-        bool useAuthorizationHeader = false)
+        bool useAuthorizationHeader = false,
+        OutboundUrlPolicy? outboundUrlPolicy = null)
     {
         _httpClientFactory = httpClientFactory;
         _connectionRepository = connectionRepository;
         _encryptionService = encryptionService;
         _useAuthorizationHeader = useAuthorizationHeader;
+        _outboundUrlPolicy = outboundUrlPolicy ?? OutboundPolicyDefaults.Create();
     }
 
     public override async Task AuthenticateAsync(HttpRequestMessage request, AuthenticationContext context)
@@ -292,7 +307,8 @@ public class OAuth2RefreshTokenHandler : AuthenticationHandlerBase
             form["client_secret"] = clientSecret;
         }
 
-        var responseJson = await OAuthTokenClient.RequestTokenAsync(_httpClientFactory, tokenUrl, form);
+        var responseJson = await OAuthTokenClient.RequestTokenAsync(
+            _httpClientFactory, _outboundUrlPolicy, tokenUrl, form, CancellationToken.None);
         var newAccessToken = responseJson["access_token"]?.ToString();
 
         if (string.IsNullOrWhiteSpace(newAccessToken))
@@ -346,8 +362,9 @@ public class OAuth2AuthCodeHandler : OAuth2RefreshTokenHandler
     public OAuth2AuthCodeHandler(
         IHttpClientFactory httpClientFactory,
         IConnectionRepository connectionRepository,
-        IEncryptionService encryptionService)
-        : base(httpClientFactory, connectionRepository, encryptionService, useAuthorizationHeader: true)
+        IEncryptionService encryptionService,
+        OutboundUrlPolicy? outboundUrlPolicy = null)
+        : base(httpClientFactory, connectionRepository, encryptionService, useAuthorizationHeader: true, outboundUrlPolicy: outboundUrlPolicy)
     {
     }
 }
@@ -355,14 +372,21 @@ public class OAuth2AuthCodeHandler : OAuth2RefreshTokenHandler
 public class AmazonSpApiAuthHandler : AuthenticationHandlerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly OutboundUrlPolicy _outboundUrlPolicy;
 
-    public AmazonSpApiAuthHandler(IHttpClientFactory httpClientFactory)
+    public AmazonSpApiAuthHandler(IHttpClientFactory httpClientFactory, OutboundUrlPolicy? outboundUrlPolicy = null)
     {
         _httpClientFactory = httpClientFactory;
+        _outboundUrlPolicy = outboundUrlPolicy ?? OutboundPolicyDefaults.Create();
     }
 
     public override async Task AuthenticateAsync(HttpRequestMessage request, AuthenticationContext context)
     {
+        if (string.IsNullOrWhiteSpace(context.ConfigJson))
+        {
+            throw new InvalidOperationException("Amazon SP-API connection credentials are not configured. Add the Amazon SP-API auth settings to the connection.");
+        }
+
         var config = JObject.Parse(context.ConfigJson);
         var credentials = await ResolveCredentialsAsync(config, context);
         var lwaToken = await GetAccessTokenAsync(config, context);
@@ -397,7 +421,7 @@ public class AmazonSpApiAuthHandler : AuthenticationHandlerBase
             ["Action"] = "AssumeRole",
             ["Version"] = "2011-06-15",
             ["RoleArn"] = roleArn,
-            ["RoleSessionName"] = config["roleSessionName"]?.ToString() ?? "fintegrator-sp-api",
+            ["RoleSessionName"] = config["roleSessionName"]?.ToString() ?? "fusetor-sp-api",
             ["DurationSeconds"] = Math.Clamp(config["durationSeconds"]?.Value<int>() ?? 3600, 900, 43200).ToString(System.Globalization.CultureInfo.InvariantCulture)
         };
         var externalId = config["externalId"]?.ToString();
@@ -512,13 +536,18 @@ public class AmazonSpApiAuthHandler : AuthenticationHandlerBase
             throw new InvalidOperationException("Amazon SP-API requires tokenUrl, clientId, and clientSecret when using refreshToken.");
         }
 
-        var response = await OAuthTokenClient.RequestTokenAsync(_httpClientFactory, tokenUrl, new Dictionary<string, string>
-        {
-            ["grant_type"] = "refresh_token",
-            ["refresh_token"] = refreshToken,
-            ["client_id"] = clientId,
-            ["client_secret"] = clientSecret
-        });
+        var response = await OAuthTokenClient.RequestTokenAsync(
+            _httpClientFactory,
+            _outboundUrlPolicy,
+            tokenUrl,
+            new Dictionary<string, string>
+            {
+                ["grant_type"] = "refresh_token",
+                ["refresh_token"] = refreshToken,
+                ["client_id"] = clientId,
+                ["client_secret"] = clientSecret
+            },
+            CancellationToken.None);
         var accessToken = response["access_token"]?.ToString();
         if (string.IsNullOrWhiteSpace(accessToken))
         {
@@ -610,15 +639,18 @@ public class AuthenticationHandlerFactory : IAuthenticationHandlerFactory
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConnectionRepository _connectionRepository;
     private readonly IEncryptionService _encryptionService;
+    private readonly OutboundUrlPolicy _outboundUrlPolicy;
 
     public AuthenticationHandlerFactory(
         IHttpClientFactory httpClientFactory,
         IConnectionRepository connectionRepository,
-        IEncryptionService encryptionService)
+        IEncryptionService encryptionService,
+        OutboundUrlPolicy? outboundUrlPolicy = null)
     {
         _httpClientFactory = httpClientFactory;
         _connectionRepository = connectionRepository;
         _encryptionService = encryptionService;
+        _outboundUrlPolicy = outboundUrlPolicy ?? OutboundPolicyDefaults.Create();
     }
 
     public IAuthenticationHandler GetHandler(AuthType authType)
@@ -628,12 +660,19 @@ public class AuthenticationHandlerFactory : IAuthenticationHandlerFactory
             AuthType.Basic => new BasicAuthHandler(),
             AuthType.ApiKey => new ApiKeyAuthHandler(),
             AuthType.Bearer => new BearerAuthHandler(),
-            AuthType.OAuth2ClientCredentials => new OAuth2ClientCredentialsHandler(_httpClientFactory),
-            AuthType.OAuth2RefreshToken => new OAuth2RefreshTokenHandler(_httpClientFactory, _connectionRepository, _encryptionService),
-            AuthType.OAuth2AuthCode => new OAuth2AuthCodeHandler(_httpClientFactory, _connectionRepository, _encryptionService),
-            AuthType.AmazonSpApi => new AmazonSpApiAuthHandler(_httpClientFactory),
+            AuthType.OAuth2ClientCredentials => new OAuth2ClientCredentialsHandler(_httpClientFactory, _outboundUrlPolicy),
+            AuthType.OAuth2RefreshToken => new OAuth2RefreshTokenHandler(_httpClientFactory, _connectionRepository, _encryptionService, outboundUrlPolicy: _outboundUrlPolicy),
+            AuthType.OAuth2AuthCode => new OAuth2AuthCodeHandler(_httpClientFactory, _connectionRepository, _encryptionService, _outboundUrlPolicy),
+            AuthType.AmazonSpApi => new AmazonSpApiAuthHandler(_httpClientFactory, _outboundUrlPolicy),
+            AuthType.Shopify => new ShopifyAuthHandler(_httpClientFactory, _outboundUrlPolicy),
             AuthType.Custom => new CustomAuthHandler(),
             _ => new NoAuthHandler()
         };
     }
+}
+
+internal static class OutboundPolicyDefaults
+{
+    internal static OutboundUrlPolicy Create() =>
+        new(Options.Create(new OutboundOptions()));
 }

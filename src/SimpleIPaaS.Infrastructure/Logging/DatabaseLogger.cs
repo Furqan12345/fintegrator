@@ -52,7 +52,6 @@ internal sealed class DatabaseLogger : ILogger
                 ApplicationVersion = correlation.ApplicationVersion ?? _provider.Options.ApplicationVersion,
                 Message = Truncate(ObservabilitySanitizer.Text(formatter(state, exception)), _provider.Options.MaxMessageLength),
                 Exception = exception == null ? null : Truncate(ObservabilitySanitizer.Text(exception.ToString()), _provider.Options.MaxExceptionLength),
-                TenantId = correlation.TenantId,
                 FlowExecutionId = correlation.FlowExecutionId,
                 FlowId = correlation.FlowId,
                 FlowName = correlation.FlowName,
@@ -71,7 +70,7 @@ internal sealed class DatabaseLogger : ILogger
                 NodeName = correlation.NodeName,
                 PropertiesJson = correlation.ToPropertiesJson()
             };
-            _provider.Writer.TryEnqueue(entry);
+            _provider.LogWriter.TryEnqueue(entry);
         }
         catch (Exception)
         {

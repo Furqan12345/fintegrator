@@ -4,6 +4,10 @@ namespace SimpleIPaaS.Api.Validation;
 
 public static class FlowValidator
 {
+    private const int MaxScriptChars = 24_000;
+    private const int MaxFlowScriptChars = 96_000;
+    private const int MaxHelperChars = 64_000;
+
     public static List<string> Validate(IntegrationFlowDto flow)
     {
         var errors = new List<string>();
@@ -13,12 +17,28 @@ public static class FlowValidator
             return errors;
         }
 
+        var totalScriptChars = 0;
         foreach (var node in flow.Nodes)
         {
             if (!Enum.TryParse<SimpleIPaaS.Domain.StepType>(node.StepType, true, out _))
             {
                 errors.Add($"Node '{node.NodeName}' has an unknown step type '{node.StepType}'.");
             }
+
+            totalScriptChars += CheckScript(errors, node, "MappingCode", node.MappingCode);
+            totalScriptChars += CheckScript(errors, node, "UrlCode", node.UrlCode);
+            totalScriptChars += CheckScript(errors, node, "PreFlightCode", node.PreFlightCode);
+            totalScriptChars += CheckScript(errors, node, "PostFlightCode", node.PostFlightCode);
+        }
+
+        if (totalScriptChars > MaxFlowScriptChars)
+        {
+            errors.Add($"The flow's C# scripts exceed the {MaxFlowScriptChars:N0}-character total limit.");
+        }
+
+        if ((flow.HelperCode?.Length ?? 0) > MaxHelperChars)
+        {
+            errors.Add($"The helper script exceeds the {MaxHelperChars:N0}-character limit.");
         }
 
         var duplicateNames = flow.Nodes
@@ -69,6 +89,21 @@ public static class FlowValidator
         }
 
         return errors;
+    }
+
+    private static int CheckScript(List<string> errors, IntegrationStepDto node, string property, string? code)
+    {
+        if (string.IsNullOrEmpty(code))
+        {
+            return 0;
+        }
+
+        if (code.Length > MaxScriptChars)
+        {
+            errors.Add($"Node '{node.NodeName}' {property} exceeds the {MaxScriptChars:N0}-character limit.");
+        }
+
+        return code.Length;
     }
 
     private static bool HasCycle(IntegrationFlowDto flow)

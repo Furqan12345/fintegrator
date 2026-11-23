@@ -1,35 +1,36 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Api.Controllers;
 
 [ApiController]
 [Route("api/webhooks")]
+[AllowAnonymous]
+[EnableRateLimiting("webhook")]
 public class WebhooksController : ControllerBase
 {
     private readonly IIntegrationRepository _repository;
     private readonly FlowRunService _flowRunService;
-    private readonly ITenantContext _tenantContext;
     private readonly ILogger<WebhooksController> _logger;
 
     public WebhooksController(
         IIntegrationRepository repository,
         FlowRunService flowRunService,
-        ITenantContext tenantContext,
         ILogger<WebhooksController> logger)
     {
         _repository = repository;
         _flowRunService = flowRunService;
-        _tenantContext = tenantContext;
         _logger = logger;
     }
 
     [HttpPost("{flowId:guid}/{secret}")]
+    [RequestSizeLimit(1_000_000)]
     public async Task<IActionResult> Trigger(Guid flowId, string secret)
     {
         var flow = await _repository.GetFlowForTriggerAsync(flowId);
@@ -47,12 +48,10 @@ public class WebhooksController : ControllerBase
             payload = await reader.ReadToEndAsync(HttpContext.RequestAborted);
         }
 
-        _tenantContext.SetTenantId(flow.TenantId);
-        var executionId = await _flowRunService.EnqueueAsync(flow.Id, flow.TenantId, "Webhook", payload, HttpContext.RequestAborted);
+        var executionId = await _flowRunService.EnqueueAsync(flow.Id, "Webhook", payload, HttpContext.RequestAborted);
 
         using (_logger.BeginScope(new Dictionary<string, object>
         {
-            ["TenantId"] = flow.TenantId,
             ["FlowId"] = flow.Id,
             ["FlowExecutionId"] = executionId
         }))

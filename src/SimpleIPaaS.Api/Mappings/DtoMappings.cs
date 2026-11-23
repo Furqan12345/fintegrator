@@ -13,7 +13,6 @@ public static class DtoMappings
         return new IntegrationDto
         {
             Id = integration.Id,
-            TenantId = integration.TenantId,
             Name = integration.Name,
             Description = integration.Description,
             CreatedAt = integration.CreatedAt,
@@ -30,7 +29,6 @@ public static class DtoMappings
         return new IntegrationFlowDto
         {
             Id = flow.Id,
-            TenantId = flow.TenantId,
             IntegrationId = flow.IntegrationId,
             Name = flow.Name,
             Description = flow.Description,
@@ -40,12 +38,14 @@ public static class DtoMappings
             WebhookSecret = flow.WebhookSecret,
             RunAt = flow.RunAt,
             AllowPostReplay = flow.AllowPostReplay,
+            DefaultDeadLetterResyncStepId = flow.DefaultDeadLetterResyncStepId,
             PublishedVersion = flow.PublishedVersion,
             LastPublishedAt = flow.LastPublishedAt,
             CreatedAt = flow.CreatedAt,
             UpdatedAt = flow.UpdatedAt,
             PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson,
-            Nodes = flow.Nodes.Select(ToDto).ToList(),
+            HelperCode = flow.HelperCode ?? string.Empty,
+            Nodes = flow.Nodes.Where(node => !node.IsArchived).Select(ToDto).ToList(),
             Edges = flow.Edges.Select(edge => new IntegrationEdgeDto
             {
                 Id = edge.Id,
@@ -71,6 +71,7 @@ public static class DtoMappings
             EndpointUrl = step.EndpointUrl,
             HttpMethod = step.HttpMethod,
             UrlMode = step.UrlMode.ToString(),
+            HttpErrorMode = step.HttpErrorMode.ToString(),
             AuthType = step.AuthType.ToString(),
             AuthToken = string.Empty,
             AuthUsername = string.Empty,
@@ -90,7 +91,6 @@ public static class DtoMappings
         return new Integration
         {
             Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id,
-            TenantId = dto.TenantId,
             Name = dto.Name,
             Description = dto.Description,
             CreatedAt = dto.CreatedAt,
@@ -104,7 +104,6 @@ public static class DtoMappings
         return new IntegrationFlow
         {
             Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id,
-            TenantId = dto.TenantId,
             IntegrationId = dto.IntegrationId,
             Name = dto.Name,
             Description = dto.Description,
@@ -114,11 +113,13 @@ public static class DtoMappings
             WebhookSecret = dto.WebhookSecret,
             RunAt = dto.RunAt,
             AllowPostReplay = dto.AllowPostReplay,
+            DefaultDeadLetterResyncStepId = dto.DefaultDeadLetterResyncStepId,
             PublishedVersion = dto.PublishedVersion,
             LastPublishedAt = dto.LastPublishedAt,
             CreatedAt = dto.CreatedAt,
             UpdatedAt = dto.UpdatedAt,
             PersistedStateJson = string.IsNullOrWhiteSpace(dto.PersistedStateJson) ? "{}" : dto.PersistedStateJson,
+            HelperCode = dto.HelperCode ?? string.Empty,
             Nodes = dto.Nodes.Select(ToEntity).ToList(),
             Edges = dto.Edges.Select(edge => new IntegrationEdge
             {
@@ -145,6 +146,7 @@ public static class DtoMappings
             EndpointUrl = dto.EndpointUrl,
             HttpMethod = dto.HttpMethod,
             UrlMode = Enum.TryParse<UrlMode>(dto.UrlMode, out var urlMode) ? urlMode : UrlMode.Manual,
+            HttpErrorMode = Enum.TryParse<HttpErrorMode>(dto.HttpErrorMode, out var errorMode) ? errorMode : HttpErrorMode.Stop,
             AuthType = Enum.TryParse<AuthType>(dto.AuthType, out var authType) ? authType : AuthType.None,
             AuthToken = dto.AuthToken,
             AuthUsername = dto.AuthUsername,

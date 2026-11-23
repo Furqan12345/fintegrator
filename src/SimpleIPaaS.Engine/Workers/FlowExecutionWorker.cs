@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,7 +16,6 @@ using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Engine.Workers;
 
@@ -96,8 +96,8 @@ public class FlowExecutionWorker : BackgroundService
             }
 
             // Everything logged inside this scope carries the correlation ids, so the
-            // database log sink can populate its ExecutionId/FlowId/TenantId columns and
-            // the Debug Logs console can filter a whole run by execution.
+            // database log sink can populate its ExecutionId/FlowId columns and the Debug
+            // Logs console can filter a whole run by execution.
             using var executionActivity = new Activity("flow.execution");
             executionActivity.SetIdFormat(ActivityIdFormat.W3C);
             if (!string.IsNullOrWhiteSpace(claim.TraceParent)) executionActivity.SetParentId(claim.TraceParent);
@@ -110,7 +110,6 @@ public class FlowExecutionWorker : BackgroundService
                 ["FlowName"] = claim.FlowName,
                 ["IntegrationId"] = claim.IntegrationId ?? Guid.Empty,
                 ["IntegrationName"] = claim.IntegrationName,
-                ["TenantId"] = claim.TenantId,
                 ["IsTest"] = claim.IsTest,
                 ["TestCaseId"] = claim.TestCaseId,
                 ["TestRunId"] = claim.TestRunId
@@ -118,8 +117,8 @@ public class FlowExecutionWorker : BackgroundService
 
             var claimedAt = Stopwatch.GetTimestamp();
             _logger.LogInformation(new EventId(1200, "flow.execution.claimed"),
-                "Claimed queued execution {ExecutionId} for flow {FlowId} (tenant {TenantId}, trigger {TriggerSource}, queue wait {QueueWaitMs}ms)",
-                claim.ExecutionId, claim.FlowId, claim.TenantId, string.IsNullOrWhiteSpace(claim.TriggerSource) ? "Manual" : claim.TriggerSource, claim.QueuedAt.HasValue ? (long)Math.Max(0, (DateTime.UtcNow - claim.QueuedAt.Value).TotalMilliseconds) : 0);
+                "Claimed queued execution {ExecutionId} for flow {FlowId} (trigger {TriggerSource}, queue wait {QueueWaitMs}ms)",
+                claim.ExecutionId, claim.FlowId, string.IsNullOrWhiteSpace(claim.TriggerSource) ? "Manual" : claim.TriggerSource, claim.QueuedAt.HasValue ? (long)Math.Max(0, (DateTime.UtcNow - claim.QueuedAt.Value).TotalMilliseconds) : 0);
 
             try
             {
@@ -160,9 +159,6 @@ public class FlowExecutionWorker : BackgroundService
         try
         {
             using var scope = _serviceProvider.CreateScope();
-            var tenantContext = scope.ServiceProvider.GetRequiredService<ITenantContext>();
-            tenantContext.SetTenantId(request.TenantId);
-
             var executionRepository = scope.ServiceProvider.GetRequiredService<IExecutionRepository>();
             var execution = await executionRepository.GetFlowExecutionAsync(request.ExecutionId);
             if (execution == null)
@@ -193,7 +189,6 @@ public class FlowExecutionWorker : BackgroundService
 
             FlowTestContext? testContext = null;
             FlowTestRun? testRun = null;
-            FlowTestCase? testCase = null;
             var testRepository = scope.ServiceProvider.GetRequiredService<IFlowTestRepository>();
             if (execution.IsTest)
             {
@@ -208,36 +203,42 @@ public class FlowExecutionWorker : BackgroundService
                         await testRepository.UpdateRunAsync(testRun);
                     }
                 }
-                if (execution.TestCaseId is Guid testCaseId)
-                {
-                    testCase = await testRepository.GetAsync(testCaseId);
-                }
             }
 
             var executor = scope.ServiceProvider.GetRequiredService<FlowExecutor>();
             var startedAt = Stopwatch.GetTimestamp();
-            var result = await executor.ExecuteFlowAsync(request.FlowId, request.ExecutionId, request.TriggerPayload, linked.Token, testContext);
+            FlowExecution result;
+            if (!string.IsNullOrWhiteSpace(execution.StartStepIdsJson))
+            {
+                var startStepIds = JsonSerializer.Deserialize<Guid[]>(execution.StartStepIdsJson) ?? Array.Empty<Guid>();
+                result = await executor.ExecuteFlowFromNodesAsync(
+                    request.FlowId,
+                    request.ExecutionId,
+                    startStepIds,
+                    execution.InitialFlowStateJson ?? "{}",
+                    execution.InitialPersistedStateJson ?? "{}",
+                    linked.Token,
+                    testContext);
+            }
+            else
+            {
+                result = await executor.ExecuteFlowAsync(request.FlowId, request.ExecutionId, request.TriggerPayload, linked.Token, testContext);
+            }
             var elapsedMs = (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
 
-            if (testRun != null)
+            if (testRun != null && testContext != null)
             {
-                var steps = await executionRepository.GetStepExecutionsAsync(execution.Id);
-                var evaluation = FlowTestEvaluator.Evaluate(result, steps, testContext!.Definition);
-                testRun.Status = evaluation.Passed ? "Passed" : "Failed";
-                testRun.ResultJson = evaluation.ToJson();
-                testRun.ErrorMessage = evaluation.Passed ? null : string.Join(" ", evaluation.Failures);
-                testRun.CompletedAt = DateTime.UtcNow;
-                await testRepository.UpdateRunAsync(testRun);
-
-                if (testCase != null)
+                var integrations = scope.ServiceProvider.GetRequiredService<IIntegrationRepository>();
+                var flow = await integrations.GetByIdAsync(request.FlowId);
+                if (flow != null)
                 {
-                    testCase.LastRunAt = testRun.CompletedAt;
-                    if (evaluation.Passed) testCase.LastPassedAt = testRun.CompletedAt;
-                    await testRepository.UpdateAsync(testCase);
+                    var recorder = scope.ServiceProvider.GetRequiredService<FlowTestResultRecorder>();
+                    await recorder.RecordAsync(
+                        testRun.Id, testRun.TestCaseId, result, flow, testContext.Definition, stoppingToken);
                 }
 
-                _logger.LogInformation("Test case {TestCaseId} {TestStatus} for execution {ExecutionId}: {TestResult}",
-                    testRun.TestCaseId, testRun.Status, execution.Id, testRun.ErrorMessage ?? "all assertions passed");
+                _logger.LogInformation("Test case {TestCaseId} {TestStatus} for execution {ExecutionId}",
+                    testRun.TestCaseId, testRun.Status, execution.Id);
             }
 
             if (result.Status == ExecutionStatus.Failed)

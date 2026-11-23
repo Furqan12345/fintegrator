@@ -5,8 +5,10 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.Persistence;
+using SimpleIPaaS.Infrastructure.Storage;
 
 namespace SimpleIPaaS.Infrastructure.Logging;
 
@@ -23,6 +25,7 @@ public sealed class DatabaseLogWriter : IDisposable
 {
     private readonly DatabaseLoggerOptions _options;
     private readonly string _connectionString;
+    private readonly IServiceProvider? _services;
     private readonly Channel<AppLogEntry> _channel;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _pump;
@@ -36,10 +39,14 @@ public sealed class DatabaseLogWriter : IDisposable
     private long _lastFailureReportTicks;
     private bool _disposed;
 
-    public DatabaseLogWriter(DatabaseLoggerOptions options, string connectionString)
+    // services is optional and only used to resolve the retention policy on demand: the log sink is
+    // constructed before the rest of the container is usable, and the policy reads the storage
+    // settings (which may themselves need a logger), so it must not be resolved here.
+    public DatabaseLogWriter(DatabaseLoggerOptions options, string connectionString, IServiceProvider? services = null)
     {
         _options = options;
         _connectionString = connectionString;
+        _services = services;
 
         var capacity = _options.QueueCapacity < 16 ? 16 : _options.QueueCapacity;
         _channel = Channel.CreateBounded<AppLogEntry>(new BoundedChannelOptions(capacity)
@@ -216,9 +223,9 @@ public sealed class DatabaseLogWriter : IDisposable
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO AppLogEntries
-                (EventId, EventVersion, Timestamp, Level, Source, Service, HostInstance, EnvironmentName, ApplicationVersion, Category, Component, EventName, Operation, Outcome, DurationMs, TraceId, SpanId, ParentSpanId, Message, Exception, TenantId, FlowExecutionId, FlowId, FlowName, IntegrationId, IntegrationName, ConnectionId, CardId, CardType, StepExecutionId, Invocation, LoopPath, RetryAttempt, IsTest, TestCaseId, TestRunId, NodeName, PropertiesJson)
+                (EventId, EventVersion, Timestamp, Level, Source, Service, HostInstance, EnvironmentName, ApplicationVersion, Category, Component, EventName, Operation, Outcome, DurationMs, TraceId, SpanId, ParentSpanId, Message, Exception, FlowExecutionId, FlowId, FlowName, IntegrationId, IntegrationName, ConnectionId, CardId, CardType, StepExecutionId, Invocation, LoopPath, RetryAttempt, IsTest, TestCaseId, TestRunId, NodeName, PropertiesJson)
             VALUES
-                ($eventId, $eventVersion, $timestamp, $level, $source, $service, $hostInstance, $environmentName, $applicationVersion, $category, $component, $eventName, $operation, $outcome, $durationMs, $traceId, $spanId, $parentSpanId, $message, $exception, $tenantId, $flowExecutionId, $flowId, $flowName, $integrationId, $integrationName, $connectionId, $cardId, $cardType, $stepExecutionId, $invocation, $loopPath, $retryAttempt, $isTest, $testCaseId, $testRunId, $nodeName, $propertiesJson);
+                ($eventId, $eventVersion, $timestamp, $level, $source, $service, $hostInstance, $environmentName, $applicationVersion, $category, $component, $eventName, $operation, $outcome, $durationMs, $traceId, $spanId, $parentSpanId, $message, $exception, $flowExecutionId, $flowId, $flowName, $integrationId, $integrationName, $connectionId, $cardId, $cardType, $stepExecutionId, $invocation, $loopPath, $retryAttempt, $isTest, $testCaseId, $testRunId, $nodeName, $propertiesJson);
             """;
 
         // DateTime/Guid parameters are serialised by Microsoft.Data.Sqlite using exactly the
@@ -243,7 +250,6 @@ public sealed class DatabaseLogWriter : IDisposable
         var parentSpanId = command.Parameters.Add("$parentSpanId", SqliteType.Text);
         var message = command.Parameters.Add("$message", SqliteType.Text);
         var exception = command.Parameters.Add("$exception", SqliteType.Text);
-        var tenantId = command.Parameters.Add("$tenantId", SqliteType.Text);
         var flowExecutionId = command.Parameters.Add("$flowExecutionId", SqliteType.Text);
         var flowId = command.Parameters.Add("$flowId", SqliteType.Text);
         var flowName = command.Parameters.Add("$flowName", SqliteType.Text);
@@ -284,7 +290,6 @@ public sealed class DatabaseLogWriter : IDisposable
             parentSpanId.Value = (object?)entry.ParentSpanId ?? DBNull.Value;
             message.Value = entry.Message;
             exception.Value = (object?)entry.Exception ?? DBNull.Value;
-            tenantId.Value = (object?)entry.TenantId ?? DBNull.Value;
             flowExecutionId.Value = (object?)entry.FlowExecutionId ?? DBNull.Value;
             flowId.Value = (object?)entry.FlowId ?? DBNull.Value;
             flowName.Value = (object?)entry.FlowName ?? DBNull.Value;
@@ -362,38 +367,57 @@ public sealed class DatabaseLogWriter : IDisposable
         }
 
         _lastPruneUtc = DateTime.UtcNow;
-        Prune(connection, _options);
+        Prune(connection, ResolveWindows());
+    }
+
+    // Retention as configured on the storage settings page, falling back to the configuration
+    // section when nothing has been configured (or before the settings have been loaded).
+    private LogRetentionWindows ResolveWindows()
+    {
+        var fallback = new LogRetentionWindows(_options.RetentionHours, _options.WarningRetentionHours, _options.MaxRows);
+
+        try
+        {
+            return _services?.GetService<ILogRetentionPolicy>()?.Resolve(fallback) ?? fallback;
+        }
+        catch (Exception)
+        {
+            return fallback;
+        }
     }
 
     // Retention, exposed for tests. Age-based pruning first, then the hard row cap.
-    public static int Prune(SqliteConnection connection, DatabaseLoggerOptions options)
+    public static int Prune(SqliteConnection connection, DatabaseLoggerOptions options) =>
+        Prune(connection, new LogRetentionWindows(options.RetentionHours, options.WarningRetentionHours, options.MaxRows));
+
+    public static int Prune(SqliteConnection connection, LogRetentionWindows windows)
     {
         var removed = 0;
 
-        if (options.RetentionHours > 0)
+        if (windows.DetailRetentionHours > 0)
         {
             using var detailAge = connection.CreateCommand();
             detailAge.CommandText = "DELETE FROM AppLogEntries WHERE Timestamp < $cutoff AND Level NOT IN ('Warning', 'Error', 'Critical');";
-            detailAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-options.RetentionHours));
+            detailAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-windows.DetailRetentionHours));
             removed += detailAge.ExecuteNonQuery();
         }
 
-        if (options.WarningRetentionHours > 0)
+        if (windows.WarningRetentionHours > 0)
         {
             using var warningAge = connection.CreateCommand();
             warningAge.CommandText = "DELETE FROM AppLogEntries WHERE Timestamp < $cutoff AND Level IN ('Warning', 'Error', 'Critical');";
-            warningAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-options.WarningRetentionHours));
+            warningAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-windows.WarningRetentionHours));
             removed += warningAge.ExecuteNonQuery();
         }
 
-        if (options.MaxRows > 0)
+        if (windows.MaxRows > 0)
         {
             using var byCount = connection.CreateCommand();
             byCount.CommandText = """
                 DELETE FROM AppLogEntries
                 WHERE Id <= COALESCE((SELECT MAX(Id) FROM AppLogEntries), 0) - $maxRows;
                 """;
-            byCount.Parameters.AddWithValue("$maxRows", options.MaxRows);
+            byCount.Parameters.AddWithValue("$maxRows", windows.MaxRows);
             removed += byCount.ExecuteNonQuery();
         }
 

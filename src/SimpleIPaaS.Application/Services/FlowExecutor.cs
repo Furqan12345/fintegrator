@@ -2,6 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Net;
+using System.Net.Mail;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -23,6 +27,7 @@ public class FlowExecutor
     private readonly IAdvancedCodeExecutionService _codeExecutionService;
     private readonly IExecutionRepository _executionRepository;
     private readonly ICrossReferenceRepository _crossReferenceRepository;
+    private readonly IEmailSender _emailSender;
     private readonly ILogger<FlowExecutor> _logger;
     private static readonly object _executionLock = new();
 
@@ -32,6 +37,7 @@ public class FlowExecutor
         IAdvancedCodeExecutionService codeExecutionService,
         IExecutionRepository executionRepository,
         ICrossReferenceRepository crossReferenceRepository,
+        IEmailSender emailSender,
         ILogger<FlowExecutor> logger)
     {
         _repository = repository;
@@ -39,6 +45,7 @@ public class FlowExecutor
         _codeExecutionService = codeExecutionService;
         _executionRepository = executionRepository;
         _crossReferenceRepository = crossReferenceRepository;
+        _emailSender = emailSender;
         _logger = logger;
     }
 
@@ -46,6 +53,115 @@ public class FlowExecutor
         string LastPayload,
         Dictionary<string, JToken> PerNodeOutputs,
         JToken? IterationOutput);
+
+    public sealed record DebugNodeResult(
+        Guid ExecutionId,
+        Guid StepId,
+        Guid? StepExecutionId,
+        ExecutionStatus Status,
+        long DurationMs,
+        string? Input,
+        string? Output,
+        string? Error,
+        bool BranchResult,
+        int HttpStatusCode,
+        bool ErrorPort);
+
+    // Debug Mode runs exactly one card from the Flow Designer. It deliberately reuses RunStepAsync
+    // so the card behaves like it does in a production run, but it differs in two ways: a failure is
+    // returned to the caller instead of being dead-lettered (a human is watching), and Persisted State
+    // cards do not write their durable value, so exploring a flow never advances its cursor.
+    public async Task<DebugNodeResult> ExecuteDebugNodeAsync(
+        Guid flowId,
+        Guid stepId,
+        JObject flowStateContext,
+        string? persistedStateJson,
+        CancellationToken cancellationToken)
+    {
+        var flow = await _repository.GetByIdAsync(flowId)
+            ?? throw new InvalidOperationException("Flow not found.");
+        var node = flow.Nodes.FirstOrDefault(candidate => candidate.Id == stepId)
+            ?? throw new InvalidOperationException("The selected node no longer exists in this flow.");
+
+        var persistedStateBox = new PersistedStateRef(ParseObjectOrEmpty(
+            string.IsNullOrWhiteSpace(persistedStateJson) ? flow.PersistedStateJson : persistedStateJson));
+
+        var flowExecution = new FlowExecution
+        {
+            FlowId = flow.Id,
+            FlowName = flow.Name,
+            IntegrationId = flow.IntegrationId,
+            Status = ExecutionStatus.InProgress,
+            StartedAt = DateTime.UtcNow,
+            QueuedAt = DateTime.UtcNow,
+            TriggerSource = "Debug"
+        };
+        await _executionRepository.AddFlowExecutionAsync(flowExecution);
+
+        var sortedNodes = TopologicalSort(flow);
+        var activeNodes = new HashSet<Guid> { node.Id };
+        var executedNodes = new HashSet<Guid>();
+        var startedAt = Stopwatch.GetTimestamp();
+        string? error = null;
+
+        try
+        {
+            await RunStepAsync(node, flow, flowStateContext, persistedStateBox,
+                flowExecution, flowExecution.Id, sortedNodes, activeNodes, executedNodes,
+                cancellationToken, null, node.Id, suppressPersistedStateWrite: true, suppressDeadLetter: true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+
+        var durationMs = (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+        var stepExecution = await _executionRepository.GetStepExecutionAsync(flowExecution.Id, node.Id);
+
+        flowExecution.Status = error == null ? ExecutionStatus.Success : ExecutionStatus.Failed;
+        flowExecution.ErrorMessage = error;
+        flowExecution.CompletedAt = DateTime.UtcNow;
+        await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+
+        return new DebugNodeResult(
+            flowExecution.Id,
+            node.Id,
+            stepExecution?.Id,
+            stepExecution?.Status ?? (error == null ? ExecutionStatus.Success : ExecutionStatus.Failed),
+            durationMs,
+            stepExecution?.ReceivedInput,
+            stepExecution?.ResponsePayload,
+            error ?? stepExecution?.ErrorMessage,
+            ParseBranchResult(stepExecution?.ResponsePayload),
+            stepExecution?.HttpStatusCode ?? 0,
+            node.StepType == StepType.HttpAction
+                && node.HttpErrorMode == HttpErrorMode.Continue
+                && stepExecution?.HttpStatusCode is int status && (status < 200 || status >= 300));
+    }
+
+    private static bool ParseBranchResult(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return false;
+        }
+
+        try
+        {
+            var token = JToken.Parse(payload);
+            return token.Type == JTokenType.Boolean
+                ? token.Value<bool>()
+                : token["branchResult"]?.Value<bool>() ?? false;
+        }
+        catch
+        {
+            return string.Equals(payload.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+        }
+    }
 
     public async Task<FlowExecution> ExecuteFlowAsync(Guid flowId, Guid executionId, string? triggerPayload, CancellationToken cancellationToken, FlowTestContext? testContext = null)
     {
@@ -61,7 +177,6 @@ public class FlowExecutor
             ["FlowName"] = flowExecution.FlowName,
             ["IntegrationId"] = flowExecution.IntegrationId ?? Guid.Empty,
             ["IntegrationName"] = flowExecution.IntegrationName,
-            ["TenantId"] = flowExecution.TenantId,
             ["IsTest"] = flowExecution.IsTest,
             ["TestCaseId"] = flowExecution.TestCaseId,
             ["TestRunId"] = flowExecution.TestRunId
@@ -164,6 +279,118 @@ public class FlowExecutor
         return flowExecution;
     }
 
+    public Task<FlowExecution> ExecuteFlowFromNodeAsync(
+        Guid flowId,
+        Guid executionId,
+        Guid startStepId,
+        string flowStateJson,
+        string persistedStateJson,
+        Guid failedStepId,
+        CancellationToken cancellationToken) =>
+        ExecuteFlowFromNodesCoreAsync(
+            flowId, executionId, new[] { startStepId }, flowStateJson, persistedStateJson, failedStepId, cancellationToken);
+
+    public Task<FlowExecution> ExecuteFlowFromNodesAsync(
+        Guid flowId,
+        Guid executionId,
+        IReadOnlyCollection<Guid> startStepIds,
+        string flowStateJson,
+        string persistedStateJson,
+        CancellationToken cancellationToken,
+        FlowTestContext? testContext = null) =>
+        ExecuteFlowFromNodesCoreAsync(
+            flowId, executionId, startStepIds, flowStateJson, persistedStateJson, null, cancellationToken, testContext);
+
+    private async Task<FlowExecution> ExecuteFlowFromNodesCoreAsync(
+        Guid flowId,
+        Guid executionId,
+        IEnumerable<Guid> startStepIds,
+        string flowStateJson,
+        string persistedStateJson,
+        Guid? failedStepId,
+        CancellationToken cancellationToken,
+        FlowTestContext? testContext = null)
+    {
+        var flowExecution = await _executionRepository.GetFlowExecutionAsync(executionId)
+            ?? throw new InvalidOperationException($"FlowExecution {executionId} not found.");
+        var flow = await _repository.GetByIdAsync(flowId);
+        if (flow == null)
+        {
+            flowExecution.Status = ExecutionStatus.Failed;
+            flowExecution.ErrorMessage = "Flow not found.";
+            flowExecution.CompletedAt = DateTime.UtcNow;
+            await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+            return flowExecution;
+        }
+
+        var startNodeIds = startStepIds.Distinct().ToHashSet();
+        var missingStartNode = startNodeIds.FirstOrDefault(id => flow.Nodes.All(node => node.Id != id));
+        if (missingStartNode != Guid.Empty)
+        {
+            flowExecution.Status = ExecutionStatus.Failed;
+            flowExecution.ErrorMessage = "A selected start node no longer exists in this flow.";
+            flowExecution.CompletedAt = DateTime.UtcNow;
+            await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+            return flowExecution;
+        }
+
+        flowExecution.Status = ExecutionStatus.InProgress;
+        flowExecution.CompletedAt = null;
+        flowExecution.ErrorMessage = null;
+        await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+
+        try
+        {
+            var sortedNodes = TopologicalSort(flow);
+            var flowStateContext = ParseObjectOrEmpty(flowStateJson);
+            var rerunNodeIds = startNodeIds
+                .SelectMany(startStepId => FlowGraphAnalysis.GetDownstreamNodeIds(flow, startStepId))
+                .ToHashSet();
+            foreach (var rerunNode in flow.Nodes.Where(node => rerunNodeIds.Contains(node.Id)))
+            {
+                if (!string.IsNullOrWhiteSpace(rerunNode.NodeName))
+                {
+                    flowStateContext.Remove(rerunNode.NodeName);
+                }
+            }
+
+            var persistedStateBox = new PersistedStateRef(ParseObjectOrEmpty(
+                string.IsNullOrWhiteSpace(persistedStateJson) ? flow.PersistedStateJson : persistedStateJson));
+            var activeNodes = new HashSet<Guid>(startNodeIds);
+            var executedNodes = new HashSet<Guid>();
+            foreach (var node in sortedNodes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!activeNodes.Contains(node.Id) || executedNodes.Contains(node.Id))
+                {
+                    continue;
+                }
+
+                await RunStepAsync(node, flow, flowStateContext, persistedStateBox,
+                    flowExecution, executionId, sortedNodes, activeNodes, executedNodes,
+                    cancellationToken, testContext, failedStepId);
+            }
+
+            flowExecution.Status = ExecutionStatus.Success;
+            flowExecution.CompletedAt = DateTime.UtcNow;
+        }
+        catch (OperationCanceledException)
+        {
+            flowExecution.Status = ExecutionStatus.Cancelled;
+            flowExecution.ErrorMessage = "Execution was cancelled.";
+            flowExecution.CompletedAt = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            flowExecution.Status = ExecutionStatus.Failed;
+            flowExecution.ErrorMessage = ex.Message;
+            flowExecution.CompletedAt = DateTime.UtcNow;
+        }
+
+        await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+        return flowExecution;
+    }
+
     private async Task<string> RunStepAsync(
         IntegrationStep node,
         IntegrationFlow flow,
@@ -175,7 +402,10 @@ public class FlowExecutor
         HashSet<Guid> activeNodes,
         HashSet<Guid> executedNodes,
         CancellationToken cancellationToken,
-        FlowTestContext? testContext)
+        FlowTestContext? testContext,
+        Guid? failedStepId = null,
+        bool suppressPersistedStateWrite = false,
+        bool suppressDeadLetter = false)
     {
         var receivedInput = ResolveNodeInput(flow, node, flowStateContext);
         var stepExecution = new StepExecution
@@ -228,64 +458,127 @@ public class FlowExecutor
                 stepExecution.HttpStatusCode = cardOverride.StatusCode ?? 200;
                 currentPayload = testContext.Resolve(cardOverride.OutputJson);
                 stepExecution.ResponsePayload = currentPayload;
-                if (!string.IsNullOrWhiteSpace(cardOverride.ErrorMessage) || stepExecution.HttpStatusCode < 200 || stepExecution.HttpStatusCode >= 300)
-                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(cardOverride.ErrorMessage)
-                        ? $"Supplied output for card {node.NodeName} returned HTTP status {stepExecution.HttpStatusCode}."
-                        : testContext.Resolve(cardOverride.ErrorMessage));
-
-                if (node.StepType == StepType.Branch)
+                var suppliedError = !string.IsNullOrWhiteSpace(cardOverride.ErrorMessage)
+                    || stepExecution.HttpStatusCode < 200 || stepExecution.HttpStatusCode >= 300;
+                if (suppliedError && node.StepType == StepType.HttpAction && node.HttpErrorMode == HttpErrorMode.Continue)
                 {
-                    var branchValue = false;
-                    try
+                    currentPayload = BuildHttpErrorEnvelope(
+                        stepExecution.HttpStatusCode,
+                        testContext.Resolve(cardOverride.OutputJson),
+                        string.IsNullOrWhiteSpace(cardOverride.ErrorMessage)
+                            ? $"Supplied output for card {node.NodeName} returned HTTP status {stepExecution.HttpStatusCode}."
+                            : testContext.Resolve(cardOverride.ErrorMessage),
+                        new Dictionary<string, string[]>());
+                    stepExecution.ResponsePayload = currentPayload;
+                    foreach (var edge in flow.Edges.Where(edge => edge.SourceNodeId == node.Id
+                                 && (edge.SourcePortId ?? string.Empty).Equals("error", StringComparison.OrdinalIgnoreCase)))
                     {
-                        var token = JToken.Parse(currentPayload);
-                        branchValue = token.Type == JTokenType.Boolean
-                            ? token.Value<bool>()
-                            : token["branchResult"]?.Value<bool>() ?? false;
-                    }
-                    catch { branchValue = string.Equals(currentPayload.Trim(), "true", StringComparison.OrdinalIgnoreCase); }
-                    foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == node.Id))
-                    {
-                        var port = (edge.SourcePortId ?? string.Empty).ToLowerInvariant();
-                        if ((branchValue && port == "true") || (!branchValue && port == "false")) activeNodes.Add(edge.TargetNodeId);
+                        activeNodes.Add(edge.TargetNodeId);
                     }
                 }
                 else
                 {
-                    foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == node.Id)) activeNodes.Add(edge.TargetNodeId);
+                    if (suppliedError)
+                    {
+                        throw new InvalidOperationException(string.IsNullOrWhiteSpace(cardOverride.ErrorMessage)
+                            ? $"Supplied output for card {node.NodeName} returned HTTP status {stepExecution.HttpStatusCode}."
+                            : testContext.Resolve(cardOverride.ErrorMessage));
+                    }
+
+                    if (node.StepType == StepType.Branch)
+                    {
+                        var branchValue = false;
+                        try
+                        {
+                            var token = JToken.Parse(currentPayload);
+                            branchValue = token.Type == JTokenType.Boolean
+                                ? token.Value<bool>()
+                                : token["branchResult"]?.Value<bool>() ?? false;
+                        }
+                        catch { branchValue = string.Equals(currentPayload.Trim(), "true", StringComparison.OrdinalIgnoreCase); }
+                        foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == node.Id))
+                        {
+                            var port = (edge.SourcePortId ?? string.Empty).ToLowerInvariant();
+                            if ((branchValue && port == "true") || (!branchValue && port == "false")) activeNodes.Add(edge.TargetNodeId);
+                        }
+                    }
+                    else
+                    {
+                        foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == node.Id
+                                     && !(node.StepType == StepType.HttpAction
+                                          && (e.SourcePortId ?? string.Empty).Equals("error", StringComparison.OrdinalIgnoreCase))))
+                        {
+                            activeNodes.Add(edge.TargetNodeId);
+                        }
+                    }
                 }
             }
             else if (node.StepType == StepType.HttpAction)
             {
                 var httpResult =
-                    await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken, testContext);
+                    await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken, testContext, flow.HelperCode);
 
                 stepExecution.RequestPayload = httpResult.RequestPayload;
                 stepExecution.HttpStatusCode = httpResult.StatusCode;
                 stepExecution.ResponsePayload = httpResult.Response;
 
-                if (httpResult.StatusCode < 200 || httpResult.StatusCode >= 300)
-                {
-                    foreach (var packet in httpResult.Packets)
-                    {
-                        packet.StepExecutionId = stepExecution.Id;
-                        await _executionRepository.AddStepPacketLogAsync(packet);
-                    }
-                    throw new Exception($"HTTP request failed with status code {httpResult.StatusCode}: {httpResult.Response}");
-                }
-
                 foreach (var packet in httpResult.Packets)
                 {
                     packet.StepExecutionId = stepExecution.Id;
-                        await _executionRepository.AddStepPacketLogAsync(packet);
+                    await AddStepPacketLogBestEffortAsync(packet);
                 }
 
-                currentPayload = httpResult.Response;
-
-                if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
+                if (httpResult.StatusCode < 200 || httpResult.StatusCode >= 300)
                 {
-                    currentPayload = await RunScriptAsync(node, "PostFlight",
-                        () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, httpResult.Response));
+                    var errorMessage = httpResult.StatusCode == 0
+                        ? $"HTTP request failed before a response was received: {httpResult.Response}"
+                        : $"HTTP request failed with status code {httpResult.StatusCode}";
+                    if (node.HttpErrorMode == HttpErrorMode.Continue)
+                    {
+                        currentPayload = BuildHttpErrorEnvelope(
+                            httpResult.StatusCode,
+                            httpResult.Response,
+                            errorMessage,
+                            httpResult.ResponseHeaders);
+                        stepExecution.ResponsePayload = currentPayload;
+                        foreach (var edge in flow.Edges.Where(edge => edge.SourceNodeId == node.Id
+                                     && (edge.SourcePortId ?? string.Empty).Equals("error", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
+                        }
+                    }
+                    else
+                    {
+                        throw new Exception(httpResult.StatusCode == 0
+                            ? $"HTTP request failed before a response was received: {httpResult.Response}"
+                            : $"HTTP request failed with status code {httpResult.StatusCode}: {httpResult.Response}");
+                    }
+                }
+                else
+                {
+                    currentPayload = httpResult.Response;
+
+                    if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
+                    {
+                        currentPayload = await RunScriptAsync(node, "PostFlight",
+                            () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, httpResult.Response, flow.HelperCode));
+                    }
+
+                    var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id
+                        && !(e.SourcePortId ?? string.Empty).Equals("error", StringComparison.OrdinalIgnoreCase));
+                    foreach (var edge in outgoing)
+                    {
+                        lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
+                    }
+                }
+            }
+            else if (node.StepType == StepType.Mapping)
+            {
+                if (!string.IsNullOrWhiteSpace(node.MappingCode))
+                {
+                    currentPayload = await RunScriptAsync(node, "Mapping",
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
+                    stepExecution.ResponsePayload = currentPayload;
                 }
 
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
@@ -294,13 +587,22 @@ public class FlowExecutor
                     lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
-            else if (node.StepType == StepType.Mapping)
+            else if (node.StepType is StepType.AddIdentifier or StepType.Error or StepType.Success)
             {
+                // Annotation cards: the script's string return lands in a transaction-page
+                // column (Identifier for AddIdentifier, Message for Error/Success). The
+                // last card that runs wins.
                 if (!string.IsNullOrWhiteSpace(node.MappingCode))
                 {
-                    currentPayload = await RunScriptAsync(node, "Mapping",
-                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson));
+                    currentPayload = await RunScriptAsync(node, node.StepType.ToString(),
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
                     stepExecution.ResponsePayload = currentPayload;
+
+                    var value = currentPayload?.Trim() ?? string.Empty;
+                    if (node.StepType == StepType.AddIdentifier)
+                        flowExecution.Identifier = value;
+                    else
+                        flowExecution.Message = value;
                 }
 
                 var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
@@ -315,7 +617,7 @@ public class FlowExecutor
                 if (!string.IsNullOrWhiteSpace(node.MappingCode))
                 {
                     branchResult = await RunScriptAsync(node, "Branch",
-                        () => _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson, persistedStateJson));
+                        () => _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
                 }
 
                 stepExecution.ResponsePayload = $"{{\"branchResult\": {branchResult.ToString().ToLower()}}}";
@@ -350,14 +652,101 @@ public class FlowExecutor
                     lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
+            else if (node.StepType == StepType.Email)
+            {
+                // Email is a pass-through node: downstream nodes still receive the same payload.
+                currentPayload = receivedInput.ToString(Newtonsoft.Json.Formatting.None);
+                var config = EmailStepConfig.Parse(node.StepConfig);
+
+                try
+                {
+                    var resolved = await ResolveEmailAsync(
+                        node, config, flow, flowStateJson, persistedStateJson);
+
+                    if (testContext != null)
+                    {
+                        // A flow test run must never send mail; it records the resolved preview.
+                        var preview = new JObject
+                        {
+                            ["to"] = new JArray(resolved.To),
+                            ["cc"] = new JArray(resolved.Cc),
+                            ["bcc"] = new JArray(resolved.Bcc),
+                            ["replyTo"] = resolved.ReplyTo ?? string.Empty,
+                            ["subject"] = resolved.Subject,
+                            ["body"] = resolved.Body,
+                            ["isHtml"] = resolved.IsHtml
+                        };
+                        AddMissingPlaceholders(preview, resolved.MissingPlaceholders);
+                        stepExecution.ResponsePayload = preview.ToString(Newtonsoft.Json.Formatting.None);
+                    }
+                    else
+                    {
+                        var html = BuildEmailHtml(resolved.Body, resolved.IsHtml);
+                        var text = BuildEmailText(resolved.Body, resolved.IsHtml);
+
+                        try
+                        {
+                            // One real message: CC/BCC/Reply-To are headers, not extra copies.
+                            await _emailSender.SendAsync(new EmailMessage(
+                                resolved.To,
+                                resolved.Cc,
+                                resolved.Bcc,
+                                resolved.ReplyTo,
+                                resolved.Subject,
+                                html,
+                                text), cancellationToken);
+                        }
+                        catch (InvalidOperationException ex)
+                            when (ex.Message.Contains("Email:Smtp:Host", StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidOperationException("SMTP is not configured (Email:Smtp:Host).", ex);
+                        }
+
+                        var summary = new JObject
+                        {
+                            ["sentTo"] = new JArray(resolved.To),
+                            ["cc"] = new JArray(resolved.Cc),
+                            ["bcc"] = resolved.Bcc.Count,
+                            ["replyTo"] = resolved.ReplyTo ?? string.Empty,
+                            ["subject"] = resolved.Subject,
+                            ["sentAt"] = DateTime.UtcNow.ToString("O")
+                        };
+                        AddMissingPlaceholders(summary, resolved.MissingPlaceholders);
+                        if (resolved.MissingPlaceholders.Count > 0)
+                        {
+                            _logger.LogWarning(
+                                "Execution {ExecutionId}: email node {NodeName} sent with unresolved placeholders: {Placeholders}",
+                                executionId, node.NodeName, string.Join(", ", resolved.MissingPlaceholders));
+                        }
+
+                        stepExecution.ResponsePayload = summary.ToString(Newtonsoft.Json.Formatting.None);
+                    }
+                }
+                catch (Exception ex) when (config.ContinueOnError && ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex,
+                        "Execution {ExecutionId}: email node {NodeName} failed; continueOnError is set, so the flow continues.",
+                        executionId, node.NodeName);
+                    stepExecution.ResponsePayload = new JObject
+                    {
+                        ["error"] = ex.Message
+                    }.ToString(Newtonsoft.Json.Formatting.None);
+                }
+
+                var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id);
+                foreach (var edge in outgoing)
+                {
+                    lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
+                }
+            }
             else if (node.StepType == StepType.PersistedState)
             {
                 if (!string.IsNullOrWhiteSpace(node.MappingCode))
                 {
                     currentPayload = await RunScriptAsync(node, "PersistedState",
-                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson));
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
                     persistedStateBox.Value = ParseObjectOrEmpty(currentPayload);
-                    if (testContext == null)
+                    if (testContext == null && !suppressPersistedStateWrite)
                     {
                         await _repository.UpdatePersistedStateAsync(flow.Id, persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None));
                     }
@@ -503,6 +892,92 @@ public class FlowExecutor
                     lock (_executionLock) { activeNodes.Add(edge.TargetNodeId); }
                 }
             }
+            else if (node.StepType == StepType.FanOut)
+            {
+                if (testContext != null)
+                {
+                    throw new InvalidOperationException(
+                        "Fan Out creates durable child transactions and cannot enqueue them during an isolated test. Supply a test output for this card to test downstream nodes.");
+                }
+
+                var config = FanOutStepConfig.Parse(node.StepConfig);
+                if (string.IsNullOrWhiteSpace(config.ArrayPath))
+                {
+                    throw new InvalidOperationException($"Fan Out node {node.NodeName} has no array path configured.");
+                }
+
+                var input = ResolveNodeInput(flow, node, flowStateContext);
+                var (arrayRoot, arrayActualPath) = ResolveArraySource(input, flowStateContext, config.ArrayPath);
+                var resolvedArray = CrossReferenceKeyBuilder.ResolvePath(arrayRoot, arrayActualPath);
+                if (resolvedArray is not JArray arrayElements)
+                {
+                    throw new InvalidOperationException(
+                        $"Fan Out node {node.NodeName} path '{config.ArrayPath}' did not resolve to a JSON array.");
+                }
+
+                if (arrayElements.Count > config.MaxItems)
+                {
+                    throw new InvalidOperationException(
+                        $"Fan Out node {node.NodeName} found {arrayElements.Count} items, exceeding its limit of {config.MaxItems}.");
+                }
+
+                var startStepIds = flow.Edges
+                    .Where(edge => edge.SourceNodeId == node.Id)
+                    .OrderBy(edge => edge.Order)
+                    .Select(edge => edge.TargetNodeId)
+                    .Distinct()
+                    .ToList();
+                var queuedAt = DateTime.UtcNow;
+                var children = new List<FlowExecution>(arrayElements.Count);
+                for (var index = 0; index < arrayElements.Count; index++)
+                {
+                    var item = arrayElements[index].DeepClone();
+                    var itemJson = item.ToString(Newtonsoft.Json.Formatting.None);
+                    var itemState = (JObject)flowStateContext.DeepClone();
+                    itemState[config.ItemVariable] = item.DeepClone();
+                    if (!string.IsNullOrWhiteSpace(node.NodeName))
+                    {
+                        itemState[node.NodeName] = item.DeepClone();
+                    }
+
+                    children.Add(new FlowExecution
+                    {
+                        FlowId = flow.Id,
+                        FlowName = flow.Name,
+                        IntegrationId = flowExecution.IntegrationId ?? flow.IntegrationId,
+                        IntegrationName = flowExecution.IntegrationName,
+                        TraceParent = flowExecution.TraceParent,
+                        Status = ExecutionStatus.Queued,
+                        StartedAt = queuedAt,
+                        QueuedAt = queuedAt,
+                        TriggerSource = "FanOut",
+                        TriggerPayloadJson = itemJson,
+                        ParentExecutionId = flowExecution.Id,
+                        FanOutNodeId = node.Id,
+                        FanOutNodeName = node.NodeName ?? string.Empty,
+                        FanOutItemIndex = index + 1,
+                        FanOutItemCount = arrayElements.Count,
+                        FanOutItemJson = itemJson,
+                        StartStepIdsJson = JsonConvert.SerializeObject(startStepIds),
+                        InitialFlowStateJson = itemState.ToString(Newtonsoft.Json.Formatting.None),
+                        InitialPersistedStateJson = persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None)
+                    });
+                }
+
+                stepExecution.RequestPayload = input.ToString(Newtonsoft.Json.Formatting.None);
+                await _executionRepository.AddFlowExecutionsAsync(children);
+                currentPayload = new JObject
+                {
+                    ["itemCount"] = children.Count,
+                    ["queuedTransactions"] = children.Count,
+                    ["itemVariable"] = config.ItemVariable
+                }.ToString(Newtonsoft.Json.Formatting.None);
+                stepExecution.ResponsePayload = currentPayload;
+
+                _logger.LogInformation(
+                    "Execution {ExecutionId}: Fan Out node {NodeName} queued {ItemCount} item transaction(s)",
+                    executionId, node.NodeName, children.Count);
+            }
             else if (node.StepType == StepType.ForEach)
             {
                 var config = ForEachStepConfig.Parse(node.StepConfig);
@@ -520,9 +995,9 @@ public class FlowExecutor
                 var arrayElements = CrossReferenceKeyBuilder.ResolvePath(arrayRoot, arrayActualPath)
                     ?.ToArray() ?? Array.Empty<JToken>();
 
-                var subgraphNodeIds = IdentifySubgraphNodes(flow, node, sortedNodes);
-                var subgraphNodes = subgraphNodeIds
-                    .Select(id => sortedNodes.First(n => n.Id == id))
+                var subgraphNodeIds = FlowGraphAnalysis.GetForEachBodyNodeIds(flow, node.Id);
+                var subgraphNodes = sortedNodes
+                    .Where(candidate => subgraphNodeIds.Contains(candidate.Id))
                     .ToList();
 
                 executedNodes.UnionWith(subgraphNodeIds);
@@ -558,7 +1033,7 @@ public class FlowExecutor
                                     lastPayload = await RunStepAsync(
                                         subNode, flow, iterationState, persistedStateBox,
                                         flowExecution, executionId, sortedNodes,
-                                        activeNodes, executedNodes, ct, testContext);
+                                        activeNodes, executedNodes, ct, testContext, failedStepId);
 
                                     if (!string.IsNullOrWhiteSpace(subNode.NodeName))
                                     {
@@ -624,7 +1099,7 @@ public class FlowExecutor
                                 lastPayload = await RunStepAsync(
                                     subNode, flow, iterationState, persistedStateBox,
                                     flowExecution, executionId, sortedNodes,
-                                    activeNodes, executedNodes, cancellationToken, testContext);
+                                    activeNodes, executedNodes, cancellationToken, testContext, failedStepId);
 
                                 if (!string.IsNullOrWhiteSpace(subNode.NodeName))
                                 {
@@ -730,35 +1205,78 @@ public class FlowExecutor
             lock (_executionLock) { flowExecution.FailedRecords++; }
 
             _logger.LogError(new EventId(1403, "flow.card.failed"), ex,
-                "Execution {ExecutionId}: node {NodeName} failed after {DurationMs}ms — dead-lettering",
+                suppressDeadLetter
+                    ? "Execution {ExecutionId}: node {NodeName} failed after {DurationMs}ms — not dead-lettering (debug run)"
+                    : "Execution {ExecutionId}: node {NodeName} failed after {DurationMs}ms — dead-lettering",
                 executionId, node.NodeName, (long)Stopwatch.GetElapsedTime(nodeStartedAt).TotalMilliseconds);
 
-            var deadLetter = new DeadLetterEntry
+            if (node.Id != failedStepId && !suppressDeadLetter && testContext == null)
             {
-                FlowExecutionId = flowExecution.Id,
-                StepId = node.Id,
-                FlowName = flow.Name,
-                IntegrationName = flowExecution.IntegrationName,
-                NodeName = string.IsNullOrWhiteSpace(node.NodeName) ? node.StepType.ToString() : node.NodeName,
-                Payload = stepExecution.RequestPayload,
-                FlowStateJson = flowStateJson,
-                ErrorMessage = ex.Message,
-                Status = "Pending"
-            };
-            await _executionRepository.AddDeadLetterEntryAsync(deadLetter);
-            await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+                var deadLetter = new DeadLetterEntry
+                {
+                    FlowExecutionId = flowExecution.Id,
+                    StepId = node.Id,
+                    FlowName = flow.Name,
+                    IntegrationName = flowExecution.IntegrationName,
+                    NodeName = string.IsNullOrWhiteSpace(node.NodeName) ? node.StepType.ToString() : node.NodeName,
+                    Payload = string.IsNullOrWhiteSpace(stepExecution.RequestPayload) ? stepExecution.ReceivedInput : stepExecution.RequestPayload,
+                    FlowStateJson = flowStateJson,
+                    PersistedStateJson = persistedStateJson,
+                    ErrorMessage = ex.Message,
+                    Status = "Pending"
+                };
+                // The original failure is attempt 0 so the root cause is never lost,
+                // even after later replay attempts append their own errors.
+                deadLetter.AttemptHistoryJson = System.Text.Json.JsonSerializer.Serialize(new List<DeadLetterAttempt>
+                {
+                    new()
+                    {
+                        Attempt = 0,
+                        At = DateTime.UtcNow,
+                        Error = ex.Message,
+                        NodeName = deadLetter.NodeName,
+                        Kind = "Failure"
+                    }
+                });
+                try
+                {
+                    await _executionRepository.AddDeadLetterEntryAsync(deadLetter);
+                }
+                catch (Exception deadLetterException)
+                {
+                    // Never let a secondary persistence failure replace the operation
+                    // failure that the run needs to report.
+                    _logger.LogError(new EventId(1406, "flow.deadletter.failed"), deadLetterException,
+                        "Execution {ExecutionId}: failed to persist dead letter for node {NodeName}",
+                        executionId, deadLetter.NodeName);
+                }
+            }
+            try
+            {
+                await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+            }
+            catch (Exception updateException)
+            {
+                _logger.LogError(new EventId(1407, "flow.stepexecution.failed"), updateException,
+                    "Execution {ExecutionId}: failed to update failed step {StepExecutionId}",
+                    executionId, stepExecution.Id);
+            }
             throw;
         }
 
         if (node.StepType != StepType.HttpAction)
         {
-            await _executionRepository.AddStepPacketLogAsync(new StepPacketLog
+            await AddStepPacketLogBestEffortAsync(new StepPacketLog
             {
                 StepExecutionId = stepExecution.Id,
                 Sequence = 1,
                 Kind = node.StepType.ToString(),
                 RequestBody = stepExecution.ReceivedInput,
-                ResponseBody = currentPayload,
+                // Email keeps the input as its pass-through output, so the audit packet uses the
+                // small sent-summary/preview instead of the payload that flows downstream.
+                ResponseBody = node.StepType == StepType.Email
+                    ? stepExecution.ResponsePayload ?? string.Empty
+                    : currentPayload ?? string.Empty,
                 StatusCode = stepExecution.HttpStatusCode == 0 ? null : stepExecution.HttpStatusCode,
                 StartedAt = stepExecution.StartedAt,
                 CompletedAt = stepExecution.CompletedAt,
@@ -768,73 +1286,36 @@ public class FlowExecutor
             });
         }
         await _executionRepository.UpdateStepExecutionAsync(stepExecution);
-        return currentPayload;
+        return currentPayload ?? string.Empty;
     }
 
-    /// <summary>
-    /// Identifies the subgraph of nodes that are scoped inside a ForEach node's iteration.
-    /// A node is in-scope if ALL its predecessors are also in-scope (starting with the ForEach node itself).
-    /// The first node with an external predecessor is the merge boundary and is NOT included.
-    /// Outgoing edges carrying SourcePortId "completed" are the ForEach's declarative post-loop
-    /// completion activation (wired in the designer) and are excluded from the in-scope body so the
-    /// merge target runs once after the loop instead of per iteration.
-    /// Returns node IDs in topological order.
-    /// </summary>
-    private static List<Guid> IdentifySubgraphNodes(IntegrationFlow flow, IntegrationStep forEach, List<IntegrationStep> sortedNodes)
+    // Packet logs are audit telemetry. They must never decide whether a flow step
+    // succeeded, failed, or produced a dead letter; an Elasticsearch outage used to
+    // turn an otherwise successful node into a failed execution with no dead letter.
+    private async Task AddStepPacketLogBestEffortAsync(StepPacketLog packet)
     {
-        var inScope = new HashSet<Guid> { forEach.Id };
-        var discovered = new HashSet<Guid>();
-        var queue = new Queue<Guid>();
-
-        foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == forEach.Id && (e.SourcePortId ?? string.Empty) != "completed"))
+        try
         {
-            queue.Enqueue(edge.TargetNodeId);
+            await _executionRepository.AddStepPacketLogAsync(packet);
         }
-
-        while (queue.Any())
+        catch (Exception ex)
         {
-            var nodeId = queue.Dequeue();
-            if (inScope.Contains(nodeId) || discovered.Contains(nodeId))
-            {
-                continue;
-            }
-
-            discovered.Add(nodeId);
-
-            var predecessors = flow.Edges
-                .Where(e => e.TargetNodeId == nodeId)
-                .Select(e => e.SourceNodeId);
-
-            if (predecessors.All(inScope.Contains))
-            {
-                inScope.Add(nodeId);
-
-                foreach (var edge in flow.Edges.Where(e => e.SourceNodeId == nodeId))
-                {
-                    if (!inScope.Contains(edge.TargetNodeId) && !discovered.Contains(edge.TargetNodeId))
-                    {
-                        queue.Enqueue(edge.TargetNodeId);
-                    }
-                }
-            }
+            _logger.LogWarning(new EventId(1405, "flow.packetlog.failed"), ex,
+                "Failed to persist {Kind} packet log {Sequence} for step execution {StepExecutionId}; continuing without telemetry",
+                packet.Kind, packet.Sequence, packet.StepExecutionId);
         }
-
-        inScope.Remove(forEach.Id);
-
-        return sortedNodes
-            .Where(n => inScope.Contains(n.Id))
-            .Select(n => n.Id)
-            .ToList();
     }
 
     public sealed record HttpExecutionResult(
         int StatusCode,
         string Response,
         string RequestPayload,
-        IReadOnlyList<StepPacketLog> Packets);
+        IReadOnlyList<StepPacketLog> Packets,
+        IReadOnlyDictionary<string, string[]> ResponseHeaders);
 
     public async Task<HttpExecutionResult> ExecuteHttpNodeAsync(
-        IntegrationStep node, string flowStateJson, string persistedStateJson, CancellationToken cancellationToken, FlowTestContext? testContext = null)
+        IntegrationStep node, string flowStateJson, string persistedStateJson, CancellationToken cancellationToken,
+        FlowTestContext? testContext = null, string? helperCode = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -842,14 +1323,14 @@ public class FlowExecutor
         if (!string.IsNullOrWhiteSpace(node.UrlCode))
         {
             url = await RunScriptAsync(node, "Url",
-                () => _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson, persistedStateJson));
+                () => _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson, persistedStateJson, helperCode));
         }
 
         string requestPayload = string.Empty;
         if (!string.IsNullOrWhiteSpace(node.PreFlightCode))
         {
             requestPayload = await RunScriptAsync(node, "PreFlight",
-                () => _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson, persistedStateJson));
+                () => _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson, persistedStateJson, helperCode));
         }
 
         var nodeToDispatch = new IntegrationStep
@@ -870,15 +1351,22 @@ public class FlowExecutor
         var pageResponses = new List<string>();
         var packets = new List<StepPacketLog>();
         var nextUrl = url;
+        var nextBody = requestPayload;
+        var requestBodySeed = ReadApiPacketRequestBody(nodeToDispatch.StepConfig);
+        var lastDispatchedBody = requestPayload;
         var seenCursors = new HashSet<string>(StringComparer.Ordinal);
         var statusCode = 0;
+        IReadOnlyDictionary<string, string[]> lastResponseHeaders = new Dictionary<string, string[]>();
 
         for (var page = 0; page < (pagination.Enabled ? pagination.MaxPages : 1); page++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             nodeToDispatch.EndpointUrl = nextUrl;
-            var transportResponse = await _transportEngine.DispatchAsync(nodeToDispatch, requestPayload, node.ConnectionId, cancellationToken, testContext);
+            var pageBody = string.IsNullOrWhiteSpace(nextBody) ? requestBodySeed : nextBody;
+            lastDispatchedBody = pageBody;
+            var transportResponse = await _transportEngine.DispatchAsync(nodeToDispatch, pageBody, node.ConnectionId, cancellationToken, testContext);
             statusCode = transportResponse.StatusCode;
+            lastResponseHeaders = transportResponse.Headers;
             foreach (var attempt in transportResponse.Attempts)
             {
                 packets.Add(new StepPacketLog
@@ -889,11 +1377,12 @@ public class FlowExecutor
                     Attempt = attempt == transportResponse.Attempts[^1] ? 1 : 0,
                     HttpMethod = attempt.HttpMethod,
                     RequestUrl = attempt.RequestUrl,
-                    StatusCode = attempt.StatusCode,
+                    StatusCode = attempt.StatusCode == 0 ? null : attempt.StatusCode,
                     RequestHeadersJson = JsonConvert.SerializeObject(attempt.RequestHeaders),
                     RequestBody = attempt.RequestBody,
                     ResponseHeadersJson = JsonConvert.SerializeObject(attempt.ResponseHeaders),
                     ResponseBody = attempt.Response,
+                    Error = attempt.Error,
                     StartedAt = attempt.StartedAt,
                     CompletedAt = attempt.CompletedAt,
                     DurationMs = (long)(attempt.CompletedAt - attempt.StartedAt).TotalMilliseconds
@@ -901,29 +1390,34 @@ public class FlowExecutor
             }
             if (statusCode < 200 || statusCode >= 300)
             {
-                return new HttpExecutionResult(statusCode, transportResponse.Response, requestPayload, packets);
+                return new HttpExecutionResult(statusCode, transportResponse.Response, lastDispatchedBody, packets, transportResponse.Headers);
             }
 
             pageResponses.Add(transportResponse.Response);
 
             if (!pagination.Enabled)
             {
-                return new HttpExecutionResult(statusCode, transportResponse.Response, requestPayload, packets);
+                return new HttpExecutionResult(statusCode, transportResponse.Response, lastDispatchedBody, packets, transportResponse.Headers);
             }
 
             var pageJson = TryParseJson(transportResponse.Response);
-            var next = ResolveNextPageUrl(pagination, nextUrl, pageJson, transportResponse.Headers, page);
+            var next = ResolveNextPage(pagination, nextUrl, pageBody, pageJson, transportResponse.Headers, page);
             if (next == null)
             {
-                return new HttpExecutionResult(statusCode, AggregatePages(pageResponses, pagination), requestPayload, packets);
+                return new HttpExecutionResult(statusCode, AggregatePages(pageResponses, pagination), lastDispatchedBody, packets, transportResponse.Headers);
             }
 
-            if (!seenCursors.Add(next))
+            if (!seenCursors.Add(next.Continuation))
             {
-                throw new InvalidOperationException($"Pagination on node {node.NodeName} repeated the same continuation value.");
+                throw new InvalidOperationException(
+                    $"Pagination on node {node.NodeName} repeated the same continuation value '{Shorten(next.Continuation, 80)}'. " +
+                    $"{pagination.Style} reads it from '{next.SourcePath}' and sends it as '{next.Target}'. " +
+                    "Check that the source path points at the API's advancing token and that the target matches how the API expects the token — " +
+                    "a query parameter name, or a JSON path inside the request body (for example variables.cursor for GraphQL).");
             }
 
-            nextUrl = next;
+            nextUrl = next.Url;
+            nextBody = next.Body;
             if (pagination.DelayMs > 0)
             {
                 await Task.Delay(pagination.DelayMs, cancellationToken);
@@ -934,8 +1428,49 @@ public class FlowExecutor
             "Pagination on node {NodeName} stopped at the configured limit of {MaxPages} page(s); the API still had more pages available.",
             node.NodeName, pagination.MaxPages);
 
-        return new HttpExecutionResult(statusCode, AggregatePages(pageResponses, pagination), requestPayload, packets);
+        return new HttpExecutionResult(statusCode, AggregatePages(pageResponses, pagination), lastDispatchedBody, packets, lastResponseHeaders);
     }
+
+    private static string BuildHttpErrorEnvelope(
+        int statusCode,
+        string responseBody,
+        string error,
+        IReadOnlyDictionary<string, string[]> headers)
+    {
+        JToken body;
+        try
+        {
+            body = string.IsNullOrWhiteSpace(responseBody) ? JValue.CreateNull() : JToken.Parse(responseBody);
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            body = new JValue(responseBody);
+        }
+
+        var safeHeaders = new JObject();
+        foreach (var header in headers)
+        {
+            if (IsSensitiveHeader(header.Key)) continue;
+            safeHeaders[header.Key] = new JArray(header.Value);
+        }
+
+        return new JObject
+        {
+            ["ok"] = false,
+            ["statusCode"] = statusCode,
+            ["error"] = error,
+            ["body"] = body,
+            ["headers"] = safeHeaders
+        }.ToString(Newtonsoft.Json.Formatting.None);
+    }
+
+    private static bool IsSensitiveHeader(string name) =>
+        name.Equals("set-cookie", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("cookie", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("authorization", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("proxy-authorization", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("x-api-key", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("api-key", StringComparison.OrdinalIgnoreCase);
 
     private static JObject? TryParseJson(string response)
     {
@@ -949,13 +1484,39 @@ public class FlowExecutor
         }
     }
 
-    private static string? ResolveNextPageUrl(
+    private sealed record NextPage(string Continuation, string Url, string Body, string SourcePath, string Target);
+
+    private static string ReadApiPacketRequestBody(string? stepConfig)
+    {
+        if (string.IsNullOrWhiteSpace(stepConfig)) return string.Empty;
+        try
+        {
+            var config = JObject.Parse(stepConfig);
+            return config.SelectToken("apiPacket.requestBody")?.Type == JTokenType.String
+                ? config.SelectToken("apiPacket.requestBody")!.Value<string>() ?? string.Empty
+                : string.Empty;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
+    }
+
+    private static NextPage? ResolveNextPage(
         PaginationStepConfig config,
         string currentUrl,
+        string currentBody,
         JObject? page,
         IReadOnlyDictionary<string, string[]> headers,
         int pageNumber)
     {
+        if (!string.IsNullOrWhiteSpace(config.HasMoreResponsePath) &&
+            page?.SelectToken(config.HasMoreResponsePath)?.Type == JTokenType.Boolean &&
+            page.SelectToken(config.HasMoreResponsePath)!.Value<bool>() == false)
+        {
+            return null;
+        }
+
         if (string.Equals(config.Style, "LinkHeader", StringComparison.OrdinalIgnoreCase))
         {
             if (!headers.TryGetValue(config.NextLinkHeader, out var values)) return null;
@@ -963,22 +1524,64 @@ public class FlowExecutor
             if (link == null) return null;
             var start = link.IndexOf('<');
             var end = link.IndexOf('>');
-            return start >= 0 && end > start ? link[(start + 1)..end] : null;
+            if (start < 0 || end <= start) return null;
+            var nextUrl = link[(start + 1)..end];
+            if (!Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri) ||
+                !Uri.TryCreate(nextUrl, UriKind.Absolute, out var nextUri) ||
+                !string.Equals(currentUri.Host, nextUri.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Pagination on this node returned a Link header that points to a different host ('{nextUrl}'). " +
+                    "Cross-host pagination is blocked to prevent server-side request forgery.");
+            }
+
+            return new NextPage(nextUrl, nextUrl, currentBody, $"response header '{config.NextLinkHeader}'", "the next URL");
         }
 
         if (string.Equals(config.Style, "PageOffset", StringComparison.OrdinalIgnoreCase))
         {
-            if (pageNumber > 0 && config.HasMoreResponsePath.Length > 0 && page?.SelectToken(config.HasMoreResponsePath)?.Value<bool>() == false) return null;
-            return SetQueryParameter(currentUrl, config.OffsetRequestParameter, ((pageNumber + 1) * config.PageSize).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            var offset = ((pageNumber + 1) * config.PageSize).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return new NextPage(offset, SetQueryParameter(currentUrl, config.OffsetRequestParameter, offset), currentBody,
+                "page position", $"query parameter '{config.OffsetRequestParameter}'");
         }
 
-        var tokenPath = string.Equals(config.Style, "Cursor", StringComparison.OrdinalIgnoreCase)
-            ? config.CursorResponsePath
-            : config.NextTokenPath;
+        var isCursor = string.Equals(config.Style, "Cursor", StringComparison.OrdinalIgnoreCase);
+        var tokenPath = isCursor ? config.CursorResponsePath : config.NextTokenPath;
+        var parameterName = isCursor ? config.CursorRequestParameter : config.NextTokenParameter;
         var token = page?.SelectToken(tokenPath)?.ToString();
         if (string.IsNullOrWhiteSpace(token)) return null;
-        return SetQueryParameter(currentUrl, string.Equals(config.Style, "Cursor", StringComparison.OrdinalIgnoreCase) ? config.CursorRequestParameter : config.NextTokenParameter, token);
+
+        // A parameter name that matches a JSON path inside the request body (for example
+        // "variables.cursor" for GraphQL) is injected there; anything else is a query
+        // parameter name, which keeps classic REST token pagination unchanged.
+        if (TrySetBodyValue(currentBody, parameterName, token, out var updatedBody))
+            return new NextPage(token, currentUrl, updatedBody, $"response path '{tokenPath}'", $"request-body path '{parameterName}'");
+
+        return new NextPage(token, SetQueryParameter(currentUrl, parameterName, token), currentBody,
+            $"response path '{tokenPath}'", $"query parameter '{parameterName}'");
     }
+
+    private static bool TrySetBodyValue(string body, string path, string value, out string updatedBody)
+    {
+        updatedBody = body;
+        if (string.IsNullOrWhiteSpace(path) || (!path.Contains('.') && !path.Contains('['))) return false;
+        try
+        {
+            var json = JObject.Parse(body);
+            var token = json.SelectToken(path);
+            if (token == null || token.Type == JTokenType.Object || token.Type == JTokenType.Array) return false;
+            token.Replace(new JValue(value));
+            updatedBody = json.ToString(Newtonsoft.Json.Formatting.None);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static string Shorten(string value, int max) =>
+        string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max] + "…";
 
     private static string SetQueryParameter(string url, string name, string value)
     {
@@ -1006,6 +1609,235 @@ public class FlowExecutor
             }
         }
         return first.ToString(Newtonsoft.Json.Formatting.None);
+    }
+
+    private sealed record ResolvedEmail(
+        string Subject,
+        string Body,
+        bool IsHtml,
+        IReadOnlyList<string> To,
+        IReadOnlyList<string> Cc,
+        IReadOnlyList<string> Bcc,
+        string? ReplyTo,
+        IReadOnlyList<string> MissingPlaceholders);
+
+    private async Task<ResolvedEmail> ResolveEmailAsync(
+        IntegrationStep node,
+        EmailStepConfig config,
+        IntegrationFlow flow,
+        string flowStateJson,
+        string persistedStateJson)
+    {
+        var flowState = ParseObjectOrEmpty(flowStateJson);
+        var persistedState = ParseObjectOrEmpty(persistedStateJson);
+
+        string? scriptTo = null;
+        string? scriptCc = null;
+        string? scriptBcc = null;
+        string? scriptReplyTo = null;
+        string? scriptSubject = null;
+        string? scriptBody = null;
+        bool? scriptIsHtml = null;
+
+        if (config.UseScript)
+        {
+            if (string.IsNullOrWhiteSpace(node.MappingCode))
+            {
+                throw new InvalidOperationException($"Email node {EmailLabel(node)} has no script configured.");
+            }
+
+            var scriptJson = await RunScriptAsync(node, "Email",
+                () => _codeExecutionService.ExecuteEmailAsync(
+                    node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
+
+            JObject scripted;
+            try
+            {
+                scripted = JObject.Parse(scriptJson);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Email node {EmailLabel(node)} script must return a JSON object with to, cc, bcc, replyTo, subject, body and isHtml.", ex);
+            }
+
+            if (TryReadEmailField(scripted, "to", out var value)) scriptTo = value;
+            if (TryReadEmailField(scripted, "cc", out value)) scriptCc = value;
+            if (TryReadEmailField(scripted, "bcc", out value)) scriptBcc = value;
+            if (TryReadEmailField(scripted, "replyTo", out value)) scriptReplyTo = value;
+            if (TryReadEmailField(scripted, "subject", out value)) scriptSubject = value;
+            if (TryReadEmailField(scripted, "body", out value)) scriptBody = value;
+            if (scripted.TryGetValue("isHtml", out var isHtmlToken) && isHtmlToken.Type != JTokenType.Null)
+            {
+                scriptIsHtml = isHtmlToken.Value<bool>();
+            }
+        }
+
+        var missing = new List<string>();
+        var isHtml = scriptIsHtml ?? config.IsHtml;
+        var toRaw = scriptTo ?? EmailTemplate.Render(config.To, flowState, persistedState, false, missing);
+        var ccRaw = scriptCc ?? EmailTemplate.Render(config.Cc, flowState, persistedState, false, missing);
+        var bccRaw = scriptBcc ?? EmailTemplate.Render(config.Bcc, flowState, persistedState, false, missing);
+        var replyToRaw = scriptReplyTo ?? EmailTemplate.Render(config.ReplyTo, flowState, persistedState, false, missing);
+        var subject = scriptSubject ?? EmailTemplate.Render(config.Subject, flowState, persistedState, false, missing);
+        var body = scriptBody ?? EmailTemplate.Render(config.Body, flowState, persistedState, isHtml, missing);
+
+        RejectHeaderBreaks(toRaw, node, "To");
+        RejectHeaderBreaks(ccRaw, node, "Cc");
+        RejectHeaderBreaks(bccRaw, node, "Bcc");
+        RejectHeaderBreaks(replyToRaw, node, "Reply-To");
+        RejectHeaderBreaks(subject, node, "Subject");
+
+        var toList = ParseEmailAddresses(toRaw, node, "To");
+        var ccList = ParseEmailAddresses(ccRaw, node, "Cc")
+            .Where(address => !toList.Contains(address, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        var bccList = ParseEmailAddresses(bccRaw, node, "Bcc")
+            .Where(address => !toList.Contains(address, StringComparer.OrdinalIgnoreCase)
+                && !ccList.Contains(address, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        var replyTo = ParseSingleEmailAddress(replyToRaw, node);
+
+        if (toList.Count == 0)
+        {
+            throw new InvalidOperationException($"Email node {EmailLabel(node)} has no To recipients configured.");
+        }
+
+        if (toList.Count + ccList.Count + bccList.Count > 20)
+        {
+            throw new InvalidOperationException(
+                $"Email node {EmailLabel(node)} has {toList.Count + ccList.Count + bccList.Count} recipients; the maximum is 20.");
+        }
+
+        if (string.IsNullOrWhiteSpace(subject))
+        {
+            throw new InvalidOperationException($"Email node {EmailLabel(node)} has no subject configured.");
+        }
+
+        if (subject.Length > 255)
+        {
+            throw new InvalidOperationException($"Email node {EmailLabel(node)} subject exceeds 255 characters.");
+        }
+
+        if (Encoding.UTF8.GetByteCount(body) > 256 * 1024)
+        {
+            throw new InvalidOperationException($"Email node {EmailLabel(node)} body exceeds 256 KB.");
+        }
+
+        return new ResolvedEmail(
+            subject, body, isHtml, toList, ccList, bccList, replyTo, missing.Distinct(StringComparer.Ordinal).ToList());
+    }
+
+    private static void AddMissingPlaceholders(JObject summary, IReadOnlyList<string> missing)
+    {
+        if (missing.Count > 0)
+        {
+            summary["missingPlaceholders"] = new JArray(missing);
+        }
+    }
+
+    private static void RejectHeaderBreaks(string value, IntegrationStep node, string field)
+    {
+        if (value.Contains('\r') || value.Contains('\n'))
+        {
+            throw new InvalidOperationException(
+                $"Email node {EmailLabel(node)} {field} contains a line break, which is not allowed in an email header.");
+        }
+    }
+
+    private static string EmailLabel(IntegrationStep node) =>
+        string.IsNullOrWhiteSpace(node.NodeName) ? "Email" : node.NodeName;
+
+    private static bool TryReadEmailField(JObject source, string field, out string value)
+    {
+        if (source.TryGetValue(field, out var token) && token.Type != JTokenType.Null)
+        {
+            value = token is JArray array
+                ? string.Join(", ", array.Values<string>().Where(item => !string.IsNullOrWhiteSpace(item)))
+                : token.ToString();
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static List<string> ParseEmailAddresses(string? value, IntegrationStep node, string field)
+    {
+        var addresses = new List<string>();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return addresses;
+        }
+
+        foreach (var raw in value.Split(new[] { ',', ';' },
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            try
+            {
+                var address = new MailAddress(raw).Address;
+                if (!addresses.Contains(address, StringComparer.OrdinalIgnoreCase))
+                {
+                    addresses.Add(address);
+                }
+            }
+            catch (FormatException)
+            {
+                throw new InvalidOperationException(
+                    $"Email node {EmailLabel(node)} has an invalid {field} address: {raw}");
+            }
+        }
+
+        return addresses;
+    }
+
+    private static string? ParseSingleEmailAddress(string? value, IntegrationStep node)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Contains(',') || trimmed.Contains(';'))
+        {
+            throw new InvalidOperationException(
+                $"Email node {EmailLabel(node)} Reply-To must be a single address.");
+        }
+
+        try
+        {
+            return new MailAddress(trimmed).Address;
+        }
+        catch (FormatException)
+        {
+            throw new InvalidOperationException(
+                $"Email node {EmailLabel(node)} has an invalid Reply-To address: {trimmed}");
+        }
+    }
+
+    private static string BuildEmailHtml(string body, bool isHtml)
+    {
+        if (isHtml)
+        {
+            return body;
+        }
+
+        var normalized = body.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        return WebUtility.HtmlEncode(normalized).Replace("\n", "<br>", StringComparison.Ordinal);
+    }
+
+    private static string BuildEmailText(string body, bool isHtml)
+    {
+        if (!isHtml)
+        {
+            return body;
+        }
+
+        var withBreaks = Regex.Replace(body, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+        withBreaks = Regex.Replace(withBreaks, "</(p|div|h[1-6]|li|tr)>", "\n", RegexOptions.IgnoreCase);
+        var stripped = Regex.Replace(withBreaks, "<[^>]+>", string.Empty);
+        return WebUtility.HtmlDecode(stripped).Trim();
     }
 
     private static async Task<TResult> RunScriptAsync<TResult>(IntegrationStep node, string stage, Func<Task<TResult>> scriptCall)

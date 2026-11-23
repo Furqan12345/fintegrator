@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -8,49 +8,97 @@ using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
 
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
+using SimpleIPaaS.Infrastructure.Storage;
 
 namespace SimpleIPaaS.Infrastructure.Persistence;
 
 public class ExecutionRepository : IExecutionRepository
 {
     private readonly IPaaSContext _context;
-    private readonly ITenantContext _tenantContext;
+    private readonly Func<IPacketLogStore> _packetLogStoreSelector;
 
-    public ExecutionRepository(IPaaSContext context, ITenantContext tenantContext)
+    public ExecutionRepository(IPaaSContext context, Func<IPacketLogStore>? packetLogStoreSelector = null)
     {
         _context = context;
-        _tenantContext = tenantContext;
+
+        // Packet logs (the request/response messages) are the growing half of this repository and
+        // can live in Elasticsearch. The selector is asked per call rather than once, so a dataset
+        // moved between backends takes effect on the next write instead of the next process start.
+        _packetLogStoreSelector = packetLogStoreSelector ?? (() => new SqlPacketLogStore(context));
     }
+
+    private IPacketLogStore PacketLogStore => _packetLogStoreSelector();
 
     public async Task<FlowExecution?> GetFlowExecutionAsync(Guid id)
     {
         return await _context.FlowExecutions.FirstOrDefaultAsync(e => e.Id == id);
     }
 
-    public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(Guid? flowId = null, ExecutionStatus? status = null, int page = 1, int pageSize = 50, Guid? integrationId = null)
+    public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(ExecutionQuery query)
     {
-        page = page < 1 ? 1 : page;
-        pageSize = pageSize < 1 ? 50 : Math.Min(pageSize, 200);
+        var page = query.Page < 1 ? 1 : query.Page;
+        var pageSize = query.PageSize < 1 ? 50 : Math.Min(query.PageSize, 200);
 
-        var query = _context.FlowExecutions.AsQueryable();
-
-        if (flowId.HasValue && flowId.Value != Guid.Empty)
+        var executions = _context.FlowExecutions.AsQueryable();
+        if (!query.IncludeTestRuns)
         {
-            query = query.Where(e => e.FlowId == flowId.Value);
+            executions = executions.Where(e => !e.IsTest);
         }
 
-        if (integrationId.HasValue && integrationId.Value != Guid.Empty)
+        if (query.FlowId.HasValue && query.FlowId.Value != Guid.Empty)
         {
-            query = query.Where(e => e.IntegrationId == integrationId.Value);
+            executions = executions.Where(e => e.FlowId == query.FlowId.Value);
         }
 
-        if (status.HasValue)
+        if (query.IntegrationId.HasValue && query.IntegrationId.Value != Guid.Empty)
         {
-            query = query.Where(e => e.Status == status.Value);
+            // An integration owns the runs of the flows that are in it *now*. IntegrationId on the
+            // execution row is a denormalised snapshot from when the run happened, so filtering on it
+            // alone would hide a moved flow's history from the integration that displays it.
+            var integrationId = query.IntegrationId.Value;
+            var flowIds = await _context.IntegrationFlows
+                .Where(flow => flow.IntegrationId == integrationId)
+                .Select(flow => flow.Id)
+                .ToListAsync();
+
+            executions = executions.Where(e => flowIds.Contains(e.FlowId));
         }
 
-        return await query
+        if (query.Status.HasValue)
+        {
+            executions = executions.Where(e => e.Status == query.Status.Value);
+        }
+
+        var search = query.Search?.Trim();
+        if (!string.IsNullOrEmpty(search))
+        {
+            if (Guid.TryParse(search, out var executionId))
+            {
+                executions = executions.Where(e => e.Id == executionId);
+            }
+            else
+            {
+                // EF.Functions.Like maps to SQL LIKE, which is case-insensitive for ASCII in SQLite.
+                var pattern = $"%{EscapeLike(search)}%";
+                executions = executions.Where(e =>
+                    EF.Functions.Like(e.FlowName, pattern, LikeEscape)
+                    || (e.Identifier != null && EF.Functions.Like(e.Identifier, pattern, LikeEscape))
+                    || (e.Message != null && EF.Functions.Like(e.Message, pattern, LikeEscape))
+                    || (e.ErrorMessage != null && EF.Functions.Like(e.ErrorMessage, pattern, LikeEscape)));
+            }
+        }
+
+        if (query.SinceUtc.HasValue)
+        {
+            executions = executions.Where(e => e.StartedAt >= query.SinceUtc.Value);
+        }
+
+        if (query.UntilUtc.HasValue)
+        {
+            executions = executions.Where(e => e.StartedAt < query.UntilUtc.Value);
+        }
+
+        return await executions
             .OrderByDescending(e => e.StartedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
@@ -59,12 +107,18 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task AddFlowExecutionAsync(FlowExecution execution)
     {
-        if (execution.TenantId == Guid.Empty)
+        _context.FlowExecutions.Add(execution);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task AddFlowExecutionsAsync(IReadOnlyCollection<FlowExecution> executions)
+    {
+        if (executions.Count == 0)
         {
-            execution.TenantId = _tenantContext.TenantId;
+            return;
         }
 
-        _context.FlowExecutions.Add(execution);
+        _context.FlowExecutions.AddRange(executions);
         await _context.SaveChangesAsync();
     }
 
@@ -76,11 +130,6 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task AddStepExecutionAsync(StepExecution execution)
     {
-        if (execution.TenantId == Guid.Empty)
-        {
-            execution.TenantId = _tenantContext.TenantId;
-        }
-
         _context.StepExecutions.Add(execution);
         await _context.SaveChangesAsync();
     }
@@ -142,70 +191,31 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task AddStepPacketLogAsync(StepPacketLog packet)
     {
-        if (packet.TenantId == Guid.Empty)
-        {
-            packet.TenantId = _tenantContext.TenantId;
-        }
-
-        _context.StepPacketLogs.Add(packet);
-        await _context.SaveChangesAsync();
+        await PacketLogStore.AddAsync(packet);
     }
 
     public async Task<IEnumerable<StepPacketLog>> GetStepPacketLogsAsync(Guid stepExecutionId)
     {
-        return await _context.StepPacketLogs
-            .Where(packet => packet.StepExecutionId == stepExecutionId)
-            .OrderBy(packet => packet.Sequence)
-            .ToListAsync();
+        return await PacketLogStore.GetByStepExecutionAsync(stepExecutionId);
     }
 
-    public async Task<IReadOnlyList<StepPacketLogSummary>> GetStepPacketLogSummariesAsync(Guid flowExecutionId)
-    {
-        return await (from packet in _context.StepPacketLogs.AsNoTracking()
-                      join step in _context.StepExecutions.AsNoTracking() on packet.StepExecutionId equals step.Id
-                      where step.FlowExecutionId == flowExecutionId
-                      orderby packet.StepExecutionId, packet.Sequence
-                      select new StepPacketLogSummary(
-                          packet.Id,
-                          packet.StepExecutionId,
-                          packet.Sequence,
-                          packet.Kind,
-                          packet.PageNumber,
-                          packet.Attempt,
-                          packet.HttpMethod,
-                          packet.RequestUrl,
-                          packet.StatusCode,
-                          packet.StartedAt,
-                          packet.CompletedAt,
-                          packet.DurationMs,
-                          packet.Error,
-                          packet.RequestHeadersJson.Length,
-                          packet.RequestBody.Length,
-                          packet.ResponseHeadersJson.Length,
-                          packet.ResponseBody.Length))
-            .ToListAsync();
-    }
+    public Task<IReadOnlyList<StepPacketLogSummary>> GetStepPacketLogSummariesAsync(Guid flowExecutionId) =>
+        PacketLogStore.GetSummariesAsync(flowExecutionId);
 
-    public async Task<StepPacketBody?> GetStepPacketBodyAsync(Guid flowExecutionId, Guid packetId)
-    {
-        return await (from packet in _context.StepPacketLogs.AsNoTracking()
-                      join step in _context.StepExecutions.AsNoTracking() on packet.StepExecutionId equals step.Id
-                      where packet.Id == packetId && step.FlowExecutionId == flowExecutionId
-                      select new StepPacketBody(
-                          packet.Id,
-                          packet.RequestHeadersJson,
-                          packet.RequestBody,
-                          packet.ResponseHeadersJson,
-                          packet.ResponseBody))
-            .FirstOrDefaultAsync();
-    }
+    public Task<StepPacketBody?> GetStepPacketBodyAsync(Guid flowExecutionId, Guid packetId) =>
+        PacketLogStore.GetBodyAsync(flowExecutionId, packetId);
+
+    public Task<IReadOnlyList<PacketLogListItem>> GetPacketLogPageAsync(PacketLogPageFilter filter) =>
+        PacketLogStore.GetPageAsync(filter);
+
+    public Task<PacketLogDetailItem?> GetPacketLogDetailAsync(Guid packetId) =>
+        PacketLogStore.GetDetailAsync(packetId);
 
     public async Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync()
     {
-        // Cross-tenant by design: the queue spans all tenants. The claim is an atomic
-        // guarded UPDATE (WHERE Status = Queued) so two engines can never take the same row.
+        // The claim is an atomic guarded UPDATE (WHERE Status = Queued) so two engines can
+        // never take the same row.
         var nextId = await _context.FlowExecutions
-            .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(e => e.Status == ExecutionStatus.Queued)
             .OrderBy(e => e.QueuedAt ?? e.StartedAt)
@@ -218,7 +228,6 @@ public class ExecutionRepository : IExecutionRepository
         }
 
         var claimed = await _context.FlowExecutions
-            .IgnoreQueryFilters()
             .Where(e => e.Id == nextId.Value && e.Status == ExecutionStatus.Queued)
             .ExecuteUpdateAsync(set => set
                 .SetProperty(e => e.Status, ExecutionStatus.InProgress)
@@ -230,14 +239,12 @@ public class ExecutionRepository : IExecutionRepository
         }
 
         var execution = await _context.FlowExecutions
-            .IgnoreQueryFilters()
             .AsNoTracking()
             .FirstAsync(e => e.Id == nextId.Value);
 
         return new QueuedExecutionClaim(
             execution.Id,
             execution.FlowId,
-            execution.TenantId,
             execution.TriggerSource,
             execution.TriggerPayloadJson,
             execution.FlowName,
@@ -260,32 +267,66 @@ public class ExecutionRepository : IExecutionRepository
         // The API marks running executions Cancelled in this same table; the Engine's
         // watcher turns those rows into local CancellationToken cancellations.
         return await _context.FlowExecutions
-            .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(e => executionIds.Contains(e.Id) && e.Status == ExecutionStatus.Cancelled)
             .Select(e => e.Id)
             .ToListAsync();
     }
 
-    public async Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAcrossTenantsAsync(int batchSize)
+    public async Task<IReadOnlyList<DeadLetterEntry>> GetReplayableDeadLettersAsync(int batchSize)
     {
-        return await _context.DeadLetterEntries
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(d => d.Status == "Pending" || d.ReplayRequestedAt != null)
-            .OrderBy(d => d.CreatedAt)
+        return await (from entry in _context.DeadLetterEntries.AsNoTracking()
+                      join run in _context.FlowExecutions.AsNoTracking()
+                          on entry.FlowExecutionId equals run.Id into runs
+                      from run in runs.DefaultIfEmpty()
+                      where (entry.Status == "Pending" || entry.ReplayRequestedAt != null)
+                            && (run == null || !run.IsTest)
+                      // Manual requests first: an old backlog of Pending entries must never fill the
+                      // whole batch and starve a replay the operator just asked for.
+                      orderby entry.ReplayRequestedAt == null, entry.CreatedAt
+                      select entry)
             .Take(batchSize < 1 ? 100 : batchSize)
             .ToListAsync();
     }
 
+    public async Task<IReadOnlyList<(DeadLetterEntry Entry, Guid? FlowId)>> GetUnalertedDeadLettersAsync(
+        DateTime since, int max)
+    {
+        var rows = await (from entry in _context.DeadLetterEntries.AsNoTracking()
+                          join run in _context.FlowExecutions.AsNoTracking()
+                              on entry.FlowExecutionId equals run.Id into runs
+                          from run in runs.DefaultIfEmpty()
+                          where entry.AlertedAt == null
+                                && entry.CreatedAt >= since
+                                && (run == null || !run.IsTest)
+                          orderby entry.CreatedAt
+                          select new
+                          {
+                              entry,
+                              FlowId = run == null ? (Guid?)null : run.FlowId
+                          })
+                         .Take(max < 1 ? 200 : max)
+                         .ToListAsync();
+
+        return rows.Select(row => (row.entry, row.FlowId)).ToList();
+    }
+
+    public async Task<int> MarkDeadLettersAlertedAsync(IReadOnlyCollection<Guid> ids, DateTime at)
+    {
+        if (ids.Count == 0)
+        {
+            return 0;
+        }
+
+        return await _context.DeadLetterEntries
+            .Where(entry => ids.Contains(entry.Id) && entry.AlertedAt == null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(entry => entry.AlertedAt, at));
+    }
+
+
     public async Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
 
     {
-        if (entry.TenantId == Guid.Empty)
-        {
-            entry.TenantId = _tenantContext.TenantId;
-        }
-
         _context.DeadLetterEntries.Add(entry);
         await _context.SaveChangesAsync();
     }
@@ -297,17 +338,100 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize)
     {
-        return await _context.DeadLetterEntries
-            .Where(d => d.Status == "Pending")
-            .OrderBy(d => d.CreatedAt)
+        return await (from entry in _context.DeadLetterEntries
+                      join run in _context.FlowExecutions on entry.FlowExecutionId equals run.Id into runs
+                      from run in runs.DefaultIfEmpty()
+                      where entry.Status == "Pending" && (run == null || !run.IsTest)
+                      orderby entry.CreatedAt
+                      select entry)
             .Take(batchSize)
             .ToListAsync();
     }
 
 
+    public async Task<IReadOnlyList<(DeadLetterEntry Entry, Guid? FlowId)>> GetDeadLetterPageAsync(DeadLetterPageFilter filter)
+    {
+        var query =
+            from entry in _context.DeadLetterEntries.AsNoTracking()
+            join run in _context.FlowExecutions.AsNoTracking() on entry.FlowExecutionId equals run.Id into runs
+            from run in runs.DefaultIfEmpty()
+            where (filter.Status == null || entry.Status == filter.Status)
+                && (filter.IncludeTests || run == null || !run.IsTest)
+                && (filter.FlowId == null || (run != null && run.FlowId == filter.FlowId))
+                && (filter.IntegrationId == null || (run != null && run.IntegrationId == filter.IntegrationId))
+                && (filter.FlowExecutionId == null || entry.FlowExecutionId == filter.FlowExecutionId)
+                && (filter.StepId == null || entry.StepId == filter.StepId)
+            select new { entry, FlowId = run == null ? (Guid?)null : run.FlowId };
+
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+        {
+            var search = filter.Search;
+            query = query.Where(x =>
+                x.entry.NodeName.Contains(search) ||
+                x.entry.FlowName.Contains(search) ||
+                x.entry.IntegrationName.Contains(search) ||
+                x.entry.ErrorMessage.Contains(search));
+        }
+        if (filter.Hours.HasValue)
+        {
+            var since = DateTime.UtcNow.AddHours(-filter.Hours.Value);
+            query = query.Where(x => x.entry.CreatedAt >= since);
+        }
+
+        var rows = await query
+            .OrderByDescending(x => x.entry.CreatedAt)
+            .Skip((Math.Max(1, filter.Page) - 1) * filter.PageSize)
+            .Take(filter.PageSize)
+            .ToListAsync();
+        return rows.Select(x => (x.entry, x.FlowId)).ToList();
+    }
+
+    public async Task<bool> TryClaimDeadLetterForManualReplayAsync(Guid id) =>
+        await _context.DeadLetterEntries
+            .Where(entry => entry.Id == id && entry.ReplayRequestedAt != null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(entry => entry.ReplayRequestedAt, (DateTime?)null)) == 1;
+
+    public async Task<bool> TryClaimDeadLetterForAutoRetryAsync(Guid id) =>
+        await _context.DeadLetterEntries
+            .Where(entry => entry.Id == id && entry.Status == "Pending")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(entry => entry.Status, "Retrying")
+                .SetProperty(entry => entry.LastRetriedAt, DateTime.UtcNow)) == 1;
+
+    // Queues a manual replay exactly once: the update only matches while no replay is already
+    // queued, so concurrent retry clicks leave a single pending replay request for the worker.
+    public async Task<bool> TryRequestManualReplayAsync(
+        Guid id,
+        Guid startStepId,
+        DateTime requestedAt,
+        string? flowStateJson = null) =>
+        await _context.DeadLetterEntries
+            .Where(entry => entry.Id == id && entry.ReplayRequestedAt == null &&
+                (entry.Status == "Pending" || entry.Status == "Retrying"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(entry => entry.Status, "Retrying")
+                .SetProperty(entry => entry.ReplayFromStepId, startStepId)
+                .SetProperty(entry => entry.ReplayRequestedAt, requestedAt)
+                // A null edit leaves the captured state untouched; the update stays atomic,
+                // so a losing concurrent click can never overwrite the winner's state.
+                .SetProperty(entry => entry.FlowStateJson, entry => flowStateJson ?? entry.FlowStateJson)) == 1;
+
+    public async Task<int> ResetStaleRetryingDeadLettersAsync(TimeSpan age)
+    {
+        var cutoff = DateTime.UtcNow - age;
+        return await _context.DeadLetterEntries
+            .Where(entry => entry.Status == "Retrying" && entry.ReplayRequestedAt == null &&
+                (entry.LastRetriedAt == null || entry.LastRetriedAt < cutoff))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(entry => entry.Status, "Pending"));
+    }
+
     public async Task<IEnumerable<DeadLetterEntry>> GetAllDeadLettersAsync(string? status = null)
     {
-        var query = _context.DeadLetterEntries.AsQueryable();
+        var query = from entry in _context.DeadLetterEntries
+                    join run in _context.FlowExecutions on entry.FlowExecutionId equals run.Id into runs
+                    from run in runs.DefaultIfEmpty()
+                    where run == null || !run.IsTest
+                    select entry;
 
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -321,6 +445,12 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task<IEnumerable<DeadLetterEntry>> GetDeadLettersByExecutionAsync(Guid flowExecutionId)
     {
+        var isTest = await _context.FlowExecutions
+            .Where(execution => execution.Id == flowExecutionId)
+            .Select(execution => (bool?)execution.IsTest)
+            .FirstOrDefaultAsync();
+        if (isTest == true) return Array.Empty<DeadLetterEntry>();
+
         return await _context.DeadLetterEntries
             .Where(d => d.FlowExecutionId == flowExecutionId)
             .OrderBy(d => d.CreatedAt)
@@ -332,4 +462,10 @@ public class ExecutionRepository : IExecutionRepository
         _context.DeadLetterEntries.Update(entry);
         await _context.SaveChangesAsync();
     }
+
+    private const string LikeEscape = "\\";
+
+    // SQLite LIKE has no bracket escaping; wildcards are neutralised with an ESCAPE character.
+    private static string EscapeLike(string value) =>
+        value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 }

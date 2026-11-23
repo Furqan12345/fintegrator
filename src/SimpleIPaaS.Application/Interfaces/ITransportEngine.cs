@@ -16,7 +16,8 @@ public sealed record TransportAttempt(
     IReadOnlyDictionary<string, string[]> RequestHeaders,
     string RequestBody,
     DateTime StartedAt,
-    DateTime CompletedAt);
+    DateTime CompletedAt,
+    string? Error = null);
 
 public sealed record TransportResponse(
     int StatusCode,
@@ -30,6 +31,8 @@ public sealed record TransportResponse(
     public DateTime StartedAt { get; init; }
     public DateTime CompletedAt { get; init; }
     public IReadOnlyList<TransportAttempt> Attempts { get; init; } = Array.Empty<TransportAttempt>();
+    // Transport-level failure (DNS/TLS/timeout) — no HTTP status was ever received.
+    public string? Error { get; init; }
 }
 
 public interface ITransportEngine

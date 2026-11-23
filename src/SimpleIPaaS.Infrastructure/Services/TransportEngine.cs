@@ -14,6 +14,7 @@ using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
+using SimpleIPaaS.Infrastructure.Services.Security;
 
 namespace SimpleIPaaS.Infrastructure.Services;
 
@@ -23,6 +24,7 @@ public class TransportEngine : ITransportEngine
     private readonly IConnectionRepository _connectionRepository;
     private readonly IAuthenticationHandlerFactory _authFactory;
     private readonly IEncryptionService _encryptionService;
+    private readonly OutboundUrlPolicy _outboundUrlPolicy;
     private readonly ResiliencePipeline<HttpResponseMessage> _resiliencePipeline;
     private readonly ILogger<TransportEngine> _logger;
 
@@ -31,12 +33,14 @@ public class TransportEngine : ITransportEngine
         IConnectionRepository connectionRepository,
         IAuthenticationHandlerFactory authFactory,
         IEncryptionService encryptionService,
+        OutboundUrlPolicy outboundUrlPolicy,
         ILogger<TransportEngine> logger)
     {
         _httpClientFactory = httpClientFactory;
         _connectionRepository = connectionRepository;
         _authFactory = authFactory;
         _encryptionService = encryptionService;
+        _outboundUrlPolicy = outboundUrlPolicy;
         _logger = logger;
 
         _resiliencePipeline = new ResiliencePipelineBuilder<HttpResponseMessage>()
@@ -58,7 +62,7 @@ public class TransportEngine : ITransportEngine
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var client = _httpClientFactory.CreateClient();
+        var client = _httpClientFactory.CreateClient("Outbound");
         var operationStartedAt = Stopwatch.GetTimestamp();
         _logger.LogInformation(new EventId(1500, "dependency.http.started"), "HTTP card {CardId} started {HttpMethod} {Endpoint} (connection {ConnectionId})", step.Id, step.HttpMethod, SafeEndpoint(step.EndpointUrl), connectionId);
 
@@ -181,13 +185,16 @@ public class TransportEngine : ITransportEngine
         {
             var startedAt = DateTime.UtcNow;
             var completedAt = DateTime.UtcNow;
-            var requestHeaders = packetDetails.Headers.ToDictionary(pair => pair.Key, pair => new[] { pair.Value }, StringComparer.OrdinalIgnoreCase);
+            var requestHeaders = packetDetails.Headers.ToDictionary(
+                pair => pair.Key,
+                pair => RedactHeader(pair.Key, new[] { pair.Value }).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
             _logger.LogInformation(new EventId(1502, "dependency.http.fixture"), "HTTP card {CardId} used a test fixture with status {StatusCode} (connection {ConnectionId})", step.Id, fixtureResponse.StatusCode, resolvedConnectionId);
             var fixtureAttempt = new TransportAttempt(
                 fixtureResponse.StatusCode,
                 fixtureResponse.Response,
                 fixtureResponse.Headers,
-                url,
+                SafeEndpoint(url),
                 step.HttpMethod,
                 requestHeaders,
                 payload ?? string.Empty,
@@ -203,6 +210,8 @@ public class TransportEngine : ITransportEngine
                 Attempts = new[] { fixtureAttempt }
             };
         }
+
+        await _outboundUrlPolicy.ValidateAsync(url, cancellationToken);
 
         HttpRequestMessage BuildRequest()
         {
@@ -255,7 +264,7 @@ public class TransportEngine : ITransportEngine
                     (int)response.StatusCode,
                     await response.Content.ReadAsStringAsync(attemptToken),
                     responseHeaders,
-                    request.RequestUri?.ToString() ?? url,
+                    SafeEndpoint(request.RequestUri?.ToString() ?? url),
                     request.Method.Method,
                     requestHeaders,
                     requestBody,
@@ -265,43 +274,84 @@ public class TransportEngine : ITransportEngine
             }, cancellationToken);
         }
 
-        var response = await SendAsync();
-
-        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
-            (authType == AuthType.OAuth2ClientCredentials ||
-             authType == AuthType.OAuth2RefreshToken ||
-             authType == AuthType.OAuth2AuthCode ||
-             authType == AuthType.AmazonSpApi))
+        try
         {
-            authContext.ForceRefresh = true;
-            response = await SendAsync();
+            var response = await SendAsync();
+
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
+                (authType == AuthType.OAuth2ClientCredentials ||
+                 authType == AuthType.OAuth2RefreshToken ||
+                 authType == AuthType.OAuth2AuthCode ||
+                 authType == AuthType.AmazonSpApi))
+            {
+                authContext.ForceRefresh = true;
+                response = await SendAsync();
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            var headers = response.Headers
+                .Concat(response.Content.Headers)
+                .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.SelectMany(header => header.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
+            var attempt = lastAttempt ?? new TransportAttempt(
+                (int)response.StatusCode,
+                content,
+                headers,
+                SafeEndpoint(url),
+                step.HttpMethod,
+                new Dictionary<string, string[]>(),
+                payload ?? string.Empty,
+                DateTime.UtcNow,
+                DateTime.UtcNow);
+            _logger.LogInformation(new EventId(1503, "dependency.http.completed"), "HTTP card {CardId} completed with {StatusCode} in {DurationMs}ms (connection {ConnectionId})", step.Id, (int)response.StatusCode, (long)Stopwatch.GetElapsedTime(operationStartedAt).TotalMilliseconds, resolvedConnectionId);
+            return new TransportResponse((int)response.StatusCode, content, headers, url)
+            {
+                HttpMethod = attempt.HttpMethod,
+                RequestHeaders = attempt.RequestHeaders,
+                RequestBody = attempt.RequestBody,
+                StartedAt = attempt.StartedAt,
+                CompletedAt = attempt.CompletedAt,
+                Attempts = new[] { attempt }
+            };
         }
-
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        var headers = response.Headers
-            .Concat(response.Content.Headers)
-            .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.SelectMany(header => header.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
-        var attempt = lastAttempt ?? new TransportAttempt(
-            (int)response.StatusCode,
-            content,
-            headers,
-            url,
-            step.HttpMethod,
-            new Dictionary<string, string[]>(),
-            payload ?? string.Empty,
-            DateTime.UtcNow,
-            DateTime.UtcNow);
-        _logger.LogInformation(new EventId(1503, "dependency.http.completed"), "HTTP card {CardId} completed with {StatusCode} in {DurationMs}ms (connection {ConnectionId})", step.Id, (int)response.StatusCode, (long)Stopwatch.GetElapsedTime(operationStartedAt).TotalMilliseconds, resolvedConnectionId);
-        return new TransportResponse((int)response.StatusCode, content, headers, url)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            HttpMethod = attempt.HttpMethod,
-            RequestHeaders = attempt.RequestHeaders,
-            RequestBody = attempt.RequestBody,
-            StartedAt = attempt.StartedAt,
-            CompletedAt = attempt.CompletedAt,
-            Attempts = new[] { attempt }
-        };
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Transport-level failure (DNS, TLS, timeout, connection): nothing was
+            // received, but the attempt still records everything that was sent so
+            // packet logs and transactions stay complete in error states.
+            var failedAt = DateTime.UtcNow;
+            var failedStartedAt = failedAt - Stopwatch.GetElapsedTime(operationStartedAt);
+            var requestHeaders = packetDetails.Headers.ToDictionary(
+                pair => pair.Key,
+                pair => RedactHeader(pair.Key, new[] { pair.Value }).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+            var failedAttempt = new TransportAttempt(
+                0,
+                string.Empty,
+                new Dictionary<string, string[]>(),
+                SafeEndpoint(url),
+                step.HttpMethod,
+                requestHeaders,
+                payload ?? string.Empty,
+                failedStartedAt,
+                failedAt,
+                ex.Message);
+            _logger.LogWarning(new EventId(1504, "dependency.http.failed"), ex, "HTTP card {CardId} failed before any response was received (connection {ConnectionId})", step.Id, resolvedConnectionId);
+            return new TransportResponse(0, ex.Message, new Dictionary<string, string[]>(), url)
+            {
+                Error = ex.Message,
+                HttpMethod = step.HttpMethod,
+                RequestHeaders = requestHeaders,
+                RequestBody = payload ?? string.Empty,
+                StartedAt = failedStartedAt,
+                CompletedAt = failedAt,
+                Attempts = new[] { failedAttempt }
+            };
+        }
     }
 
     private static Dictionary<string, string[]> SnapshotHeaders(HttpRequestMessage request)
@@ -316,16 +366,22 @@ public class TransportEngine : ITransportEngine
     {
         return response.Headers
             .Concat(response.Content.Headers)
-            .ToDictionary(header => header.Key, header => header.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(
+                header => header.Key,
+                header => RedactHeader(header.Key, header.Value).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
     }
 
     private static IEnumerable<string> RedactHeader(string name, IEnumerable<string> values)
     {
         var sensitive = name.Equals("Authorization", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("Cookie", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Proxy-Authorization", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("cookie", StringComparison.OrdinalIgnoreCase)
             || name.Contains("api-key", StringComparison.OrdinalIgnoreCase)
             || name.Contains("secret", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("token", StringComparison.OrdinalIgnoreCase);
+            || name.Contains("token", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("signature", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith("-sig", StringComparison.OrdinalIgnoreCase);
         return sensitive ? new[] { "[REDACTED]" } : values;
     }
 
@@ -345,9 +401,12 @@ public class TransportEngine : ITransportEngine
         {
             return await _encryptionService.DecryptAsync(value);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            return value;
+            _logger.LogError(exception, "Stored outbound credential could not be decrypted.");
+            throw new InvalidOperationException(
+                "A stored outbound credential could not be decrypted. Re-save the connection or step secrets.",
+                exception);
         }
     }
 

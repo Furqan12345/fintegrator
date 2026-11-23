@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using SimpleIPaaS.Domain;
 
 namespace SimpleIPaaS.Domain.Entities;
@@ -6,9 +6,9 @@ namespace SimpleIPaaS.Domain.Entities;
 public class IntegrationStep
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
     public Guid FlowId { get; set; }
     public StepType StepType { get; set; }
+    public bool IsArchived { get; set; }
     
     // UI Properties
     public double PositionX { get; set; }
@@ -18,6 +18,7 @@ public class IntegrationStep
     public string EndpointUrl { get; set; } = string.Empty;
     public string HttpMethod { get; set; } = "GET"; 
     public UrlMode UrlMode { get; set; } = UrlMode.Manual;
+    public HttpErrorMode HttpErrorMode { get; set; } = HttpErrorMode.Stop;
     
     // Auth Config (Legacy/Inline)
     public AuthType AuthType { get; set; } = AuthType.None;

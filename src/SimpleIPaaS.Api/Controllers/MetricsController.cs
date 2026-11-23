@@ -35,6 +35,7 @@ public sealed class MetricsController : ControllerBase
     {
         var counts = await _context.FlowExecutions
             .AsNoTracking()
+            .Where(execution => !execution.IsTest)
             .GroupBy(execution => execution.Status)
             .Select(group => new { Status = group.Key, Count = group.LongCount() })
             .ToDictionaryAsync(item => item.Status, item => item.Count, cancellationToken);

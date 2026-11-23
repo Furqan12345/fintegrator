@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Shared.Models;
@@ -37,7 +38,11 @@ public class ExecutionController : ControllerBase
         [FromQuery] string? status = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 50,
-        [FromQuery] Guid? integrationId = null)
+        [FromQuery] Guid? integrationId = null,
+        [FromQuery] string? search = null,
+        [FromQuery] DateTime? sinceUtc = null,
+        [FromQuery] DateTime? untilUtc = null,
+        [FromQuery] bool includeTests = false)
     {
         ExecutionStatus? statusFilter = null;
         if (!string.IsNullOrWhiteSpace(status))
@@ -51,16 +56,37 @@ public class ExecutionController : ControllerBase
             statusFilter = parsed;
         }
 
-        var executions = await _repository.GetFlowExecutionsAsync(flowId, statusFilter, page, pageSize, integrationId);
-        return Ok(executions.Select(ToDto));
+        var query = new ExecutionQuery
+        {
+            FlowId = flowId,
+            IntegrationId = integrationId,
+            Status = statusFilter,
+            Search = search,
+            SinceUtc = AsUtc(sinceUtc),
+            UntilUtc = AsUtc(untilUtc),
+            Page = page,
+            PageSize = pageSize,
+            IncludeTestRuns = includeTests
+        };
+
+        var executions = await _repository.GetFlowExecutionsAsync(query);
+        return Ok(executions.Select(execution => ToDto(execution)));
     }
+
+    private static DateTime? AsUtc(DateTime? value) => value?.Kind switch
+    {
+        null => null,
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.Value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)
+    };
 
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetExecution(Guid id)
     {
         var execution = await _repository.GetFlowExecutionAsync(id);
         if (execution == null) return NotFound();
-        return Ok(ToDto(execution));
+        return Ok(ToDto(execution, includeFanOutItem: true));
     }
 
     // Matches SimpleIPaaS.Client/Store/ExecutionEffects.cs
@@ -168,13 +194,12 @@ public class ExecutionController : ControllerBase
         return Ok(new { success = cancellable, status = execution.Status.ToString() });
     }
 
-    private static FlowExecutionDto ToDto(FlowExecution e)
+    private static FlowExecutionDto ToDto(FlowExecution e, bool includeFanOutItem = false)
     {
         return new FlowExecutionDto
         {
             Id = e.Id,
             FlowId = e.FlowId,
-            TenantId = e.TenantId,
             FlowName = e.FlowName,
             IntegrationId = e.IntegrationId,
             IntegrationName = e.IntegrationName,
@@ -187,9 +212,17 @@ public class ExecutionController : ControllerBase
             IsTest = e.IsTest,
             TestCaseId = e.TestCaseId,
             TestRunId = e.TestRunId,
+            ParentExecutionId = e.ParentExecutionId,
+            FanOutNodeId = e.FanOutNodeId,
+            FanOutNodeName = e.FanOutNodeName,
+            FanOutItemIndex = e.FanOutItemIndex,
+            FanOutItemCount = e.FanOutItemCount,
+            FanOutItemJson = includeFanOutItem ? e.FanOutItemJson : null,
             TotalRecords = e.TotalRecords,
             SuccessRecords = e.SuccessRecords,
-            FailedRecords = e.FailedRecords
+            FailedRecords = e.FailedRecords,
+            Identifier = e.Identifier,
+            Message = e.Message
         };
     }
 }

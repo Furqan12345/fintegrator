@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace SimpleIPaaS.Shared.Models;
@@ -6,11 +6,12 @@ namespace SimpleIPaaS.Shared.Models;
 public class IntegrationFlowDto
 {
     public Guid Id { get; set; } = Guid.Empty;
-    public Guid TenantId { get; set; }
     public Guid? IntegrationId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string PersistedStateJson { get; set; } = "{}";
+    // Null means "keep the stored helper" for updates; an empty string explicitly clears it.
+    public string? HelperCode { get; set; }
     
     public string Status { get; set; } = "Draft";
     public string TriggerType { get; set; } = "Manual";
@@ -18,6 +19,7 @@ public class IntegrationFlowDto
     public string WebhookSecret { get; set; } = string.Empty;
     public DateTime? RunAt { get; set; }
     public bool AllowPostReplay { get; set; }
+    public Guid? DefaultDeadLetterResyncStepId { get; set; }
     public int? PublishedVersion { get; set; }
     public DateTime? LastPublishedAt { get; set; }
 
@@ -42,6 +44,7 @@ public class IntegrationStepDto
     public string EndpointUrl { get; set; } = string.Empty;
     public string HttpMethod { get; set; } = "GET";
     public string UrlMode { get; set; } = "Manual";
+    public string HttpErrorMode { get; set; } = "Stop";
     
     // Auth
     public string AuthType { get; set; } = "None"; // None, Basic, Bearer, ApiKey, OAuth2ClientCredentials, OAuth2AuthCode, OAuth2RefreshToken, Custom

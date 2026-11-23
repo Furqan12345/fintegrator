@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using SimpleIPaaS.Application.Interfaces;
+using SimpleIPaaS.Infrastructure.Storage;
 
 namespace SimpleIPaaS.Infrastructure.Logging;
 
@@ -16,16 +18,19 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
 {
     // RECURSION GUARD — non-negotiable, deliberately not configurable.
     //
-    // Persisting a log entry executes SQL. EF Core logs every command it executes through
-    // ILogger under "Microsoft.EntityFrameworkCore.Database.Command", and the LogsController
-    // reads this very table through EF. Without this filter, one read would log a command,
-    // which would insert a row, which the UI would poll, which would log another command…
-    // an unbounded feedback loop. Microsoft.Data.Sqlite and this namespace are excluded for
-    // the same reason.
+    // Persisting a log entry executes SQL (or, when logs live in Elasticsearch, an HTTP bulk write).
+    // EF Core logs every command it executes through ILogger under
+    // "Microsoft.EntityFrameworkCore.Database.Command", and the LogsController reads this very table
+    // through EF. Without this filter, one read would log a command, which would insert a row, which
+    // the UI would poll, which would log another command… an unbounded feedback loop.
+    // Microsoft.Data.Sqlite, this namespace and the HTTP client categories are excluded for the same
+    // reason: the Elasticsearch sink writes through HttpClient, and its request logging would feed
+    // itself back into the sink.
     public static readonly string[] AlwaysExcludedCategoryPrefixes =
     {
         "Microsoft.EntityFrameworkCore",
         "Microsoft.Data.Sqlite",
+        "System.Net.Http.HttpClient",
         "SimpleIPaaS.Infrastructure.Logging"
     };
 
@@ -34,17 +39,24 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
     private bool _disposed;
 
     public DatabaseLoggerProvider(DatabaseLoggerOptions options, string source, string connectionString)
-        : this(options, source, new DatabaseLogWriter(options, connectionString))
+        : this(options, source, new SqlAppLogWriter(new DatabaseLogWriter(options, connectionString)))
     {
     }
 
-    // Test seam: inject a writer directly.
+    // Test seam: inject a relational writer directly.
     public DatabaseLoggerProvider(DatabaseLoggerOptions options, string source, DatabaseLogWriter writer)
+        : this(options, source, new SqlAppLogWriter(writer))
+    {
+    }
+
+    // Production path: whichever sink the storage settings currently point the logs dataset at
+    // (the relational writer, the Elasticsearch writer, or the router in front of both).
+    public DatabaseLoggerProvider(DatabaseLoggerOptions options, string source, IAppLogWriter writer)
     {
         Options = options;
         Source = source;
         InstanceId = $"{Environment.MachineName}:{Environment.ProcessId}";
-        Writer = writer;
+        _writer = writer;
         _excludedPrefixes = AlwaysExcludedCategoryPrefixes
             .Concat(options.ExcludedCategoryPrefixes ?? Array.Empty<string>())
             .Where(prefix => !string.IsNullOrWhiteSpace(prefix))
@@ -57,9 +69,13 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
 
     internal string InstanceId { get; }
 
-    internal DatabaseLogWriter Writer { get; }
+    // The sink entries go to: the relational writer, the Elasticsearch writer, or the router in
+    // front of both, chosen by the storage settings.
+    internal IAppLogWriter LogWriter => _writer;
 
-    public DatabaseLogHealth GetHealth() => new(InstanceId, Writer.QueueDepth, Writer.DroppedCount, Writer.WriteFailures, Writer.WrittenCount, Writer.LastSuccessfulWriteUtc);
+    private readonly IAppLogWriter _writer;
+
+    public DatabaseLogHealth GetHealth() => new(InstanceId, _writer.QueueDepth, _writer.DroppedCount, _writer.WriteFailures, _writer.WrittenCount, _writer.LastSuccessfulWriteUtc);
 
     internal IExternalScopeProvider? ScopeProvider { get; private set; }
 
@@ -95,7 +111,7 @@ public sealed class DatabaseLoggerProvider : ILoggerProvider, ISupportExternalSc
 
         _disposed = true;
         _loggers.Clear();
-        Writer.Dispose();
+        _writer.Dispose();
     }
 
     // A logger for an excluded category: enabled for nothing, so the framework short-circuits

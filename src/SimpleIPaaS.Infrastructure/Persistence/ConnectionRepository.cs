@@ -4,19 +4,16 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Infrastructure.Persistence;
 
 public class ConnectionRepository : IConnectionRepository
 {
     private readonly IPaaSContext _context;
-    private readonly ITenantContext _tenantContext;
 
-    public ConnectionRepository(IPaaSContext context, ITenantContext tenantContext)
+    public ConnectionRepository(IPaaSContext context)
     {
         _context = context;
-        _tenantContext = tenantContext;
     }
 
     public async Task<Connection?> GetByIdAsync(Guid id)
@@ -32,7 +29,6 @@ public class ConnectionRepository : IConnectionRepository
 
     public async Task AddAsync(Connection connection)
     {
-        connection.TenantId = _tenantContext.TenantId;
         _context.Connections.Add(connection);
         await _context.SaveChangesAsync();
     }

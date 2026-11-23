@@ -6,26 +6,23 @@ using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
-using SimpleIPaaS.Infrastructure.MultiTenancy;
 
 namespace SimpleIPaaS.Infrastructure.Persistence;
 
 public class IntegrationRepository : IIntegrationRepository, ICronScheduleRepository
 {
     private readonly IPaaSContext _context;
-    private readonly ITenantContext _tenantContext;
 
-    public IntegrationRepository(IPaaSContext context, ITenantContext tenantContext)
+    public IntegrationRepository(IPaaSContext context)
     {
         _context = context;
-        _tenantContext = tenantContext;
     }
 
     public async Task<IEnumerable<IntegrationFlow>> GetAllAsync()
     {
         return await _context.IntegrationFlows
             .OrderByDescending(f => f.UpdatedAt)
-            .Include(f => f.Nodes)
+            .Include(f => f.Nodes.Where(node => !node.IsArchived))
             .Include(f => f.Edges)
             .ToListAsync();
     }
@@ -35,7 +32,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         return await _context.IntegrationFlows
             .Where(flow => flow.IntegrationId == integrationId)
             .OrderByDescending(flow => flow.UpdatedAt)
-            .Include(flow => flow.Nodes)
+            .Include(flow => flow.Nodes.Where(node => !node.IsArchived))
             .Include(flow => flow.Edges)
             .ToListAsync();
     }
@@ -43,14 +40,30 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
     public async Task<IntegrationFlow?> GetByIdAsync(Guid id)
     {
         return await _context.IntegrationFlows
-            .Include(f => f.Nodes)
+            .Include(f => f.Nodes.Where(node => !node.IsArchived))
             .Include(f => f.Edges)
             .FirstOrDefaultAsync(f => f.Id == id);
     }
 
     public async Task AddAsync(IntegrationFlow flow)
     {
-        StampTenant(flow, _tenantContext.TenantId);
+        await RemapForeignIdsAsync(flow);
+        if (flow.DefaultDeadLetterResyncStepId is Guid selectedNodeId && !flow.Nodes.Any(node => node.Id == selectedNodeId))
+        {
+            flow.DefaultDeadLetterResyncStepId = null;
+        }
+        flow.PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson;
+        SyncOneTimeSchedule(flow);
+        foreach (var node in flow.Nodes)
+        {
+            node.FlowId = flow.Id;
+        }
+
+        foreach (var edge in flow.Edges)
+        {
+            edge.FlowId = flow.Id;
+        }
+
         _context.IntegrationFlows.Add(flow);
         await _context.SaveChangesAsync();
     }
@@ -58,16 +71,16 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
     public async Task<bool> UpdateAsync(IntegrationFlow flow)
     {
         var existing = await _context.IntegrationFlows
-            .IgnoreQueryFilters()
-            .Include(f => f.Nodes)
+            .Include(f => f.Nodes.Where(node => !node.IsArchived))
             .Include(f => f.Edges)
-            .FirstOrDefaultAsync(f => f.Id == flow.Id && f.TenantId == _tenantContext.TenantId);
+            .FirstOrDefaultAsync(f => f.Id == flow.Id);
 
         if (existing == null)
         {
             return false;
         }
 
+        await RemapForeignIdsAsync(flow);
         existing.Name = flow.Name;
         existing.Description = flow.Description;
         existing.IntegrationId = flow.IntegrationId;
@@ -83,26 +96,33 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         SyncOneTimeSchedule(existing);
         existing.WebhookSecret = string.IsNullOrWhiteSpace(existing.WebhookSecret) ? flow.WebhookSecret : existing.WebhookSecret;
         existing.AllowPostReplay = flow.AllowPostReplay;
+        existing.DefaultDeadLetterResyncStepId = flow.DefaultDeadLetterResyncStepId;
         existing.PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson;
-        existing.TenantId = existing.TenantId == Guid.Empty ? _tenantContext.TenantId : existing.TenantId;
+        existing.HelperCode = flow.HelperCode ?? string.Empty;
         existing.UpdatedAt = DateTime.UtcNow;
 
         var incomingNodeIds = flow.Nodes.Select(node => node.Id).ToHashSet();
+        if (existing.DefaultDeadLetterResyncStepId is Guid selectedNodeId && !incomingNodeIds.Contains(selectedNodeId))
+        {
+            existing.DefaultDeadLetterResyncStepId = null;
+        }
         var incomingEdgeIds = flow.Edges.Select(edge => edge.Id).ToHashSet();
 
-        var existingNodes = existing.Nodes.ToDictionary(node => node.Id);
+        var activeExistingNodes = existing.Nodes.Where(node => !node.IsArchived).ToList();
+        var existingNodes = activeExistingNodes.ToDictionary(node => node.Id);
         var existingEdges = existing.Edges.ToDictionary(edge => edge.Id);
-
-        _context.IntegrationSteps.RemoveRange(existing.Nodes.Where(node => !incomingNodeIds.Contains(node.Id)));
+        var removedNodes = activeExistingNodes.Where(node => !incomingNodeIds.Contains(node.Id)).ToList();
+        await PreserveStepHistoryAsync(removedNodes);
+        _context.IntegrationSteps.RemoveRange(removedNodes.Where(node => !node.IsArchived));
         _context.IntegrationEdges.RemoveRange(existing.Edges.Where(edge => !incomingEdgeIds.Contains(edge.Id)));
 
         foreach (var node in flow.Nodes)
         {
             node.FlowId = existing.Id;
-            node.TenantId = existing.TenantId;
 
             if (existingNodes.TryGetValue(node.Id, out var storedNode))
             {
+                storedNode.IsArchived = false;
                 ApplyNode(storedNode, node);
                 continue;
             }
@@ -113,7 +133,6 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         foreach (var edge in flow.Edges)
         {
             edge.FlowId = existing.Id;
-            edge.TenantId = existing.TenantId;
 
             if (existingEdges.TryGetValue(edge.Id, out var storedEdge))
             {
@@ -126,6 +145,69 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
 
         await _context.SaveChangesAsync();
         return true;
+    }
+
+    // Node and edge IDs are globally unique PKs. AI drafts (and pasted graphs) can carry
+    // IDs copied from other flows, which crashed saves with "UNIQUE constraint failed:
+    // IntegrationSteps.Id". Any incoming ID that already exists outside this flow's active
+    // graph is regenerated, and every graph reference is remapped to match.
+    private async Task RemapForeignIdsAsync(IntegrationFlow flow)
+    {
+        var nodeIds = flow.Nodes.Select(node => node.Id).ToList();
+        var edgeIds = flow.Edges.Select(edge => edge.Id).ToList();
+        var collidingNodeIds = await _context.IntegrationSteps.IgnoreQueryFilters()
+            .Where(node => nodeIds.Contains(node.Id) && (node.FlowId != flow.Id || node.IsArchived))
+            .Select(node => node.Id)
+            .ToListAsync();
+        var collidingEdgeIds = await _context.IntegrationEdges
+            .Where(edge => edgeIds.Contains(edge.Id) && edge.FlowId != flow.Id)
+            .Select(edge => edge.Id)
+            .ToListAsync();
+        if (collidingNodeIds.Count == 0 && collidingEdgeIds.Count == 0) return;
+
+        var nodeMap = new Dictionary<Guid, Guid>();
+        foreach (var node in flow.Nodes.Where(node => collidingNodeIds.Contains(node.Id)))
+        {
+            var newId = Guid.NewGuid();
+            nodeMap[node.Id] = newId;
+            node.Id = newId;
+        }
+        foreach (var edge in flow.Edges)
+        {
+            if (nodeMap.TryGetValue(edge.SourceNodeId, out var sourceId)) edge.SourceNodeId = sourceId;
+            if (nodeMap.TryGetValue(edge.TargetNodeId, out var targetId)) edge.TargetNodeId = targetId;
+        }
+        foreach (var edge in flow.Edges.Where(edge => collidingEdgeIds.Contains(edge.Id)))
+        {
+            edge.Id = Guid.NewGuid();
+        }
+        if (flow.DefaultDeadLetterResyncStepId is Guid resyncNodeId && nodeMap.TryGetValue(resyncNodeId, out var mappedResyncId))
+        {
+            flow.DefaultDeadLetterResyncStepId = mappedResyncId;
+        }
+    }
+
+    private async Task PreserveStepHistoryAsync(IReadOnlyCollection<IntegrationStep> nodes)
+    {
+        if (nodes.Count == 0) return;
+
+        var nodeIds = nodes.Select(node => node.Id).ToArray();
+        var referencedIds = (await _context.StepExecutions
+                .Where(execution => nodeIds.Contains(execution.StepId))
+                .Select(execution => execution.StepId)
+                .Distinct()
+                .ToListAsync())
+            .Concat(await _context.DeadLetterEntries
+                .Where(entry => nodeIds.Contains(entry.StepId))
+                .Select(entry => entry.StepId)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
+
+        foreach (var node in nodes.Where(node => referencedIds.Contains(node.Id)))
+        {
+            node.IsArchived = true;
+        }
     }
 
     public async Task<IReadOnlyList<FlowVersion>> GetVersionsAsync(Guid flowId)
@@ -145,6 +227,33 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
             return null;
         }
 
+        // Publishing content that is identical to the newest stored snapshot must not mint a version.
+        // Publishing is reachable from several surfaces and a click can repeat, and a rollback
+        // restores a snapshot exactly, so "publish again" used to append a row carrying no change.
+        // Reactivation still happens, because a paused schedule must go live even when the graph
+        // itself did not change.
+        var latest = await _context.FlowVersions
+            .AsNoTracking()
+            .Where(version => version.FlowId == flowId)
+            .OrderByDescending(version => version.VersionNumber)
+            .FirstOrDefaultAsync();
+
+        if (latest != null && IsSameSnapshot(flow, latest.SnapshotJson))
+        {
+            var reactivated = flow.Status != FlowStatus.Active || flow.PublishedVersion != latest.VersionNumber;
+            if (reactivated)
+            {
+                flow.Status = FlowStatus.Active;
+                flow.PublishedVersion = latest.VersionNumber;
+                flow.LastPublishedAt ??= latest.CreatedAt;
+                flow.UpdatedAt = DateTime.UtcNow;
+                SyncOneTimeSchedule(flow);
+                await _context.SaveChangesAsync();
+            }
+
+            return latest;
+        }
+
         var versionNumber = await NextVersionNumberAsync(flowId);
         var now = DateTime.UtcNow;
         flow.Status = FlowStatus.Active;
@@ -156,7 +265,6 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         var version = new FlowVersion
         {
             FlowId = flow.Id,
-            TenantId = flow.TenantId,
             VersionNumber = versionNumber,
             CreatedAt = now,
             ChangeNote = NormalizeChangeNote(changeNote),
@@ -166,6 +274,44 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         _context.FlowVersions.Add(version);
         await _context.SaveChangesAsync();
         return version;
+    }
+
+    // Compares the live flow with a stored snapshot order-insensitively: EF Include does not
+    // guarantee node/edge ordering, so a raw string comparison would report spurious differences
+    // (and occasionally miss a real one) on identical content.
+    private static bool IsSameSnapshot(IntegrationFlow flow, string snapshotJson)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            var stored = JsonSerializer.Deserialize<FlowSnapshot>(snapshotJson, JsonOptions);
+            if (stored == null)
+            {
+                return false;
+            }
+
+            return CanonicalSnapshotJson(BuildSnapshot(flow)) == CanonicalSnapshotJson(stored);
+        }
+        catch (JsonException)
+        {
+            // An unreadable historical snapshot cannot prove "nothing changed", so publish normally.
+            return false;
+        }
+    }
+
+    private static string CanonicalSnapshotJson(FlowSnapshot snapshot)
+    {
+        var canonical = snapshot with
+        {
+            Nodes = snapshot.Nodes.OrderBy(node => node.Id).ToList(),
+            Edges = snapshot.Edges.OrderBy(edge => edge.Id).ToList()
+        };
+
+        return JsonSerializer.Serialize(canonical, JsonOptions);
     }
 
     public async Task<IntegrationFlow?> RollbackAsync(Guid flowId, int versionNumber, string? changeNote = null)
@@ -196,7 +342,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
             return null;
         }
 
-        ApplySnapshot(flow, snapshot);
+        await ApplySnapshotAsync(flow, snapshot);
         var newVersionNumber = await NextVersionNumberAsync(flowId);
         var now = DateTime.UtcNow;
         flow.Status = FlowStatus.Active;
@@ -208,7 +354,6 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         _context.FlowVersions.Add(new FlowVersion
         {
             FlowId = flow.Id,
-            TenantId = flow.TenantId,
             VersionNumber = newVersionNumber,
             CreatedAt = now,
             ChangeNote = string.IsNullOrWhiteSpace(changeNote)
@@ -224,18 +369,23 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
 
     private async Task<IntegrationFlow?> LoadMutableFlowAsync(Guid flowId)
     {
-        return await _context.IntegrationFlows
-            .IgnoreQueryFilters()
-            .Include(flow => flow.Nodes)
-            .Include(flow => flow.Edges)
-            .FirstOrDefaultAsync(flow => flow.Id == flowId && flow.TenantId == _tenantContext.TenantId);
+        var flow = await _context.IntegrationFlows
+            .Include(item => item.Nodes.Where(node => !node.IsArchived))
+            .Include(item => item.Edges)
+            .FirstOrDefaultAsync(item => item.Id == flowId);
+        if (flow == null) return null;
+
+        // Archived nodes are loaded on purpose: an edit must archive, not drop, history-referenced rows.
+        flow.Nodes = await _context.IntegrationSteps.IgnoreQueryFilters()
+            .Where(node => node.FlowId == flowId)
+            .ToListAsync();
+        return flow;
     }
 
     private async Task<int> NextVersionNumberAsync(Guid flowId)
     {
         return (await _context.FlowVersions
-            .IgnoreQueryFilters()
-            .Where(version => version.FlowId == flowId && version.TenantId == _tenantContext.TenantId)
+            .Where(version => version.FlowId == flowId)
             .Select(version => (int?)version.VersionNumber)
             .MaxAsync() ?? 0) + 1;
     }
@@ -245,25 +395,27 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         return string.IsNullOrWhiteSpace(changeNote) ? "Published from draft" : changeNote.Trim();
     }
 
+    private static FlowSnapshot BuildSnapshot(IntegrationFlow flow) => new(
+        flow.Name,
+        flow.Description,
+        flow.IntegrationId,
+        flow.PersistedStateJson,
+        flow.TriggerType,
+        flow.CronExpression,
+        flow.WebhookSecret,
+        flow.RunAt,
+        flow.AllowPostReplay,
+        flow.Nodes.Where(node => !node.IsArchived).Select(CloneNode).ToList(),
+        flow.Edges.Select(CloneEdge).ToList(),
+        flow.DefaultDeadLetterResyncStepId,
+        flow.HelperCode);
+
     private static string SerializeSnapshot(IntegrationFlow flow)
     {
-        var snapshot = new FlowSnapshot(
-            flow.Name,
-            flow.Description,
-            flow.IntegrationId,
-            flow.PersistedStateJson,
-            flow.TriggerType,
-            flow.CronExpression,
-            flow.WebhookSecret,
-            flow.RunAt,
-            flow.AllowPostReplay,
-            flow.Nodes.Select(CloneNode).ToList(),
-            flow.Edges.Select(CloneEdge).ToList());
-
-        return JsonSerializer.Serialize(snapshot, JsonOptions);
+        return JsonSerializer.Serialize(BuildSnapshot(flow), JsonOptions);
     }
 
-    private void ApplySnapshot(IntegrationFlow flow, FlowSnapshot snapshot)
+    private async Task ApplySnapshotAsync(IntegrationFlow flow, FlowSnapshot snapshot)
     {
         flow.Name = snapshot.Name;
         flow.Description = snapshot.Description;
@@ -274,18 +426,20 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         flow.WebhookSecret = snapshot.WebhookSecret;
         flow.RunAt = snapshot.RunAt;
         flow.AllowPostReplay = snapshot.AllowPostReplay;
+        flow.DefaultDeadLetterResyncStepId = snapshot.DefaultDeadLetterResyncStepId;
+        flow.HelperCode = snapshot.HelperCode ?? string.Empty;
 
         var incomingNodeIds = snapshot.Nodes.Select(node => node.Id).ToHashSet();
         var incomingEdgeIds = snapshot.Edges.Select(edge => edge.Id).ToHashSet();
         var existingNodes = flow.Nodes.ToDictionary(node => node.Id);
         var existingEdges = flow.Edges.ToDictionary(edge => edge.Id);
 
-        // The caller's DbContext tracks these entities; update matching rows and
-        // delete only rows absent from the restored snapshot.
-        // Child entities are re-stamped below to the current flow and tenant.
-        foreach (var node in flow.Nodes.Where(node => !incomingNodeIds.Contains(node.Id)).ToList())
+        var removedNodes = flow.Nodes.Where(node => !incomingNodeIds.Contains(node.Id)).ToList();
+        await PreserveStepHistoryAsync(removedNodes);
+        _context.IntegrationSteps.RemoveRange(removedNodes.Where(node => !node.IsArchived));
+        foreach (var node in flow.Nodes.Where(node => node.IsArchived && incomingNodeIds.Contains(node.Id)))
         {
-            _context.IntegrationSteps.Remove(node);
+            node.IsArchived = false;
         }
 
         foreach (var edge in flow.Edges.Where(edge => !incomingEdgeIds.Contains(edge.Id)).ToList())
@@ -296,43 +450,62 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         foreach (var node in snapshot.Nodes)
         {
             node.FlowId = flow.Id;
-            node.TenantId = flow.TenantId;
             if (existingNodes.TryGetValue(node.Id, out var storedNode))
             {
+                storedNode.IsArchived = false;
                 ApplyNodeExact(storedNode, node);
             }
             else
             {
-                flow.Nodes.Add(node);
+                // The snapshot row no longer exists (it was deleted while the graph was edited),
+                // so it has to be INSERTed. Adding it to the tracked navigation alone is not
+                // enough: the deserialised instance already carries its primary key, and EF's
+                // graph attach then treats it as an existing row and issues an UPDATE for a row
+                // that is gone — DbUpdateConcurrencyException, surfaced as HTTP 500 on rollback.
+                AttachRestoredRow(flow.Nodes, node);
             }
         }
 
         foreach (var edge in snapshot.Edges)
         {
             edge.FlowId = flow.Id;
-            edge.TenantId = flow.TenantId;
             if (existingEdges.TryGetValue(edge.Id, out var storedEdge))
             {
                 ApplyEdge(storedEdge, edge);
             }
             else
             {
-                flow.Edges.Add(edge);
+                AttachRestoredRow(flow.Edges, edge);
             }
         }
+    }
+
+    // Explicitly adds a restored snapshot row to the context so EF emits an INSERT, then keeps
+    // the navigation collection consistent. Already-tracked ids are added to the collection
+    // only, so a caller can never end up tracking two instances with the same key.
+    private void AttachRestoredRow<TEntity>(ICollection<TEntity> navigation, TEntity entity) where TEntity : class
+    {
+        var entry = _context.Entry(entity);
+        if (entry.State == EntityState.Detached)
+        {
+            _context.Add(entity);
+        }
+
+        navigation.Add(entity);
     }
 
     private static IntegrationStep CloneNode(IntegrationStep source) => new()
     {
         Id = source.Id,
-        TenantId = source.TenantId,
         FlowId = source.FlowId,
         StepType = source.StepType,
+        IsArchived = false,
         PositionX = source.PositionX,
         PositionY = source.PositionY,
         EndpointUrl = source.EndpointUrl,
         HttpMethod = source.HttpMethod,
         UrlMode = source.UrlMode,
+        HttpErrorMode = source.HttpErrorMode,
         AuthType = source.AuthType,
         AuthToken = source.AuthToken,
         AuthUsername = source.AuthUsername,
@@ -350,7 +523,6 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
     private static IntegrationEdge CloneEdge(IntegrationEdge source) => new()
     {
         Id = source.Id,
-        TenantId = source.TenantId,
         FlowId = source.FlowId,
         SourceNodeId = source.SourceNodeId,
         TargetNodeId = source.TargetNodeId,
@@ -369,6 +541,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         target.EndpointUrl = source.EndpointUrl;
         target.HttpMethod = source.HttpMethod;
         target.UrlMode = source.UrlMode;
+        target.HttpErrorMode = source.HttpErrorMode;
         target.AuthType = source.AuthType;
         target.AuthToken = source.AuthToken;
         target.AuthUsername = source.AuthUsername;
@@ -398,12 +571,13 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         DateTime? RunAt,
         bool AllowPostReplay,
         List<IntegrationStep> Nodes,
-        List<IntegrationEdge> Edges);
+        List<IntegrationEdge> Edges,
+        Guid? DefaultDeadLetterResyncStepId = null,
+        string HelperCode = "");
     public async Task<bool> UpdateWebhookSecretAsync(Guid flowId, string webhookSecret)
     {
         var flow = await _context.IntegrationFlows
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId && existingFlow.TenantId == _tenantContext.TenantId);
+            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId);
 
         if (flow == null)
         {
@@ -424,33 +598,40 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
             return;
         }
 
-        var executionIds = await _context.FlowExecutions
-            .Where(e => e.FlowId == id)
-            .Select(e => e.Id)
-            .ToListAsync();
+        await using var transaction = await _context.Database.BeginTransactionAsync();
 
-        if (executionIds.Count > 0)
-        {
-            await _context.DeadLetterEntries
-                .Where(d => executionIds.Contains(d.FlowExecutionId))
-                .ExecuteDeleteAsync();
-            await _context.StepExecutions
-                .Where(s => executionIds.Contains(s.FlowExecutionId))
-                .ExecuteDeleteAsync();
-            await _context.FlowExecutions
-                .Where(e => e.FlowId == id)
-                .ExecuteDeleteAsync();
-        }
+        var executions = _context.FlowExecutions.Where(e => e.FlowId == id);
+
+        // Delete children before the flow. Subqueries keep this bounded by the flow id instead
+        // of materialising thousands of execution ids into a SQLite IN () list.
+        await _context.DeadLetterEntries
+            .Where(entry => executions.Any(e => e.Id == entry.FlowExecutionId))
+            .ExecuteDeleteAsync();
+        await _context.StepPacketLogs
+            .Where(packet => _context.StepExecutions.Any(step =>
+                step.Id == packet.StepExecutionId && executions.Any(e => e.Id == step.FlowExecutionId)))
+            .ExecuteDeleteAsync();
+        await _context.StepExecutions
+            .Where(step => executions.Any(e => e.Id == step.FlowExecutionId))
+            .ExecuteDeleteAsync();
+        await _context.FlowExecutions
+            .Where(e => e.FlowId == id)
+            .ExecuteDeleteAsync();
+
+        // These tables have no database foreign key to the flow, so they need explicit cleanup.
+        await _context.FlowTestRuns.Where(run => run.FlowId == id).ExecuteDeleteAsync();
+        await _context.FlowTestCases.Where(test => test.FlowId == id).ExecuteDeleteAsync();
+        await _context.FlowVersions.Where(version => version.FlowId == id).ExecuteDeleteAsync();
 
         _context.IntegrationFlows.Remove(flow);
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
     }
 
     public async Task UpdatePersistedStateAsync(Guid flowId, string persistedStateJson)
     {
         var flow = await _context.IntegrationFlows
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId && existingFlow.TenantId == _tenantContext.TenantId);
+            .FirstOrDefaultAsync(existingFlow => existingFlow.Id == flowId);
 
         if (flow == null)
         {
@@ -473,30 +654,40 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
     public async Task<IntegrationFlow?> GetFlowForTriggerAsync(Guid id)
     {
         return await _context.IntegrationFlows
-            .IgnoreQueryFilters()
             .AsNoTracking()
             .FirstOrDefaultAsync(f => f.Id == id && f.Status == FlowStatus.Active);
     }
 
-    public async Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAcrossTenantsAsync()
+    public async Task<IEnumerable<IntegrationFlow>> GetActiveCronFlowsAsync()
     {
         return await _context.IntegrationFlows
-            .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(f => f.Status == FlowStatus.Active && f.TriggerType == TriggerType.Cron && (f.CronExpression != "" || f.RunAt != null))
             .ToListAsync();
     }
 
-    public async Task UpdateNextRunAtAsync(Guid flowId, Guid tenantId, DateTime? nextRunAt)
+    public async Task<IntegrationFlow?> SetScheduleStatusAsync(Guid flowId, FlowStatus status)
     {
-        if (tenantId == Guid.Empty)
-        {
-            return;
-        }
-
         var flow = await _context.IntegrationFlows
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(f => f.Id == flowId && f.TenantId == tenantId);
+            .FirstOrDefaultAsync(f => f.Id == flowId);
+
+        if (flow == null) return null;
+
+        flow.Status = status;
+        // A paused flow must not be picked up by the scheduler. On resume, a cron schedule is
+        // primed by the scheduler's next scan; a future one-time run is restored immediately.
+        flow.NextRunAt = status == FlowStatus.Active
+            ? flow.RunAt is DateTime runAt && runAt > DateTime.UtcNow ? runAt : null
+            : null;
+        flow.UpdatedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+        return flow;
+    }
+
+    public async Task UpdateNextRunAtAsync(Guid flowId, DateTime? nextRunAt)
+    {
+        var flow = await _context.IntegrationFlows
+            .FirstOrDefaultAsync(f => f.Id == flowId);
 
         if (flow == null)
         {
@@ -516,6 +707,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         target.EndpointUrl = source.EndpointUrl;
         target.HttpMethod = source.HttpMethod;
         target.UrlMode = source.UrlMode;
+        target.HttpErrorMode = source.HttpErrorMode;
         target.AuthType = source.AuthType;
         target.AuthToken = KeepStoredWhenEmpty(source.AuthToken, target.AuthToken);
         target.AuthUsername = KeepStoredWhenEmpty(source.AuthUsername, target.AuthUsername);
@@ -554,22 +746,4 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         flow.NextRunAt = flow.RunAt > DateTime.UtcNow ? flow.RunAt : null;
     }
 
-    private static void StampTenant(IntegrationFlow flow, Guid tenantId)
-    {
-        flow.TenantId = tenantId;
-        flow.PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson;
-        SyncOneTimeSchedule(flow);
-
-        foreach (var node in flow.Nodes)
-        {
-            node.FlowId = flow.Id;
-            node.TenantId = tenantId;
-        }
-
-        foreach (var edge in flow.Edges)
-        {
-            edge.FlowId = flow.Id;
-            edge.TenantId = tenantId;
-        }
-    }
 }

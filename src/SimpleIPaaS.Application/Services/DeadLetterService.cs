@@ -32,16 +32,20 @@ public class DeadLetterAttempt
     public DateTime At { get; set; }
     public int? StatusCode { get; set; }
     public string Error { get; set; } = string.Empty;
+    public string NodeName { get; set; } = string.Empty;
+    // Replay | Blocked | Failure — how this attempt came about.
+    public string Kind { get; set; } = "Replay";
 }
 
 public class DeadLetterService
 {
-    private static readonly string[] ReplaySafeMethods = { "GET", "PUT", "DELETE" };
     private static readonly string[] OutstandingStatuses = { "Pending", "Retrying" };
-
     private static readonly JsonSerializerOptions AttemptHistoryOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // Attempt history may be seeded by the executor in PascalCase; read any
+        // casing so fields like Kind/NodeName are never silently defaulted.
+        PropertyNameCaseInsensitive = true
     };
 
     private readonly IExecutionRepository _executionRepository;
@@ -64,12 +68,22 @@ public class DeadLetterService
         _maxAutoRetryAttempts = configuration?.GetValue("DeadLetter:MaxAutoRetryAttempts", 0) ?? 0;
     }
 
-    // Used by the Engine's dead-letter worker to decide whether a Pending entry is
-    // eligible for automatic replay before committing a scope to ReplayEntryAsync.
     public bool CanAutoRetry(DeadLetterEntry entry) => entry.RetryCount < _maxAutoRetryAttempts;
 
+    // Shared with API/UI so the discard threshold has a single source of truth.
+    public const int MaxReplayAttemptsBeforeDiscard = 5;
 
-    public async Task<DeadLetterReplayResult> ReplayEntryAsync(Guid entryId, bool force, CancellationToken cancellationToken = default)
+    public Task<DeadLetterReplayResult> ReplayEntryAsync(
+        Guid entryId,
+        bool force,
+        CancellationToken cancellationToken = default) =>
+        ReplayEntryAsync(entryId, force, null, cancellationToken);
+
+    public async Task<DeadLetterReplayResult> ReplayEntryAsync(
+        Guid entryId,
+        bool force,
+        Guid? requestedStartStepId,
+        CancellationToken cancellationToken)
     {
         var entry = await _executionRepository.GetDeadLetterAsync(entryId);
         if (entry == null)
@@ -79,7 +93,7 @@ public class DeadLetterService
 
         if (entry.Status != "Pending" && entry.Status != "Retrying")
         {
-            return Skipped(entry);
+            return await SkipAsync(entry);
         }
 
         if (!force && entry.RetryCount >= _maxAutoRetryAttempts)
@@ -87,7 +101,7 @@ public class DeadLetterService
             _logger.LogInformation(
                 "Dead letter {DeadLetterId} left for manual review; automatic retries are disabled (limit {MaxAutoRetryAttempts}).",
                 entry.Id, _maxAutoRetryAttempts);
-            return Skipped(entry);
+            return await SkipAsync(entry);
         }
 
         var flowExecution = await _executionRepository.GetFlowExecutionAsync(entry.FlowExecutionId);
@@ -108,89 +122,119 @@ public class DeadLetterService
             return Skipped(entry);
         }
 
-        var step = flow.Nodes.FirstOrDefault(n => n.Id == entry.StepId);
-        if (step == null)
+        var startStepId = await ResolveStartNodeAsync(entry, flow, requestedStartStepId);
+        if (!startStepId.HasValue)
         {
-            entry.Status = "Discarded";
-            entry.ErrorMessage = "Step not found in flow";
-            await _executionRepository.UpdateDeadLetterEntryAsync(entry);
-            return Skipped(entry);
+            _logger.LogWarning("Resync start node is not an eligible completed upstream node of dead letter {DeadLetterId}",
+                entry.Id);
+            return await SkipAsync(entry);
         }
 
-        if (step.StepType != StepType.HttpAction)
+        var rerunNodeIds = FlowGraphAnalysis.GetDownstreamNodeIds(flow, startStepId.Value);
+        var unsafeReplayNode = flow.Nodes.FirstOrDefault(node =>
+            rerunNodeIds.Contains(node.Id) &&
+            ReplaySafety.IsUnsafeReplayNode(node, flow.AllowPostReplay));
+        if (unsafeReplayNode != null)
         {
-            entry.Status = "Discarded";
-            entry.ErrorMessage = "Step type is not replayable";
+            // Never loop silently: the reason is recorded once on the entry so the
+            // user can see why auto-retry keeps refusing this replay.
+            AppendBlockedNoteOnce(entry,
+                unsafeReplayNode.StepType == StepType.Email
+                    ? $"Replay blocked: '{unsafeReplayNode.NodeName}' would resend an email and the flow does not allow post-replay."
+                    : $"Replay blocked: '{unsafeReplayNode.NodeName}' uses side-effecting {unsafeReplayNode.HttpMethod} and the flow does not allow post-replay.");
+            if (entry.Status == "Retrying") entry.Status = "Pending";
             await _executionRepository.UpdateDeadLetterEntryAsync(entry);
-            return Skipped(entry);
-        }
-
-        var replaySafe = ReplaySafeMethods.Contains(step.HttpMethod, StringComparer.OrdinalIgnoreCase);
-        var postOptIn = string.Equals(step.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase) && flow.AllowPostReplay;
-
-        if (!replaySafe && !postOptIn)
-        {
             return new DeadLetterReplayResult
             {
-                Outcome = force ? DeadLetterReplayOutcome.PostReplayNotAllowed : DeadLetterReplayOutcome.Skipped,
+                Outcome = DeadLetterReplayOutcome.PostReplayNotAllowed,
                 Entry = entry
             };
         }
 
-        var replayFlowStateJson = string.IsNullOrWhiteSpace(entry.FlowStateJson) ? "{}" : entry.FlowStateJson;
+        var priorDeadLetters = (await _executionRepository.GetDeadLettersByExecutionAsync(entry.FlowExecutionId))
+            .Select(d => d.Id)
+            .ToHashSet();
+        var priorTotalRecords = flowExecution.TotalRecords;
+        var priorSuccessRecords = flowExecution.SuccessRecords;
+        var priorFailedRecords = flowExecution.FailedRecords;
+        var attemptStartedAt = DateTime.UtcNow;
         var resolved = false;
 
         try
         {
-            _logger.LogInformation("Replaying dead letter {DeadLetterId} for execution {ExecutionId} (step {StepId})",
-                entry.Id, entry.FlowExecutionId, entry.StepId);
+            _logger.LogInformation(
+                "Resyncing dead letter {DeadLetterId} from node {StartNodeId} through its downstream path",
+                entry.Id, startStepId);
 
-            var replay = await _flowExecutor.ExecuteHttpNodeAsync(
-                step, replayFlowStateJson, flow.PersistedStateJson, cancellationToken);
-            var statusCode = replay.StatusCode;
+            await _flowExecutor.ExecuteFlowFromNodeAsync(
+                flow.Id,
+                flowExecution.Id,
+                startStepId.Value,
+                string.IsNullOrWhiteSpace(entry.FlowStateJson) ? "{}" : entry.FlowStateJson,
+                string.IsNullOrWhiteSpace(entry.PersistedStateJson) ? flow.PersistedStateJson : entry.PersistedStateJson,
+                entry.StepId,
+                cancellationToken);
 
-            if (statusCode >= 200 && statusCode < 300)
+            var stepExecutions = (await _executionRepository.GetStepExecutionsAsync(entry.FlowExecutionId)).ToList();
+            var retriedSteps = stepExecutions
+                .Where(step => step.StepId == entry.StepId && step.StartedAt >= attemptStartedAt)
+                .ToList();
+            var lastRetriedStep = retriedSteps.OrderByDescending(step => step.StartedAt).FirstOrDefault();
+            // Resolved only when every re-run of the failed node succeeded — a single
+            // successful iteration must not mask earlier failures in loop bodies.
+            var failureResolved = retriedSteps.Count > 0 &&
+                retriedSteps.All(step => step.Status == ExecutionStatus.Success || step.Status == ExecutionStatus.Recovered);
+
+            var currentDeadLetters = (await _executionRepository.GetDeadLettersByExecutionAsync(entry.FlowExecutionId)).ToList();
+            var newFailureCount = currentDeadLetters.Count(d => !priorDeadLetters.Contains(d.Id));
+            flowExecution.TotalRecords = priorTotalRecords;
+            flowExecution.SuccessRecords = priorSuccessRecords;
+            flowExecution.FailedRecords = priorFailedRecords + newFailureCount;
+
+            var completedAt = DateTime.UtcNow;
+            var statusCode = lastRetriedStep != null && lastRetriedStep.HttpStatusCode > 0 ? lastRetriedStep.HttpStatusCode : (int?)null;
+            if (failureResolved)
             {
-                var resolvedAt = DateTime.UtcNow;
                 entry.Status = "Resolved";
-                entry.LastRetriedAt = resolvedAt;
-                entry.ResolvedAt = resolvedAt;
-                AppendAttempt(entry, statusCode, string.Empty, resolvedAt);
+                entry.LastRetriedAt = completedAt;
+                entry.ResolvedAt = completedAt;
+                AppendAttempt(entry, statusCode, string.Empty, completedAt, lastRetriedStep?.NodeName, "Replay");
                 resolved = true;
-                _logger.LogInformation("Dead letter {DeadLetterId} resolved with status {StatusCode}", entry.Id, statusCode);
             }
             else
             {
                 entry.RetryCount++;
-                entry.LastRetriedAt = DateTime.UtcNow;
-                entry.ErrorMessage = $"Failed with status code {statusCode}: {replay.Response}";
-                AppendAttempt(entry, statusCode, entry.ErrorMessage, entry.LastRetriedAt.Value);
-
-                if (entry.RetryCount >= 5)
-                {
-                    entry.Status = "Discarded";
-                }
-
-                _logger.LogWarning("Dead letter {DeadLetterId} replay failed with status {StatusCode} (attempt {RetryCount})",
-                    entry.Id, statusCode, entry.RetryCount);
+                entry.LastRetriedAt = completedAt;
+                var attemptError = lastRetriedStep?.ErrorMessage
+                    ?? flowExecution.ErrorMessage
+                    ?? "Resync did not successfully execute the original failed node.";
+                // The original failure is the root cause and is kept in ErrorMessage;
+                // each replay's error is appended to the attempt history instead.
+                AppendAttempt(entry, statusCode, attemptError, completedAt, lastRetriedStep?.NodeName, "Replay");
+                entry.Status = entry.RetryCount >= MaxReplayAttemptsBeforeDiscard ? "Discarded" : "Pending";
             }
+
+            await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
+            flowExecution.TotalRecords = priorTotalRecords;
+            flowExecution.SuccessRecords = priorSuccessRecords;
+            flowExecution.FailedRecords = priorFailedRecords;
+            await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
             entry.RetryCount++;
             entry.LastRetriedAt = DateTime.UtcNow;
-            entry.ErrorMessage = ex.Message;
-            AppendAttempt(entry, null, ex.Message, entry.LastRetriedAt.Value);
-            if (entry.RetryCount >= 5)
-            {
-                entry.Status = "Discarded";
-            }
+            AppendAttempt(entry, null, ex.Message, entry.LastRetriedAt.Value, null, "Replay");
+            entry.Status = entry.RetryCount >= MaxReplayAttemptsBeforeDiscard ? "Discarded" : "Pending";
 
-            _logger.LogError(ex, "Dead letter {DeadLetterId} replay threw (attempt {RetryCount})", entry.Id, entry.RetryCount);
+            _logger.LogError(ex, "Error resyncing dead letter {DeadLetterId}", entry.Id);
         }
 
         await _executionRepository.UpdateDeadLetterEntryAsync(entry);
-
         if (resolved)
         {
             await ApplyRecoveryAsync(entry, flowExecution);
@@ -199,17 +243,115 @@ public class DeadLetterService
         return new DeadLetterReplayResult { Outcome = DeadLetterReplayOutcome.Replayed, Entry = entry };
     }
 
+    // Resolves the node the replay actually starts at. Nodes inside a ForEach body are not
+    // valid start points (the executor runs them per iteration); a request for one is moved
+    // to its outermost loop, which is the only safe place to re-run the whole loop.
+    private async Task<Guid?> ResolveStartNodeAsync(
+        DeadLetterEntry entry,
+        IntegrationFlow flow,
+        Guid? requestedStartStepId)
+    {
+        var loopBodyNodeIds = FlowGraphAnalysis.GetAllForEachBodyNodeIds(flow);
+
+        if (requestedStartStepId is Guid requestedId)
+        {
+            return await ResolveLoopSafeStartAsync(entry, flow, loopBodyNodeIds, requestedId);
+        }
+
+        if (entry.ReplayFromStepId is Guid replayFromStepId)
+        {
+            return await ResolveLoopSafeStartAsync(entry, flow, loopBodyNodeIds, replayFromStepId);
+        }
+
+        if (flow.DefaultDeadLetterResyncStepId is Guid configuredStartStepId)
+        {
+            var configured = await ResolveLoopSafeStartAsync(entry, flow, loopBodyNodeIds, configuredStartStepId);
+            if (configured.HasValue)
+            {
+                return configured;
+            }
+        }
+
+        var containingLoopId = FlowGraphAnalysis.GetOutermostForEachNodeId(flow, entry.StepId);
+        if (containingLoopId is Guid loopId &&
+            await IsEligibleStartNodeAsync(entry, flow, loopBodyNodeIds, loopId))
+        {
+            return loopId;
+        }
+
+        return await IsEligibleStartNodeAsync(entry, flow, loopBodyNodeIds, entry.StepId)
+            ? entry.StepId
+            : null;
+    }
+
+    private async Task<Guid?> ResolveLoopSafeStartAsync(
+        DeadLetterEntry entry,
+        IntegrationFlow flow,
+        HashSet<Guid> loopBodyNodeIds,
+        Guid startStepId)
+    {
+        var resolved = loopBodyNodeIds.Contains(startStepId)
+            ? FlowGraphAnalysis.GetOutermostForEachNodeId(flow, startStepId)
+            : startStepId;
+        if (!resolved.HasValue)
+        {
+            return null;
+        }
+
+        return await IsEligibleStartNodeAsync(entry, flow, loopBodyNodeIds, resolved.Value)
+            ? resolved
+            : null;
+    }
+
+    private async Task<bool> IsEligibleStartNodeAsync(
+        DeadLetterEntry entry,
+        IntegrationFlow flow,
+        HashSet<Guid> loopBodyNodeIds,
+        Guid startStepId)
+    {
+        if (loopBodyNodeIds.Contains(startStepId))
+        {
+            return false;
+        }
+
+        var ancestors = FlowGraphAnalysis.GetAncestorNodeIds(flow, entry.StepId);
+        if (!ancestors.Contains(startStepId))
+        {
+            return false;
+        }
+
+        if (startStepId == entry.StepId)
+        {
+            return true;
+        }
+
+        // The loop containing the failure is marked Failed when its body failed, but it is
+        // still the right resync point because selecting it re-runs every iteration.
+        if (startStepId == FlowGraphAnalysis.GetOutermostForEachNodeId(flow, entry.StepId))
+        {
+            return true;
+        }
+
+        var previousSteps = await _executionRepository.GetStepExecutionsAsync(entry.FlowExecutionId);
+        return previousSteps.Any(step =>
+            step.StepId == startStepId &&
+            (step.Status == ExecutionStatus.Success || step.Status == ExecutionStatus.Recovered));
+    }
+
     private async Task ApplyRecoveryAsync(DeadLetterEntry entry, FlowExecution flowExecution)
     {
         var recoveredAt = entry.ResolvedAt ?? DateTime.UtcNow;
-
-        var stepExecution = await _executionRepository.GetStepExecutionAsync(entry.FlowExecutionId, entry.StepId);
-        if (stepExecution != null)
+        var stepExecutions = (await _executionRepository.GetStepExecutionsAsync(entry.FlowExecutionId)).ToList();
+        var failedStepExecution = stepExecutions
+            .Where(step => step.StepId == entry.StepId && step.Status == ExecutionStatus.Failed)
+            .OrderBy(step => Math.Abs(((step.CompletedAt ?? step.StartedAt) - entry.CreatedAt).Ticks))
+            .FirstOrDefault();
+        if (failedStepExecution != null)
         {
-            stepExecution.Status = ExecutionStatus.Recovered;
-            stepExecution.RecoveredAt = recoveredAt;
-            stepExecution.RecoveredByDeadLetterId = entry.Id;
-            await _executionRepository.UpdateStepExecutionAsync(stepExecution);
+            failedStepExecution.Status = ExecutionStatus.Recovered;
+            failedStepExecution.RecoveredAt = recoveredAt;
+            failedStepExecution.RecoveredByDeadLetterId = entry.Id;
+            await _executionRepository.UpdateStepExecutionAsync(failedStepExecution);
         }
 
         var entries = (await _executionRepository.GetDeadLettersByExecutionAsync(entry.FlowExecutionId)).ToList();
@@ -220,6 +362,8 @@ public class DeadLetterService
 
         if (entries.Any(d => d.Id != entry.Id && OutstandingStatuses.Contains(d.Status, StringComparer.OrdinalIgnoreCase)))
         {
+            flowExecution.Status = ExecutionStatus.Failed;
+            await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
             return;
         }
 
@@ -230,19 +374,16 @@ public class DeadLetterService
 
         var resolvedCount = entries.Count(d => string.Equals(d.Status, "Resolved", StringComparison.OrdinalIgnoreCase));
         var moved = Math.Min(flowExecution.FailedRecords, resolvedCount);
-
         flowExecution.FailedRecords -= moved;
         flowExecution.SuccessRecords += moved;
         flowExecution.Status = ExecutionStatus.Recovered;
         flowExecution.RecoveredAt = recoveredAt;
         flowExecution.CompletedAt ??= recoveredAt;
-
         await _executionRepository.UpdateFlowExecutionAsync(flowExecution);
-
         _logger.LogInformation("Execution {ExecutionId} recovered after all dead letters were resolved", flowExecution.Id);
     }
 
-    private static void AppendAttempt(DeadLetterEntry entry, int? statusCode, string error, DateTime at)
+    private static void AppendAttempt(DeadLetterEntry entry, int? statusCode, string error, DateTime at, string? nodeName = null, string kind = "Replay")
     {
         var history = ParseAttemptHistory(entry.AttemptHistoryJson);
         history.Add(new DeadLetterAttempt
@@ -250,9 +391,27 @@ public class DeadLetterService
             Attempt = history.Count + 1,
             At = at,
             StatusCode = statusCode,
-            Error = error
+            Error = error,
+            NodeName = nodeName ?? string.Empty,
+            Kind = kind
         });
+        entry.AttemptHistoryJson = JsonSerializer.Serialize(history, AttemptHistoryOptions);
+    }
 
+    private static void AppendBlockedNoteOnce(DeadLetterEntry entry, string note)
+    {
+        var history = ParseAttemptHistory(entry.AttemptHistoryJson);
+        if (history.Any(attempt => attempt.Kind == "Blocked" && attempt.Error == note))
+        {
+            return;
+        }
+        history.Add(new DeadLetterAttempt
+        {
+            Attempt = history.Count + 1,
+            At = DateTime.UtcNow,
+            Error = note,
+            Kind = "Blocked"
+        });
         entry.AttemptHistoryJson = JsonSerializer.Serialize(history, AttemptHistoryOptions);
     }
 
@@ -271,6 +430,19 @@ public class DeadLetterService
         {
             return new List<DeadLetterAttempt>();
         }
+    }
+
+    // A skipped replay must never leave the entry wedged in Retrying with no marker —
+    // that state is invisible to the worker scan. Reset it to Pending so it can be
+    // requested again.
+    private async Task<DeadLetterReplayResult> SkipAsync(DeadLetterEntry entry)
+    {
+        if (entry.Status == "Retrying")
+        {
+            entry.Status = "Pending";
+            await _executionRepository.UpdateDeadLetterEntryAsync(entry);
+        }
+        return new DeadLetterReplayResult { Outcome = DeadLetterReplayOutcome.Skipped, Entry = entry };
     }
 
     private static DeadLetterReplayResult Skipped(DeadLetterEntry entry) =>

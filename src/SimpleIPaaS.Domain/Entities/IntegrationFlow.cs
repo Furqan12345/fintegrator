@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace SimpleIPaaS.Domain.Entities;
@@ -6,11 +6,12 @@ namespace SimpleIPaaS.Domain.Entities;
 public class IntegrationFlow
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
     public Guid? IntegrationId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string PersistedStateJson { get; set; } = "{}";
+    // C# declarations prepended to every script in this flow (static classes, methods).
+    public string HelperCode { get; set; } = string.Empty;
     
     public FlowStatus Status { get; set; } = FlowStatus.Draft;
     public TriggerType TriggerType { get; set; } = TriggerType.Manual;
@@ -19,6 +20,7 @@ public class IntegrationFlow
     public DateTime? NextRunAt { get; set; }
     public DateTime? RunAt { get; set; }
     public bool AllowPostReplay { get; set; }
+    public Guid? DefaultDeadLetterResyncStepId { get; set; }
     public int? PublishedVersion { get; set; }
     public DateTime? LastPublishedAt { get; set; }
     

@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using SimpleIPaaS.Api.Validation;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
@@ -16,15 +17,18 @@ public class ConnectionController : ControllerBase
     private readonly IConnectionRepository _repository;
     private readonly IEncryptionService _encryptionService;
     private readonly ITransportEngine _transportEngine;
+    private readonly IAuthenticationHandlerFactory? _authFactory;
 
     public ConnectionController(
         IConnectionRepository repository,
         IEncryptionService encryptionService,
-        ITransportEngine transportEngine)
+        ITransportEngine transportEngine,
+        IAuthenticationHandlerFactory? authFactory = null)
     {
         _repository = repository;
         _encryptionService = encryptionService;
         _transportEngine = transportEngine;
+        _authFactory = authFactory;
     }
 
     // Frontend calls (plural):
@@ -63,6 +67,11 @@ public class ConnectionController : ControllerBase
             ModelState.AddModelError(nameof(dto.Status), $"'{dto.Status}' is not a valid ConnectionStatus.");
         }
 
+        foreach (var error in ConnectionValidation.Validate(dto, isCreate: true))
+        {
+            ModelState.AddModelError(nameof(dto.Name), error);
+        }
+
         if (!ModelState.IsValid)
         {
             return ValidationProblem(ModelState);
@@ -73,8 +82,8 @@ public class ConnectionController : ControllerBase
         var connection = new Connection
         {
             Id = Guid.NewGuid(),
-            Name = dto.Name,
-            BaseUrl = dto.BaseUrl,
+            Name = dto.Name.Trim(),
+            BaseUrl = dto.BaseUrl.Trim(),
             AuthType = authType,
             AuthConfigJson = authConfigJson,
             CreatedAt = DateTime.UtcNow,
@@ -99,6 +108,11 @@ public class ConnectionController : ControllerBase
             ModelState.AddModelError(nameof(dto.Status), $"'{dto.Status}' is not a valid ConnectionStatus.");
         }
 
+        foreach (var error in ConnectionValidation.Validate(dto, isCreate: false))
+        {
+            ModelState.AddModelError(nameof(dto.Name), error);
+        }
+
         if (!ModelState.IsValid)
         {
             return ValidationProblem(ModelState);
@@ -107,8 +121,17 @@ public class ConnectionController : ControllerBase
         var connection = await _repository.GetByIdAsync(id);
         if (connection == null) return NotFound();
 
-        connection.Name = dto.Name;
-        connection.BaseUrl = dto.BaseUrl;
+        // Switching the auth type without sending new credentials would leave the connection
+        // carrying a secret that belongs to the old scheme.
+        if (string.IsNullOrWhiteSpace(dto.AuthConfigJson) && connection.AuthType != authType && authType != AuthType.None)
+        {
+            ModelState.AddModelError(nameof(dto.AuthType),
+                "Changing the authentication type requires entering the credentials for the new type.");
+            return ValidationProblem(ModelState);
+        }
+
+        connection.Name = dto.Name.Trim();
+        connection.BaseUrl = dto.BaseUrl.Trim();
         connection.AuthType = authType;
 
         if (!string.IsNullOrEmpty(dto.AuthConfigJson))
@@ -138,6 +161,40 @@ public class ConnectionController : ControllerBase
     {
         var connection = await _repository.GetByIdAsync(id);
         if (connection == null) return NotFound();
+
+        // A Shopify connection test must exercise the token exchange. Sending a
+        // probe to the shop root would authenticate correctly and still look like
+        // a failed connection because the storefront does not answer the Admin API.
+        if (connection.AuthType == AuthType.Shopify && _authFactory != null)
+        {
+            try
+            {
+                var configJson = await _encryptionService.DecryptAsync(connection.AuthConfigJson);
+                using var request = new HttpRequestMessage(HttpMethod.Get, connection.BaseUrl);
+                await _authFactory.GetHandler(AuthType.Shopify).AuthenticateAsync(request, new AuthenticationContext
+                {
+                    ConnectionId = connection.Id,
+                    ConfigJson = configJson,
+                    ForceRefresh = true
+                });
+
+                return Ok(new
+                {
+                    success = true,
+                    statusCode = 200,
+                    message = "Shopify token exchange succeeded."
+                });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new
+                {
+                    success = false,
+                    statusCode = 0,
+                    error = ex.Message
+                });
+            }
+        }
 
         var probe = new IntegrationStep
         {
@@ -171,7 +228,6 @@ public class ConnectionController : ControllerBase
         return new ConnectionDto
         {
             Id = connection.Id,
-            TenantId = connection.TenantId,
             Name = connection.Name,
             BaseUrl = connection.BaseUrl,
             AuthType = connection.AuthType.ToString(),

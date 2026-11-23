@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace SimpleIPaaS.Domain.Entities;
 
@@ -25,7 +25,6 @@ public class AppLogEntry
     public string? ParentSpanId { get; set; }
     public string Message { get; set; } = string.Empty;
     public string? Exception { get; set; }
-    public Guid? TenantId { get; set; }
     public Guid? FlowExecutionId { get; set; }
     public Guid? FlowId { get; set; }
     public string? FlowName { get; set; }

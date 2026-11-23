@@ -9,7 +9,6 @@ namespace SimpleIPaaS.Infrastructure.Logging;
 
 internal sealed class LogCorrelation
 {
-    public Guid? TenantId;
     public Guid? FlowExecutionId;
     public Guid? FlowId;
     public string? FlowName;
@@ -74,8 +73,7 @@ internal sealed class LogCorrelation
         Properties[key] = ObservabilitySanitizer.Value(value);
         if (value is null) return;
 
-        if (Matches(key, "TenantId")) TenantId = AsGuid(value) ?? TenantId;
-        else if (Matches(key, "ExecutionId", "FlowExecutionId")) FlowExecutionId = AsGuid(value) ?? FlowExecutionId;
+        if (Matches(key, "ExecutionId", "FlowExecutionId")) FlowExecutionId = AsGuid(value) ?? FlowExecutionId;
         else if (Matches(key, "FlowId")) FlowId = AsGuid(value) ?? FlowId;
         else if (Matches(key, "FlowName")) FlowName = AsText(value) ?? FlowName;
         else if (Matches(key, "IntegrationId")) IntegrationId = AsGuid(value) ?? IntegrationId;

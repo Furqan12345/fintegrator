@@ -8,6 +8,8 @@ public class TestMappingRequestDto
     public string HttpResponseJson { get; set; } = "{}";
     public string TargetProperty { get; set; } = string.Empty;
     public string StepType { get; set; } = string.Empty;
+    // Flow-level helper script, so Test Run compiles the same prelude the engine uses.
+    public string HelperCode { get; set; } = string.Empty;
 }
 
 public class TestMappingResponseDto

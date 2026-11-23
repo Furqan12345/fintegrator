@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace SimpleIPaaS.Domain.Entities;
 
@@ -6,7 +6,6 @@ public class StepPacketLog
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid StepExecutionId { get; set; }
-    public Guid TenantId { get; set; }
     public int Sequence { get; set; }
     public string Kind { get; set; } = string.Empty;
     public int? PageNumber { get; set; }

@@ -55,7 +55,7 @@ public class AmazonSpApiAuthConfigDto : AuthConfigDto
     public string Region { get; set; } = "us-east-1";
     public string Service { get; set; } = "execute-api";
     public string RoleArn { get; set; } = string.Empty;
-    public string RoleSessionName { get; set; } = "fintegrator-sp-api";
+    public string RoleSessionName { get; set; } = "fusetor-sp-api";
     public string ExternalId { get; set; } = string.Empty;
     public string StsRegion { get; set; } = "us-east-1";
     public string StsEndpoint { get; set; } = string.Empty;

@@ -1,11 +1,10 @@
-using System;
+﻿using System;
 
 namespace SimpleIPaaS.Domain.Entities;
 
 public class Connection
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;
     

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace SimpleIPaaS.Domain.Entities;
 
@@ -7,7 +7,6 @@ public class StepExecution
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid FlowExecutionId { get; set; }
     public Guid StepId { get; set; }
-    public Guid TenantId { get; set; }
     public string NodeName { get; set; } = string.Empty;
     
     public ExecutionStatus Status { get; set; } = ExecutionStatus.InProgress;

@@ -15,6 +15,10 @@ public interface IFlowTestRepository
     Task AddRunAsync(FlowTestRun run);
     Task<FlowTestRun?> GetRunAsync(Guid id);
     Task<IReadOnlyList<FlowTestRun>> GetRunsAsync(Guid testCaseId);
+    Task<IReadOnlyList<FlowTestRun>> GetRunsBySuiteAsync(Guid suiteRunId);
     Task<FlowTestRun?> GetLatestRunAsync(Guid testCaseId);
+    Task<IReadOnlyList<FlowTestRun>> GetInterruptedRunsAsync();
     Task UpdateRunAsync(FlowTestRun run);
+    Task RecordRunTimestampsAsync(Guid testCaseId, DateTime at, bool passed);
+    Task TrimRunsAsync(Guid testCaseId, int keep = 20);
 }
