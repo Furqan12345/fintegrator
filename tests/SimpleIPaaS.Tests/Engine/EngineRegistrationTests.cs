@@ -56,6 +56,35 @@ public sealed class EngineRegistrationTests
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<FailureAlertService>());
     }
 
+    // Development builds the container with ValidateOnBuild, so a registration that cannot be constructed for the
+    // configured provider stops the host at start-up. A PostgreSQL-only packet store registered for SQLite did
+    // exactly that; this builds both providers' containers the way the host does and picks the packet store.
+    [Theory]
+    [InlineData("Sqlite", "Data Source=EngineValidateTest;Mode=Memory;Cache=Shared;Pooling=False", typeof(SimpleIPaaS.Infrastructure.Storage.SqlPacketLogStore))]
+    [InlineData("PostgreSql", "Host=localhost;Port=5432;Database=fusetor;Username=fusetor;Password=unused", typeof(SimpleIPaaS.Infrastructure.Storage.PostgresPacketLogStore))]
+    public void EngineServices_ValidateOnBuild_ForEachProvider(string provider, string connectionString, System.Type expectedPacketStore)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Database:Provider"] = provider,
+                ["ConnectionStrings:DefaultConnection"] = connectionString,
+                ["Encryption:Key"] = "0123456789abcdef0123456789abcdef"
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IConfiguration>(configuration);
+        services.AddSingleton<IHostEnvironment>(new StubHostEnvironment(Environments.Development));
+        services.AddEngineServices(configuration, new StubHostEnvironment(Environments.Development));
+        using var built = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+        using var scope = built.CreateScope();
+
+        var router = scope.ServiceProvider.GetRequiredService<SimpleIPaaS.Infrastructure.Storage.StorageStoreRouter<IPacketLogStore>>();
+        Assert.IsType(expectedPacketStore, router.Current);
+    }
+
     [Fact]
     public void ApiAndEngineRegistrations_AgreeOnFlowRunService()
     {
