@@ -1,0 +1,428 @@
+{
+  "name": "Business Central to Shopify - Order Shipment",
+  "description": "Reads posted sales shipments from Business Central through the Fintegrator BC Connector extension, delta-filtered by the monotonic entry number kept in persisted state, then collapses the batch to one entry per Shopify order (quantities summed, newest tracking number wins) and fans out one child transaction per order. Each child looks up Shopify's open fulfillment orders and marks them shipped with fulfillmentCreateV2 (carrier + tracking), then flags the Business Central feed row as pushed so a replay cannot create a second fulfillment. Orders with nothing open, or shipments already flagged as pushed, are reported as skipped instead of failing.",
+  "integrationId": "__INTEGRATION_ID__",
+  "triggerType": "Cron",
+  "cronExpression": "*/30 * * * *",
+  "allowPostReplay": true,
+  "nodes": [
+    {
+      "id": {
+        "$guid": "order-shipment/ShipmentSchedule"
+      },
+      "stepType": "Schedule",
+      "nodeName": "ShipmentSchedule",
+      "positionX": 0,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "schedule": {
+            "mode": "Cron",
+            "cronExpression": "*/30 * * * *"
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/FetchBcShipments"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "FetchBcShipments",
+      "positionX": 440,
+      "positionY": 0,
+      "endpointUrl": "companies(companyId)/fintegratorShippedOrders",
+      "httpMethod": "GET",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__BC_CONNECTION__",
+      "urlCode": {
+        "$script": "order_shipment/url_fetch_shipments.cs"
+      },
+      "postFlightCode": {
+        "$script": "order_shipment/postflight_fetch_shipments.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/SaveShipmentWatermark"
+      },
+      "stepType": "PersistedState",
+      "nodeName": "SaveShipmentWatermark",
+      "positionX": 880,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_shipment/save_watermark.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/LatestShipmentPerOrder"
+      },
+      "stepType": "Mapping",
+      "nodeName": "LatestShipmentPerOrder",
+      "positionX": 1320,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_shipment/collapse_shipments.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/FanOutShipments"
+      },
+      "stepType": "FanOut",
+      "nodeName": "FanOutShipments",
+      "positionX": 1760,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "fanOut": {
+            "arrayPath": "flowState.LatestShipmentPerOrder.shipments",
+            "itemVariable": "shipment",
+            "maxItems": 200
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/FetchShopifyFulfillmentOrders"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "FetchShopifyFulfillmentOrders",
+      "positionX": 2200,
+      "positionY": 760,
+      "endpointUrl": "admin/api/2026-07/graphql.json",
+      "httpMethod": "POST",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__SHOPIFY_CONNECTION__",
+      "preFlightCode": {
+        "$script": "order_shipment/preflight_fetch_fulfillment_orders.cs"
+      },
+      "postFlightCode": {
+        "$script": "order_shipment/postflight_fetch_fulfillment_orders.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/TagShipment"
+      },
+      "stepType": "AddIdentifier",
+      "nodeName": "TagShipment",
+      "positionX": 2640,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_shipment/add_identifier.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/ShipmentHasFulfillmentOrders"
+      },
+      "stepType": "Branch",
+      "nodeName": "ShipmentHasFulfillmentOrders",
+      "positionX": 3080,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_shipment/branch_has_open.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/CreateShopifyFulfillment"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "CreateShopifyFulfillment",
+      "positionX": 3520,
+      "positionY": 760,
+      "endpointUrl": "admin/api/2026-07/graphql.json",
+      "httpMethod": "POST",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__SHOPIFY_CONNECTION__",
+      "preFlightCode": {
+        "$script": "order_shipment/preflight_create_fulfillment.cs"
+      },
+      "postFlightCode": {
+        "$script": "order_shipment/postflight_create_fulfillment.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/MarkShipmentPushed"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "MarkShipmentPushed",
+      "positionX": 3960,
+      "positionY": 760,
+      "endpointUrl": "companies(companyId)/fintegratorShippedOrders(rowId)",
+      "httpMethod": "PATCH",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__BC_CONNECTION__",
+      "urlCode": {
+        "$script": "order_shipment/url_mark_pushed.cs"
+      },
+      "preFlightCode": {
+        "$script": "order_shipment/preflight_mark_pushed.cs"
+      },
+      "postFlightCode": {
+        "$script": "order_shipment/postflight_mark_pushed.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/ShipmentFulfilled"
+      },
+      "stepType": "Success",
+      "nodeName": "ShipmentFulfilled",
+      "positionX": 4400,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_shipment/success_fulfilled.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/ShipmentAlreadyFulfilled"
+      },
+      "stepType": "Success",
+      "nodeName": "ShipmentAlreadyFulfilled",
+      "positionX": 3520,
+      "positionY": 1520,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_shipment/success_skipped.cs"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": {
+        "$guid": "order-shipment/edge/schedule-fetch"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/ShipmentSchedule"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/FetchBcShipments"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/fetch-watermark"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/FetchBcShipments"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/SaveShipmentWatermark"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/watermark-collapse"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/SaveShipmentWatermark"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/LatestShipmentPerOrder"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/collapse-fanout"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/LatestShipmentPerOrder"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/FanOutShipments"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/fanout-lookup"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/FanOutShipments"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/FetchShopifyFulfillmentOrders"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/lookup-tag"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/FetchShopifyFulfillmentOrders"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/TagShipment"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/tag-branch"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/TagShipment"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/ShipmentHasFulfillmentOrders"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/branch-true"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/ShipmentHasFulfillmentOrders"
+      },
+      "sourcePortId": "true",
+      "targetNodeId": {
+        "$guid": "order-shipment/CreateShopifyFulfillment"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/fulfillment-markpushed"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/CreateShopifyFulfillment"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/MarkShipmentPushed"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/markpushed-success"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/MarkShipmentPushed"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-shipment/ShipmentFulfilled"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-shipment/edge/branch-false"
+      },
+      "sourceNodeId": {
+        "$guid": "order-shipment/ShipmentHasFulfillmentOrders"
+      },
+      "sourcePortId": "false",
+      "targetNodeId": {
+        "$guid": "order-shipment/ShipmentAlreadyFulfilled"
+      },
+      "targetPortId": "left",
+      "order": 0
+    }
+  ]
+}

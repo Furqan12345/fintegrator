@@ -1,0 +1,372 @@
+{
+  "name": "Shopify to Business Central - Order Create",
+  "description": "Pulls paid Shopify orders created or updated since the last run (GraphQL, sortKey UPDATED_AT, cursor pagination, query = updated_at > watermark-rewind AND financial_status:paid) and drops everything already recorded in the shopify-orders-imported cross-reference ledger, so Business Central is only called for genuinely new orders. The remaining orders fan out one child transaction each, creating a BC sales order through the Fintegrator BC Connector extension, which de-duplicates on the Shopify order id as a second line of defence. The watermark rewind (ordersOverlapSeconds, default 900 = one cron interval) both closes the same-second gap and gives a failed import another chance while its order is still inside the window.",
+  "integrationId": "__INTEGRATION_ID__",
+  "triggerType": "Cron",
+  "cronExpression": "*/15 * * * *",
+  "allowPostReplay": true,
+  "nodes": [
+    {
+      "id": {
+        "$guid": "order-create/OrderSchedule"
+      },
+      "stepType": "Schedule",
+      "nodeName": "OrderSchedule",
+      "positionX": 0,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "schedule": {
+            "mode": "Cron",
+            "cronExpression": "*/15 * * * *"
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/FetchShopifyOrders"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "FetchShopifyOrders",
+      "positionX": 440,
+      "positionY": 0,
+      "endpointUrl": "admin/api/2026-07/graphql.json",
+      "httpMethod": "POST",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__SHOPIFY_CONNECTION__",
+      "urlCode": {
+        "$script": "order_create/url_fetch_orders.cs"
+      },
+      "preFlightCode": {
+        "$script": "order_create/preflight_fetch_orders.cs"
+      },
+      "postFlightCode": {
+        "$script": "order_create/postflight_fetch_orders.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          },
+          "pagination": {
+            "style": "Cursor",
+            "cursorResponsePath": "data.orders.pageInfo.endCursor",
+            "cursorRequestParameter": "variables.after",
+            "hasMoreResponsePath": "data.orders.pageInfo.hasNextPage",
+            "aggregatePath": "data.orders.edges",
+            "maxPages": 20,
+            "delayMs": 0
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/SaveOrderWatermark"
+      },
+      "stepType": "PersistedState",
+      "nodeName": "SaveOrderWatermark",
+      "positionX": 880,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_create/save_watermark.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/FilterAlreadyImportedOrders"
+      },
+      "stepType": "CrossReferenceFilter",
+      "nodeName": "FilterAlreadyImportedOrders",
+      "positionX": 1320,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "listName": "shopify-orders-imported",
+          "arrayPath": "flowState.FetchShopifyOrders.orders",
+          "keyPaths": [
+            "id"
+          ],
+          "filterMode": "SkipExisting"
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/FanOutOrders"
+      },
+      "stepType": "FanOut",
+      "nodeName": "FanOutOrders",
+      "positionX": 1760,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "fanOut": {
+            "arrayPath": "flowState.FilterAlreadyImportedOrders",
+            "itemVariable": "order",
+            "maxItems": 500
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/CreateBcSalesOrder"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "CreateBcSalesOrder",
+      "positionX": 2200,
+      "positionY": 760,
+      "endpointUrl": "companies(companyId)/fintegratorSalesOrders",
+      "httpMethod": "POST",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__BC_CONNECTION__",
+      "urlCode": {
+        "$script": "order_create/url_create_bc_order.cs"
+      },
+      "preFlightCode": {
+        "$script": "order_create/preflight_create_bc_order.cs"
+      },
+      "postFlightCode": {
+        "$script": "order_create/postflight_create_bc_order.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/MergeImportResult"
+      },
+      "stepType": "Mapping",
+      "nodeName": "MergeImportResult",
+      "positionX": 2640,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_create/merge_import_result.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/RecordImportedOrder"
+      },
+      "stepType": "CrossReferenceStore",
+      "nodeName": "RecordImportedOrder",
+      "positionX": 3080,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "listName": "shopify-orders-imported",
+          "arrayPath": "flowState.MergeImportResult",
+          "keyPaths": [
+            "id"
+          ],
+          "valuePaths": [
+            "id",
+            "name",
+            "updatedAt",
+            "bcSalesOrderNo",
+            "bcStatus"
+          ]
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/TagOrder"
+      },
+      "stepType": "AddIdentifier",
+      "nodeName": "TagOrder",
+      "positionX": 3520,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_create/add_identifier.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "order-create/OrderImported"
+      },
+      "stepType": "Success",
+      "nodeName": "OrderImported",
+      "positionX": 3960,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "order_create/success.cs"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": {
+        "$guid": "order-create/edge/schedule-fetch"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/OrderSchedule"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/FetchShopifyOrders"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/fetch-watermark"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/FetchShopifyOrders"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/SaveOrderWatermark"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/watermark-filter"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/SaveOrderWatermark"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/FilterAlreadyImportedOrders"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/filter-fanout"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/FilterAlreadyImportedOrders"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/FanOutOrders"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/fanout-create"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/FanOutOrders"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/CreateBcSalesOrder"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/create-merge"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/CreateBcSalesOrder"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/MergeImportResult"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/merge-record"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/MergeImportResult"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/RecordImportedOrder"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/record-tag"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/RecordImportedOrder"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/TagOrder"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "order-create/edge/tag-success"
+      },
+      "sourceNodeId": {
+        "$guid": "order-create/TagOrder"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "order-create/OrderImported"
+      },
+      "targetPortId": "left",
+      "order": 0
+    }
+  ]
+}

@@ -1,0 +1,381 @@
+{
+  "name": "Business Central to Shopify - Inventory Update",
+  "description": "Reads inventory changes from Business Central through the Fintegrator BC Connector extension, delta-filtered by the monotonic entry number kept in persisted state. Because inventorySetQuantities writes absolute values and fan-out children run concurrently, the batch is first collapsed to the newest movement per SKU + location, then fanned out one child per key: each child requires an exact SKU match, resolves the target location (shopifyLocationByBcLocation map, then shopifyLocationId, then the first active location) and sets the absolute available quantity with a deterministic idempotency key. Items without a matching variant, without inventory tracking or without a location are reported as skipped instead of failing.",
+  "integrationId": "__INTEGRATION_ID__",
+  "triggerType": "Cron",
+  "cronExpression": "*/15 * * * *",
+  "allowPostReplay": true,
+  "nodes": [
+    {
+      "id": {
+        "$guid": "inventory-update/InventorySchedule"
+      },
+      "stepType": "Schedule",
+      "nodeName": "InventorySchedule",
+      "positionX": 0,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "schedule": {
+            "mode": "Cron",
+            "cronExpression": "*/15 * * * *"
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/FetchBcInventoryChanges"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "FetchBcInventoryChanges",
+      "positionX": 440,
+      "positionY": 0,
+      "endpointUrl": "companies(companyId)/fintegratorInventoryChanges",
+      "httpMethod": "GET",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__BC_CONNECTION__",
+      "urlCode": {
+        "$script": "inventory/url_fetch_inventory.cs"
+      },
+      "postFlightCode": {
+        "$script": "inventory/postflight_fetch_inventory.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/SaveInventoryWatermark"
+      },
+      "stepType": "PersistedState",
+      "nodeName": "SaveInventoryWatermark",
+      "positionX": 880,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "inventory/save_watermark.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/LatestInventoryChangePerSkuLocation"
+      },
+      "stepType": "Mapping",
+      "nodeName": "LatestInventoryChangePerSkuLocation",
+      "positionX": 1320,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "inventory/collapse_changes.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/FanOutInventoryChanges"
+      },
+      "stepType": "FanOut",
+      "nodeName": "FanOutInventoryChanges",
+      "positionX": 1760,
+      "positionY": 0,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "stepConfig": {
+        "$json": {
+          "fanOut": {
+            "arrayPath": "flowState.LatestInventoryChangePerSkuLocation.changes",
+            "itemVariable": "change",
+            "maxItems": 500
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/LookupShopifyVariant"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "LookupShopifyVariant",
+      "positionX": 2200,
+      "positionY": 760,
+      "endpointUrl": "admin/api/2026-07/graphql.json",
+      "httpMethod": "POST",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__SHOPIFY_CONNECTION__",
+      "preFlightCode": {
+        "$script": "inventory/preflight_lookup_variant.cs"
+      },
+      "postFlightCode": {
+        "$script": "inventory/postflight_lookup_variant.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/TagInventoryUpdate"
+      },
+      "stepType": "AddIdentifier",
+      "nodeName": "TagInventoryUpdate",
+      "positionX": 2640,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "inventory/add_identifier.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/InventoryVariantResolved"
+      },
+      "stepType": "Branch",
+      "nodeName": "InventoryVariantResolved",
+      "positionX": 3080,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "inventory/branch_resolved.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/SetShopifyInventory"
+      },
+      "stepType": "HttpAction",
+      "nodeName": "SetShopifyInventory",
+      "positionX": 3520,
+      "positionY": 760,
+      "endpointUrl": "admin/api/2026-07/graphql.json",
+      "httpMethod": "POST",
+      "urlMode": "Connection",
+      "authType": "None",
+      "connectionId": "__SHOPIFY_CONNECTION__",
+      "preFlightCode": {
+        "$script": "inventory/preflight_set_quantity.cs"
+      },
+      "postFlightCode": {
+        "$script": "inventory/postflight_set_quantity.cs"
+      },
+      "stepConfig": {
+        "$json": {
+          "apiPacket": {
+            "headersJson": "{\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}",
+            "queryParamsJson": "{}",
+            "contentType": "application/json",
+            "requestBody": ""
+          }
+        }
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/InventoryUpdated"
+      },
+      "stepType": "Success",
+      "nodeName": "InventoryUpdated",
+      "positionX": 3960,
+      "positionY": 760,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "inventory/success_updated.cs"
+      }
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/InventorySkipped"
+      },
+      "stepType": "Success",
+      "nodeName": "InventorySkipped",
+      "positionX": 3520,
+      "positionY": 1520,
+      "endpointUrl": "",
+      "httpMethod": "GET",
+      "urlMode": "Manual",
+      "authType": "None",
+      "mappingCode": {
+        "$script": "inventory/success_skipped.cs"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": {
+        "$guid": "inventory-update/edge/schedule-fetch"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/InventorySchedule"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/FetchBcInventoryChanges"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/fetch-watermark"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/FetchBcInventoryChanges"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/SaveInventoryWatermark"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/watermark-collapse"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/SaveInventoryWatermark"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/LatestInventoryChangePerSkuLocation"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/collapse-fanout"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/LatestInventoryChangePerSkuLocation"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/FanOutInventoryChanges"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/fanout-lookup"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/FanOutInventoryChanges"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/LookupShopifyVariant"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/lookup-tag"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/LookupShopifyVariant"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/TagInventoryUpdate"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/tag-branch"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/TagInventoryUpdate"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/InventoryVariantResolved"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/branch-true"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/InventoryVariantResolved"
+      },
+      "sourcePortId": "true",
+      "targetNodeId": {
+        "$guid": "inventory-update/SetShopifyInventory"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/set-success"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/SetShopifyInventory"
+      },
+      "sourcePortId": "right",
+      "targetNodeId": {
+        "$guid": "inventory-update/InventoryUpdated"
+      },
+      "targetPortId": "left",
+      "order": 0
+    },
+    {
+      "id": {
+        "$guid": "inventory-update/edge/branch-false"
+      },
+      "sourceNodeId": {
+        "$guid": "inventory-update/InventoryVariantResolved"
+      },
+      "sourcePortId": "false",
+      "targetNodeId": {
+        "$guid": "inventory-update/InventorySkipped"
+      },
+      "targetPortId": "left",
+      "order": 0
+    }
+  ]
+}
