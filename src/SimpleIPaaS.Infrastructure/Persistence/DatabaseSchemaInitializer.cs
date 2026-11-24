@@ -159,6 +159,10 @@ public static class DatabaseSchemaInitializer
         // Partial: nearly every row has no manual replay request, so a full index is all NULLs and the planner
         // ignores it (measured: a full scan plus sort of the whole table). Only requested rows are indexed.
         ("IX_DeadLetterEntries_ReplayRequested", "DeadLetterEntries", "ReplayRequestedAt", "ReplayRequestedAt IS NOT NULL"),
+        // Retention finds expired runs by CompletedAt and expired cross-reference keys by CreatedAt; without these
+        // every batch (up to 20 per pass) scanned the whole table. Partial: unfinished runs are never candidates.
+        ("IX_FlowExecutions_CompletedAt", "FlowExecutions", "CompletedAt", "CompletedAt IS NOT NULL"),
+        ("IX_CrossReferenceEntries_CreatedAt", "CrossReferenceEntries", "CreatedAt", null),
     };
 
     private static readonly (string Name, string Table)[] RedundantIndexes =

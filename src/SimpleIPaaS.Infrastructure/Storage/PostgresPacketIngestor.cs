@@ -162,7 +162,8 @@ public sealed class PostgresPacketIngestor : BackgroundService
     {
         var days = batch.Select(packet => PostgresPartitions.UtcDay(packet.StartedAt)).ToList();
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await PostgresPartitions.EnsureRangeAsync(connection, days.Min(), days.Max(), cancellationToken).ConfigureAwait(false);
+        // No lock timeout: this batch's day is missing, so it waits for the lock rather than lose its rows.
+        await PostgresPartitions.EnsureRangeAsync(connection, days.Min(), days.Max(), cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task WriteBatchAsync(NpgsqlDataSource dataSource, IReadOnlyList<StepPacketLog> batch, CancellationToken cancellationToken)

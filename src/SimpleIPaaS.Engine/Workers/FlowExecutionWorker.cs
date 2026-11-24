@@ -38,6 +38,8 @@ public class FlowExecutionWorker : BackgroundService
     private readonly ILogger<FlowExecutionWorker> _logger;
     private readonly FlowRunGate _gate;
     private readonly ConcurrentDictionary<Guid, byte> _runningFlows = new();
+    // Released when a run finishes, so an idle poller looks for work at once (see ExecuteAsync).
+    private readonly SemaphoreSlim _runFinished = new(0, int.MaxValue);
     // Flows found running on another Engine: skipped by the claim for a moment instead of claimed and handed back
     // in a tight loop.
     private readonly ConcurrentDictionary<Guid, DateTime> _busyElsewhere = new();
@@ -127,7 +129,9 @@ public class FlowExecutionWorker : BackgroundService
                     slots.Release();
                     try
                     {
-                        await Task.Delay(pollInterval, stoppingToken);
+                        // Wait for the interval, or less if a run finishes: its flow's next queued run (a Fan Out's
+                        // children are one flow, run one at a time) can be claimed at once instead of a poll later.
+                        await _runFinished.WaitAsync(pollInterval, stoppingToken);
                     }
                     catch (OperationCanceledException)
                     {
@@ -146,6 +150,7 @@ public class FlowExecutionWorker : BackgroundService
                     running.TryRemove(finished, out _);
                     _runningFlows.TryRemove(flowId, out _);
                     slots.Release();
+                    _runFinished.Release();
                 }, TaskScheduler.Default);
             }
         }

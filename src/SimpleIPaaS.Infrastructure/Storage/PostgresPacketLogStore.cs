@@ -7,7 +7,8 @@ namespace SimpleIPaaS.Infrastructure.Storage;
 
 // Packet logs on PostgreSQL: writes go through the batched COPY ingestor; lists and summaries read only the hot
 // StepPacketLogs rows (sizes included); headers and bodies come from the cold StepPacketPayloads table, and only
-// when a packet is opened. Cold lookups carry the packet's StartedAt, so they touch a single day partition.
+// when a packet is opened. Cold lookups carry the packet's StartedAt, so they touch a single day partition; lookups
+// by step or run carry that step's or run's time window (RunTimeWindow), so they touch only the days it ran on.
 public sealed class PostgresPacketLogStore : IPacketLogStore
 {
     private readonly IPaaSContext _context;
@@ -27,9 +28,13 @@ public sealed class PostgresPacketLogStore : IPacketLogStore
 
     public async Task<IReadOnlyList<StepPacketLog>> GetByStepExecutionAsync(Guid stepExecutionId, CancellationToken cancellationToken = default)
     {
-        var packets = await _context.StepPacketLogs
-            .AsNoTracking()
-            .Where(packet => packet.StepExecutionId == stepExecutionId)
+        var hot = _context.StepPacketLogs.AsNoTracking().Where(packet => packet.StepExecutionId == stepExecutionId);
+        if (await RunTimeWindow.ForStepAsync(_context, stepExecutionId, cancellationToken) is { } window)
+        {
+            hot = hot.Where(packet => packet.StartedAt >= window.From && packet.StartedAt <= window.To);
+        }
+
+        var packets = await hot
             .OrderBy(packet => packet.Sequence)
             .ToListAsync(cancellationToken);
         if (packets.Count == 0)
@@ -60,9 +65,16 @@ public sealed class PostgresPacketLogStore : IPacketLogStore
 
     public async Task<IReadOnlyList<StepPacketLogSummary>> GetSummariesAsync(Guid flowExecutionId, CancellationToken cancellationToken = default)
     {
+        var window = await RunTimeWindow.ForRunAsync(_context, flowExecutionId, cancellationToken);
+        if (window == null)
+        {
+            return Array.Empty<StepPacketLogSummary>(); // no run, no steps to join
+        }
+
+        var (windowFrom, windowTo) = window.Value;
         return await (from packet in _context.StepPacketLogs.AsNoTracking()
                       join step in _context.StepExecutions.AsNoTracking() on packet.StepExecutionId equals step.Id
-                      where step.FlowExecutionId == flowExecutionId
+                      where step.FlowExecutionId == flowExecutionId && packet.StartedAt >= windowFrom && packet.StartedAt <= windowTo
                       orderby packet.StepExecutionId, packet.Sequence
                       select new StepPacketLogSummary(
                           packet.Id,
@@ -87,9 +99,17 @@ public sealed class PostgresPacketLogStore : IPacketLogStore
 
     public async Task<StepPacketBody?> GetBodyAsync(Guid flowExecutionId, Guid packetId, CancellationToken cancellationToken = default)
     {
+        var window = await RunTimeWindow.ForRunAsync(_context, flowExecutionId, cancellationToken);
+        if (window == null)
+        {
+            return null;
+        }
+
+        var (windowFrom, windowTo) = window.Value;
         var startedAt = await (from packet in _context.StepPacketLogs.AsNoTracking()
                                join step in _context.StepExecutions.AsNoTracking() on packet.StepExecutionId equals step.Id
                                where packet.Id == packetId && step.FlowExecutionId == flowExecutionId
+                                     && packet.StartedAt >= windowFrom && packet.StartedAt <= windowTo
                                select (DateTime?)packet.StartedAt)
             .FirstOrDefaultAsync(cancellationToken);
         if (startedAt == null)

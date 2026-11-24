@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
+using SimpleIPaaS.Application.Models.Storage;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.Logging;
@@ -66,6 +67,13 @@ public sealed class PostgresDatabaseFixture : IDisposable
 
 public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture>
 {
+    private sealed class FixedStorageSettings(SimpleIPaaS.Application.Models.Storage.StorageSettingsSnapshot snapshot) : IStorageSettingsProvider
+    {
+        public Task<SimpleIPaaS.Application.Models.Storage.StorageSettingsSnapshot> GetAsync(CancellationToken cancellationToken = default) => Task.FromResult(snapshot);
+        public bool TryGetCached(out SimpleIPaaS.Application.Models.Storage.StorageSettingsSnapshot cached) { cached = snapshot; return true; }
+        public void Invalidate() { }
+    }
+
     private readonly PostgresDatabaseFixture _db;
 
     public PostgresStorageTests(PostgresDatabaseFixture db) => _db = db;
@@ -339,42 +347,214 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
     }
 
     [PostgresFact]
-    public async Task Run_retention_deletes_the_runs_packet_logs_and_payloads_too()
+    public async Task Retention_drops_whole_days_and_never_row_deletes_packets_or_step_payloads()
     {
         var (flowId, nodeId) = await SeedFlowAsync("Retention");
-        var oldRun = Guid.NewGuid();
-        var oldStep = Guid.NewGuid();
-        var keptRun = Guid.NewGuid();
-        var keptStep = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        // Old: everything is in day partitions that are past the cutoff.
+        // Boundary: the run just crossed the 30-day cutoff, but its day can only be dropped tomorrow.
+        // Recent: untouched.
+        var runs = new[] { ("old", now.AddDays(-40)), ("boundary", now.AddDays(-30).AddSeconds(-10)), ("recent", now) }
+            .Select(item => (Name: item.Item1, At: item.Item2, Run: Guid.NewGuid(), Step: Guid.NewGuid()))
+            .ToList();
+        var ingestor = new PostgresPacketIngestor(_db.DataSource!, NullLogger<PostgresPacketIngestor>.Instance);
         await using (var context = _db.NewContext())
         {
             var repository = new ExecutionRepository(context);
-            foreach (var (run, step) in new[] { (oldRun, oldStep), (keptRun, keptStep) })
+            foreach (var item in runs)
             {
-                await repository.AddFlowExecutionAsync(new FlowExecution { Id = run, FlowId = flowId, FlowName = "Retention", Status = ExecutionStatus.Success, CompletedAt = DateTime.UtcNow });
-                await repository.AddStepExecutionAsync(new StepExecution { Id = step, FlowExecutionId = run, StepId = nodeId, ReceivedInput = "in" });
+                await repository.AddFlowExecutionAsync(new FlowExecution
+                {
+                    Id = item.Run, FlowId = flowId, FlowName = "Retention", Status = ExecutionStatus.Success,
+                    QueuedAt = item.At, StartedAt = item.At, CompletedAt = item.At,
+                });
+                // The old step's day partition does not exist: the save creates it (missing-partition retry).
+                await repository.AddStepExecutionAsync(new StepExecution
+                {
+                    Id = item.Step, FlowExecutionId = item.Run, StepId = nodeId, StartedAt = item.At, ReceivedInput = item.Name,
+                });
+                await ingestor.EnqueueAsync(new StepPacketLog { StepExecutionId = item.Step, Kind = "HTTP", StartedAt = item.At, ResponseBody = item.Name });
             }
         }
 
-        var ingestor = new PostgresPacketIngestor(_db.DataSource!, NullLogger<PostgresPacketIngestor>.Instance);
-        await ingestor.EnqueueAsync(new StepPacketLog { StepExecutionId = oldStep, Kind = "HTTP", ResponseBody = "old" });
-        await ingestor.EnqueueAsync(new StepPacketLog { StepExecutionId = keptStep, Kind = "HTTP", ResponseBody = "kept" });
         await ingestor.FlushAsync();
+        Assert.Equal(0, ingestor.DroppedCount);
 
-        await using (var context = _db.NewContext())
+        // Runs kept 30 days, packets "forever": packets are still dropped at the runs window.
+        var settings = StorageCatalog.Defaults().Select(item =>
         {
-            Assert.Equal(1, await StorageRetentionService.DeletePostgresRunsAsync(context, new List<Guid> { oldRun }, default));
-        }
+            item.RetentionDays = item.Dataset switch
+            {
+                StorageDatasets.Executions => 30,
+                StorageDatasets.PacketLogs => 0,
+                StorageDatasets.CrossReferences => 0,
+                _ => item.RetentionDays,
+            };
+            return item;
+        }).ToList();
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, _db.DataSource!);
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped(services, _ => _db.NewContext());
+        await using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+        var retention = new StorageRetentionService(
+            Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>(provider),
+            new FixedStorageSettings(StorageCatalog.Snapshot(new StorageSettings { DatasetsJson = StorageCatalog.Serialize(settings) })),
+            null!, null!, NullLogger<StorageRetentionService>.Instance);
+
+        var result = await retention.RunAsync();
+
+        var packetOutcome = result.Datasets.Single(outcome => outcome.Dataset == StorageDatasets.PacketLogs);
+        Assert.Contains("the runs window", packetOutcome.Action);
 
         await using var verify = _db.NewContext();
-        // No foreign key reaches the packet tables on PostgreSQL: without the explicit delete these would remain.
-        Assert.Equal(0, await verify.StepPacketLogs.CountAsync(packet => packet.StepExecutionId == oldStep));
-        Assert.Equal(0, await verify.Set<StepPacketPayload>().CountAsync(payload => payload.ResponseBody == "old"));
-        Assert.Equal(0, await verify.Set<StepExecutionPayload>().CountAsync(payload => payload.StepExecutionId == oldStep));
-        Assert.Equal(0, await verify.StepExecutions.CountAsync(step => step.Id == oldStep));
-        Assert.Equal(1, await verify.StepPacketLogs.CountAsync(packet => packet.StepExecutionId == keptStep));
-        Assert.Equal(1, await verify.Set<StepPacketPayload>().CountAsync(payload => payload.ResponseBody == "kept"));
-        Assert.Equal(1, await verify.FlowExecutions.CountAsync(run => run.Id == keptRun));
+        var old = runs.Single(item => item.Name == "old");
+        var boundary = runs.Single(item => item.Name == "boundary");
+        var recent = runs.Single(item => item.Name == "recent");
+
+        // Both expired runs are gone, their steps with them (foreign key).
+        Assert.Equal(0, await verify.FlowExecutions.CountAsync(run => run.Id == old.Run || run.Id == boundary.Run));
+        Assert.Equal(0, await verify.StepExecutions.CountAsync(step => step.Id == old.Step || step.Id == boundary.Step));
+
+        // The old run's days were dropped whole.
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        {
+            foreach (var table in new[] { PostgresLayout.StepPacketLogs, PostgresLayout.StepPacketPayloads, PostgresLayout.StepExecutionPayloads })
+            {
+                Assert.DoesNotContain(PostgresPartitions.PartitionName(table, PostgresPartitions.UtcDay(old.At)),
+                    await PostgresPartitions.ListAsync(connection, null, table));
+            }
+        }
+
+        // The boundary run's packets and step payload were not row-deleted with it: they go when their day does.
+        Assert.Equal(1, await verify.StepPacketLogs.CountAsync(packet => packet.StepExecutionId == boundary.Step));
+        Assert.Equal(1, await verify.Set<StepPacketPayload>().CountAsync(payload => payload.ResponseBody == "boundary"));
+        Assert.Equal(1, await verify.Set<StepExecutionPayload>().CountAsync(payload => payload.StepExecutionId == boundary.Step));
+
+        Assert.Equal(1, await verify.FlowExecutions.CountAsync(run => run.Id == recent.Run));
+        Assert.Equal(1, await verify.StepPacketLogs.CountAsync(packet => packet.StepExecutionId == recent.Step));
+    }
+
+    [PostgresFact]
+    public async Task Scheduled_partition_creation_gives_up_on_a_busy_table_and_drops_run_on_one_host_at_a_time()
+    {
+        const long dropLock = 0x46_55_53_45_44_52_4F_50; // "FUSEDROP", PostgresPartitions.DropLockKey
+        var lastDay = PostgresPartitions.UtcDay(DateTime.UtcNow).AddDays(PostgresPartitions.DaysAhead);
+        var lastPacketDay = PostgresPartitions.PartitionName(PostgresLayout.StepPacketLogs, lastDay);
+        var lastLogDay = PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, lastDay);
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        await using (var drop = new NpgsqlCommand($"DROP TABLE \"{lastPacketDay}\"; DROP TABLE \"{lastLogDay}\";", connection))
+        {
+            await drop.ExecuteNonQueryAsync();
+        }
+
+        // A long read holds a lock on StepPacketLogs; creating its partition would queue every writer behind it.
+        await using var reader = await _db.DataSource!.OpenConnectionAsync();
+        await using var readTransaction = await reader.BeginTransactionAsync();
+        await using (var read = new NpgsqlCommand("SELECT count(*) FROM \"StepPacketLogs\";", reader, readTransaction))
+        {
+            await read.ExecuteScalarAsync();
+        }
+
+        await using (var maintenance = await _db.DataSource!.OpenConnectionAsync())
+        {
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            var skipped = await PostgresPartitions.EnsureAheadAsync(maintenance);
+            Assert.Equal(new[] { PostgresLayout.StepPacketLogs }, skipped);
+            Assert.True(started.Elapsed < TimeSpan.FromSeconds(10), $"gave up after {started.Elapsed}");
+            // The other tables were not held up by the busy one.
+            Assert.Contains(lastLogDay, await PostgresPartitions.ListAsync(maintenance, null, PostgresLayout.AppLogEntries));
+        }
+
+        await readTransaction.CommitAsync();
+        await using (var maintenance = await _db.DataSource!.OpenConnectionAsync())
+        {
+            Assert.Empty(await PostgresPartitions.EnsureAheadAsync(maintenance));
+            Assert.Contains(lastPacketDay, await PostgresPartitions.ListAsync(maintenance, null, PostgresLayout.StepPacketLogs));
+        }
+
+        // Another host is dropping: this one skips the pass instead of falling back to a table-locking DROP.
+        var oldDay = PostgresPartitions.UtcDay(DateTime.UtcNow.AddDays(-60));
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        {
+            await PostgresPartitions.EnsureRangeAsync(connection, oldDay, oldDay);
+        }
+
+        await using (var otherHost = await _db.DataSource!.OpenConnectionAsync())
+        {
+            await using (var hold = new NpgsqlCommand($"SELECT pg_advisory_lock({dropLock});", otherHost))
+            {
+                await hold.ExecuteNonQueryAsync();
+            }
+
+            Assert.Equal((0, 0L), await PostgresPartitions.DropOlderThanAsync(_db.DataSource!, PostgresLayout.AppLogEntries, DateTime.UtcNow.AddDays(-30)));
+            await using var release = new NpgsqlCommand($"SELECT pg_advisory_unlock({dropLock});", otherHost);
+            await release.ExecuteNonQueryAsync();
+        }
+
+        var dropped = await PostgresPartitions.DropOlderThanAsync(_db.DataSource!, PostgresLayout.AppLogEntries, DateTime.UtcNow.AddDays(-30));
+        Assert.True(dropped.Partitions >= 1);
+    }
+
+    [Fact]
+    public void Packet_logs_never_outlive_the_runs_window()
+    {
+        Assert.Equal(14, StorageRetentionService.EffectivePacketRetentionDays(14, 30));
+        Assert.Equal(30, StorageRetentionService.EffectivePacketRetentionDays(60, 30));
+        Assert.Equal(30, StorageRetentionService.EffectivePacketRetentionDays(0, 30));
+        Assert.Equal(14, StorageRetentionService.EffectivePacketRetentionDays(14, 0));
+        Assert.Equal(0, StorageRetentionService.EffectivePacketRetentionDays(0, 0));
+    }
+
+    [PostgresFact]
+    public async Task Packet_and_log_lookups_by_run_or_step_only_read_the_days_the_run_touched()
+    {
+        var (flowId, nodeId) = await SeedFlowAsync("Pruning");
+        var runId = Guid.NewGuid();
+        var stepId = Guid.NewGuid();
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            await repository.AddFlowExecutionAsync(new FlowExecution { Id = runId, FlowId = flowId, FlowName = "Pruning", Status = ExecutionStatus.Success, CompletedAt = DateTime.UtcNow });
+            await repository.AddStepExecutionAsync(new StepExecution { Id = stepId, FlowExecutionId = runId, StepId = nodeId });
+        }
+
+        // The run window is the run's own day plus one each side; the plan must not touch a day outside it.
+        var farDay = PostgresPartitions.PartitionName(PostgresLayout.StepPacketLogs, PostgresPartitions.UtcDay(DateTime.UtcNow.AddDays(5)));
+        var farLogDay = PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, PostgresPartitions.UtcDay(DateTime.UtcNow.AddDays(5)));
+        await using var connection = await _db.DataSource!.OpenConnectionAsync();
+        foreach (var (sql, notTouched) in new[]
+        {
+            ($"EXPLAIN SELECT * FROM \"StepPacketLogs\" WHERE \"StepExecutionId\" = '{stepId}' AND \"StartedAt\" >= '{DateTime.UtcNow.AddDays(-1):yyyy-MM-dd HH:mm:ss}+00' AND \"StartedAt\" <= '{DateTime.UtcNow.AddDays(1):yyyy-MM-dd HH:mm:ss}+00'", farDay),
+            ($"EXPLAIN SELECT * FROM \"StepPacketLogs\" WHERE \"StepExecutionId\" = '{stepId}'", ""),
+        })
+        {
+            await using var explain = new NpgsqlCommand(sql, connection);
+            var plan = new System.Text.StringBuilder();
+            await using (var reader = await explain.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync()) plan.AppendLine(reader.GetString(0));
+            }
+
+            if (notTouched.Length > 0) Assert.DoesNotContain(notTouched, plan.ToString());
+            else Assert.Contains(farDay, plan.ToString()); // without the window every day is probed
+        }
+
+        // The stores apply that window: results are unchanged, a far-day row of another run is never read.
+        await using (var context = _db.NewContext())
+        {
+            var ingestor = new PostgresPacketIngestor(_db.DataSource!, NullLogger<PostgresPacketIngestor>.Instance);
+            await ingestor.EnqueueAsync(new StepPacketLog { StepExecutionId = stepId, Kind = "HTTP", ResponseBody = "in window" });
+            await ingestor.FlushAsync();
+            var store = new PostgresPacketLogStore(context, ingestor);
+            Assert.Single(await store.GetByStepExecutionAsync(stepId));
+            Assert.Single(await store.GetSummariesAsync(runId));
+
+            new PostgresAppLogBatchStore(() => _db.DataSource!).Write(new[] { new AppLogEntry { Level = "Information", Source = "Engine", Category = "T", Message = "run line", FlowExecutionId = runId } });
+            Assert.Single(await new LogRepository(context).GetExecutionTimelineAsync(runId, 100));
+            Assert.Equal(1, (await new LogRepository(context).GetPageAsync(new LogQuery { FlowExecutionId = runId }, 1, 50)).Total);
+        }
+
+        _ = farLogDay;
     }
 
     [PostgresFact]

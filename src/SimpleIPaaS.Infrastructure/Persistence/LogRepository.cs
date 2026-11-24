@@ -42,7 +42,7 @@ public class LogRepository : ILogRepository
         page = page < 1 ? 1 : page;
         pageSize = pageSize < 1 ? 50 : (pageSize > 500 ? 500 : pageSize);
 
-        var filtered = Apply(_context.AppLogEntries.AsNoTracking(), query);
+        var filtered = await ApplyAsync(_context.AppLogEntries.AsNoTracking(), query, cancellationToken);
 
         var total = await filtered.CountAsync(cancellationToken);
         var items = await filtered
@@ -73,7 +73,7 @@ public class LogRepository : ILogRepository
             afterId = 0;
         }
 
-        var filtered = Apply(_context.AppLogEntries.AsNoTracking(), query)
+        var filtered = (await ApplyAsync(_context.AppLogEntries.AsNoTracking(), query, cancellationToken))
             .Where(entry => entry.Id > afterId);
 
         List<AppLogEntry> entries;
@@ -115,7 +115,7 @@ public class LogRepository : ILogRepository
     {
         // The filter lists describe what is in the log lately, so they are built from the newest FacetSampleRows
         // matching rows. DISTINCT over the whole table (up to the retention cap) made every list a full scan.
-        var filtered = Apply(_context.AppLogEntries.AsNoTracking(), query).OrderByDescending(item => item.Id).Take(FacetSampleRows);
+        var filtered = (await ApplyAsync(_context.AppLogEntries.AsNoTracking(), query, cancellationToken)).OrderByDescending(item => item.Id).Take(FacetSampleRows);
         var services = await filtered.Where(item => item.Service != "").Select(item => item.Service).Distinct().OrderBy(item => item).Take(100).ToListAsync(cancellationToken);
         var components = await filtered.Where(item => item.Component != "").Select(item => item.Component).Distinct().OrderBy(item => item).Take(200).ToListAsync(cancellationToken);
         var events = await filtered.Where(item => item.EventName != "").Select(item => item.EventName).Distinct().OrderBy(item => item).Take(300).ToListAsync(cancellationToken);
@@ -127,8 +127,7 @@ public class LogRepository : ILogRepository
     public async Task<IReadOnlyList<AppLogEntry>> GetExecutionTimelineAsync(Guid executionId, int limit, CancellationToken cancellationToken = default)
     {
         limit = limit < 1 ? 500 : Math.Min(limit, 5000);
-        return await _context.AppLogEntries.AsNoTracking()
-            .Where(entry => entry.FlowExecutionId == executionId)
+        return await (await WithinRunAsync(_context.AppLogEntries.AsNoTracking().Where(entry => entry.FlowExecutionId == executionId), executionId, cancellationToken))
             .OrderBy(entry => entry.Timestamp)
             .ThenBy(entry => entry.Id)
             .Take(limit)
@@ -160,6 +159,24 @@ public class LogRepository : ILogRepository
             .AsNoTracking()
             .Select(entry => (long?)entry.Id)
             .MaxAsync(cancellationToken) ?? 0L;
+    }
+
+    private async Task<IQueryable<AppLogEntry>> ApplyAsync(IQueryable<AppLogEntry> source, LogQuery query, CancellationToken cancellationToken)
+    {
+        var filtered = Apply(source, query);
+        return query.FlowExecutionId is Guid executionId ? await WithinRunAsync(filtered, executionId, cancellationToken) : filtered;
+    }
+
+    // PostgreSQL partitions the log by day: a lookup by run id alone probes every day. The run's time window lets
+    // it read only the days the run touched (see RunTimeWindow). Not needed on the single-table providers.
+    private async Task<IQueryable<AppLogEntry>> WithinRunAsync(IQueryable<AppLogEntry> source, Guid executionId, CancellationToken cancellationToken)
+    {
+        if (!_context.IsPostgres() || await RunTimeWindow.ForRunAsync(_context, executionId, cancellationToken) is not { } window)
+        {
+            return source;
+        }
+
+        return source.Where(entry => entry.Timestamp >= window.From && entry.Timestamp <= window.To);
     }
 
     private IQueryable<AppLogEntry> Apply(IQueryable<AppLogEntry> source, LogQuery query)

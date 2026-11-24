@@ -110,6 +110,42 @@ public class ExecutionRepository : IExecutionRepository
         entry.PersistedStateJson = payload.PersistedStateJson;
     }
 
+    // PostgreSQL: a step's cold payload goes to the day partition of the step's start. If that day does not exist
+    // (scheduled creation fell behind, or an old step is written again after its day was dropped), the day is
+    // created and the save retried, like the packet and log writers do. It waits for the lock: the row has nowhere
+    // else to go.
+    private async Task SaveStepPayloadChangesAsync()
+    {
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException exception) when (PostgresPartitions.IsMissingPartition(exception))
+        {
+            var days = _context.ChangeTracker.Entries<StepExecutionPayload>()
+                .Where(entry => entry.State is EntityState.Added or EntityState.Modified)
+                .Select(entry => PostgresPartitions.UtcDay(entry.Entity.CreatedAt))
+                .ToList();
+            if (days.Count == 0)
+            {
+                throw;
+            }
+
+            var connection = (Npgsql.NpgsqlConnection)_context.Database.GetDbConnection();
+            await _context.Database.OpenConnectionAsync();
+            try
+            {
+                await PostgresPartitions.EnsureRangeAsync(connection, days.Min(), days.Max());
+            }
+            finally
+            {
+                await _context.Database.CloseConnectionAsync();
+            }
+
+            await _context.SaveChangesAsync();
+        }
+    }
+
     private static string? CleanOrNull(string? value) => value == null ? null : Storage.PostgresPacketIngestor.Clean(value);
 
     public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(ExecutionQuery query)
@@ -281,8 +317,14 @@ public class ExecutionRepository : IExecutionRepository
     public async Task AddStepExecutionAsync(StepExecution execution)
     {
         _context.StepExecutions.Add(execution);
-        if (_postgres) StageStepPayload(execution, isNew: true);
-        await _context.SaveChangesAsync();
+        if (!_postgres)
+        {
+            await _context.SaveChangesAsync();
+            return;
+        }
+
+        StageStepPayload(execution, isNew: true);
+        await SaveStepPayloadChangesAsync();
     }
 
     public async Task UpdateStepExecutionAsync(StepExecution execution)
@@ -297,17 +339,18 @@ public class ExecutionRepository : IExecutionRepository
         StageStepPayload(execution, isNew: false);
         try
         {
-            await _context.SaveChangesAsync();
+            await SaveStepPayloadChangesAsync();
         }
         catch (DbUpdateConcurrencyException conflict) when (conflict.Entries.All(entry => entry.Entity is StepExecutionPayload))
         {
-            // The cold row is missing (its partition expired, or the step predates the cold table): write it fresh.
+            // The cold row is missing (the step predates the cold table, or its day was already dropped): write it
+            // fresh. A dropped day is created again by SaveStepPayloadChangesAsync.
             foreach (var entry in conflict.Entries)
             {
                 entry.State = EntityState.Added;
             }
 
-            await _context.SaveChangesAsync();
+            await SaveStepPayloadChangesAsync();
         }
     }
 

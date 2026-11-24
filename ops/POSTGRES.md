@@ -55,6 +55,12 @@ ahead. It does this at start-up and on every retention pass (every 15 minutes), 
 day creates it. No pg_partman or extension is needed. There is no default partition, because
 `DETACH ... CONCURRENTLY` is not allowed while one exists.
 
+Creating a partition locks the parent table exclusively for a moment. The scheduled creation (start-up and every
+pass) gives up on a table after 2 seconds if a long query holds it, so writers never queue behind it, and tries
+again on the next pass; a writer whose day is missing waits for the lock instead. Old partitions are dropped by one
+host at a time (an advisory try-lock; the other host skips that pass). Lookups by run or step id add that run's or
+step's time window, so PostgreSQL reads only the days it ran on instead of probing every partition.
+
 `FlowExecutions` and `StepExecutions` are not partitioned. PostgreSQL requires the partition key in every unique
 key, and dead letters, steps and child runs reference a run by its id alone. Without their payloads these rows are
 small, so the batched delete that expires them stays cheap.
@@ -82,8 +88,15 @@ first start writes those values down so they are visible on the page.
 
 | Dataset | On PostgreSQL |
 |---|---|
-| Packet logs | Whole days older than the window are detached concurrently and dropped, for both `StepPacketLogs` and `StepPacketPayloads`. |
-| Executions | `StepExecutionPayloads` days older than the window are dropped first. Then finished, non-test runs older than the window are deleted in batches: their HTTP call logs and payloads are deleted explicitly (they have no foreign key); steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade. |
+| Packet logs | Whole days older than the window are detached concurrently and dropped, for both `StepPacketLogs` and `StepPacketPayloads`. The window is never longer than the runs window: a packet whose run is gone cannot be opened from anywhere. |
+| Executions | `StepExecutionPayloads` days older than the window are dropped. Finished, non-test runs older than the window are deleted in batches; steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade. |
+
+Deleting a run does not delete its packets or step payloads row by row: they go with their day. A run deleted today
+leaves them for at most about a day, unreachable from the UI. Deleting them with the run turned every expired run
+into row-by-row deletes in the partitioned tables (runs cross the cutoff all day; their day can only be dropped up to
+a day later), which is what the partitions are for. Deleting a flow, trimming test runs and the demo reseed still
+delete them at once. Runs, steps and dead letters are deleted row by row; `IX_FlowExecutions_CompletedAt` lets each
+batch find its runs without scanning the table.
 | Logs | The log sink drops whole days older than the longer of its two windows (detail, warnings). It deletes only what the shorter window still covers, then applies the row cap. |
 | Cross references | Batched delete, as on the other providers. |
 

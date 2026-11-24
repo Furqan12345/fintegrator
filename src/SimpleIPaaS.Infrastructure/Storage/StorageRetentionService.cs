@@ -67,7 +67,7 @@ public sealed class StorageRetentionService
                 continue;
             }
 
-            outcomes.Add(await RunRelationalAsync(dataset, datasetSettings, cancellationToken).ConfigureAwait(false));
+            outcomes.Add(await RunRelationalAsync(dataset, datasetSettings, snapshot.For(StorageDatasets.Executions).RetentionDays, cancellationToken).ConfigureAwait(false));
         }
 
         return new StorageRetentionRunResult(DateTime.UtcNow, outcomes);
@@ -129,6 +129,7 @@ public sealed class StorageRetentionService
     private async Task<StorageRetentionOutcome> RunRelationalAsync(
         string dataset,
         StorageDatasetSettings settings,
+        int runRetentionDays,
         CancellationToken cancellationToken)
     {
         if (dataset == StorageDatasets.Logs)
@@ -142,12 +143,11 @@ public sealed class StorageRetentionService
                 0);
         }
 
-        if (settings.RetentionDays <= 0)
+        var keepForever = new StorageRetentionOutcome(dataset, "Database", "Keeping every row (no retention configured)", 0);
+        if (settings.RetentionDays <= 0 && (dataset != StorageDatasets.PacketLogs || runRetentionDays <= 0))
         {
-            return new StorageRetentionOutcome(dataset, "Database", "Keeping every row (no retention configured)", 0);
+            return keepForever;
         }
-
-        var cutoff = DateTime.UtcNow.AddDays(-settings.RetentionDays);
 
         try
         {
@@ -155,9 +155,16 @@ public sealed class StorageRetentionService
             var context = scope.ServiceProvider.GetRequiredService<IPaaSContext>();
             if (context.IsPostgres())
             {
-                return await RunPostgresAsync(dataset, settings, cutoff, context, scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>(), cancellationToken)
+                return await RunPostgresAsync(dataset, settings, runRetentionDays, context, scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>(), cancellationToken)
                     .ConfigureAwait(false);
             }
+
+            if (settings.RetentionDays <= 0)
+            {
+                return keepForever;
+            }
+
+            var cutoff = DateTime.UtcNow.AddDays(-settings.RetentionDays);
 
             var removed = dataset switch
             {
@@ -202,21 +209,38 @@ public sealed class StorageRetentionService
 
     // PostgreSQL: the append-only tables are partitioned by day, so expired history is dropped a day at a time
     // (detach concurrently + drop) instead of deleted row by row. Runs and steps are not partitioned (foreign keys
-    // point at them); with their payloads in the cold table they are narrow, so the batched delete stays cheap.
+    // point at them); with their payloads in the cold tables they are narrow, so the batched delete stays cheap.
+    //
+    // Deleting a run does not delete its packet logs or step payloads row by row: their days are dropped instead.
+    //  * Packet logs are dropped at the shorter of the two windows, so they never outlive their runs by more than
+    //    the one-day granularity (a packet whose run is gone cannot be opened from anywhere).
+    //  * Step payloads follow the runs window.
+    // Rows of a run deleted today stay until their day is dropped (at most about a day), unreachable from the UI.
+    // Deleting them with the run instead turned every expired run into row-by-row deletes in the partitioned tables
+    // (runs cross the cutoff continuously, their day becomes droppable up to a day later), which is what the
+    // partitions exist to avoid. Explicit deletes (a flow, test runs, the demo reseed) still remove them at once.
+    internal static int EffectivePacketRetentionDays(int packetRetentionDays, int runRetentionDays) =>
+        packetRetentionDays > 0 && runRetentionDays > 0
+            ? Math.Min(packetRetentionDays, runRetentionDays)
+            : Math.Max(packetRetentionDays, runRetentionDays);
+
     private async Task<StorageRetentionOutcome> RunPostgresAsync(
         string dataset,
         StorageDatasetSettings settings,
-        DateTime cutoff,
+        int runRetentionDays,
         IPaaSContext context,
         NpgsqlDataSource dataSource,
         CancellationToken cancellationToken)
     {
         long removed = 0;
         var partitions = 0;
+        var days = settings.RetentionDays;
         switch (dataset)
         {
             case StorageDatasets.PacketLogs:
             {
+                days = EffectivePacketRetentionDays(settings.RetentionDays, runRetentionDays);
+                var cutoff = DateTime.UtcNow.AddDays(-days);
                 var hot = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepPacketLogs, cutoff, cancellationToken).ConfigureAwait(false);
                 var cold = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepPacketPayloads, cutoff, cancellationToken).ConfigureAwait(false);
                 removed = hot.Rows;
@@ -226,46 +250,39 @@ public sealed class StorageRetentionService
 
             case StorageDatasets.Executions:
             {
-                // Step payloads follow the executions window. Whole days go first, so the per-run cleanup below
-                // only finds what is left (the newest day around the cutoff).
+                var cutoff = DateTime.UtcNow.AddDays(-days);
                 var cold = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepExecutionPayloads, cutoff, cancellationToken).ConfigureAwait(false);
                 partitions = cold.Partitions;
+                // Steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade.
                 removed = await DeleteInBatchesAsync(
                     () => context.FlowExecutions.IgnoreQueryFilters()
                         .Where(execution => !execution.IsTest && execution.CompletedAt != null && execution.CompletedAt < cutoff)
                         .Select(execution => execution.Id)
                         .Take(BatchSize)
                         .ToListAsync(cancellationToken),
-                    ids => DeletePostgresRunsAsync(context, ids, cancellationToken),
+                    ids => context.FlowExecutions.IgnoreQueryFilters().Where(execution => ids.Contains(execution.Id)).ExecuteDeleteAsync(cancellationToken),
                     cancellationToken).ConfigureAwait(false);
                 break;
             }
 
             case StorageDatasets.CrossReferences:
+            {
+                var cutoff = DateTime.UtcNow.AddDays(-days);
                 removed = await DeleteInBatchesAsync(
                     () => context.CrossReferenceEntries.IgnoreQueryFilters().Where(entry => entry.CreatedAt < cutoff).Select(entry => entry.Id).Take(BatchSize).ToListAsync(cancellationToken),
                     ids => context.CrossReferenceEntries.IgnoreQueryFilters().Where(entry => ids.Contains(entry.Id)).ExecuteDeleteAsync(cancellationToken),
                     cancellationToken).ConfigureAwait(false);
                 break;
+            }
         }
 
+        var window = days != settings.RetentionDays ? $"{days}d, the runs window" : $"{days}d";
         var status = removed == 0 && partitions == 0
-            ? $"Nothing older than {settings.RetentionDays}d"
+            ? $"Nothing older than {window}"
             : partitions > 0
-                ? $"Dropped {partitions} day partition(s) older than {settings.RetentionDays}d"
-                : $"Deleted rows older than {settings.RetentionDays}d";
+                ? $"Dropped {partitions} day partition(s) older than {window}"
+                : $"Deleted rows older than {window}";
         return new StorageRetentionOutcome(dataset, "Database", status, (int)Math.Min(removed, int.MaxValue));
-    }
-
-    // Deletes a batch of runs on PostgreSQL. Steps and dead letters go with the run (foreign keys), but the packet
-    // logs and the cold payloads have no foreign key, so they are deleted here first: otherwise a run's HTTP call
-    // logs would outlive it whenever "Messages and payloads" keeps data longer than "Runs" (or forever).
-    internal static async Task<int> DeletePostgresRunsAsync(IPaaSContext context, List<Guid> runIds, CancellationToken cancellationToken)
-    {
-        var stepIds = context.StepExecutions.Where(step => runIds.Contains(step.FlowExecutionId)).Select(step => step.Id);
-        await ColdStorage.DeleteForStepsAsync(context, stepIds, cancellationToken).ConfigureAwait(false);
-        await context.StepPacketLogs.Where(packet => stepIds.Contains(packet.StepExecutionId)).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
-        return await context.FlowExecutions.IgnoreQueryFilters().Where(execution => runIds.Contains(execution.Id)).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
     // Every pass also keeps a week of future day partitions in place (cheap when they already exist).
@@ -281,7 +298,13 @@ public sealed class StorageRetentionService
             }
 
             await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-            await PostgresPartitions.EnsureAheadAsync(connection, cancellationToken).ConfigureAwait(false);
+            var skipped = await PostgresPartitions.EnsureAheadAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (skipped.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Upcoming PostgreSQL day partitions for {Tables} were not created: the table was busy for {Seconds}s. The next pass retries (a week is kept ahead).",
+                    string.Join(", ", skipped), PostgresPartitions.MaintenanceLockTimeout.TotalSeconds);
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
