@@ -36,8 +36,12 @@ public class FlowExecutionWorker : BackgroundService
     private readonly ExecutionCancellationRegistry _cancellationRegistry;
     private readonly ExecutionOptions _options;
     private readonly ILogger<FlowExecutionWorker> _logger;
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _flowLocks = new();
+    private readonly FlowRunGate _gate;
     private readonly ConcurrentDictionary<Guid, byte> _runningFlows = new();
+    // Flows found running on another Engine: skipped by the claim for a moment instead of claimed and handed back
+    // in a tight loop.
+    private readonly ConcurrentDictionary<Guid, DateTime> _busyElsewhere = new();
+    private static readonly TimeSpan BusyElsewhereCooldown = TimeSpan.FromSeconds(2);
     // Cancelled when the shutdown drain window expires: interrupts whatever is still running.
     private readonly CancellationTokenSource _abortRuns = new();
     private volatile bool _stopRequested;
@@ -46,9 +50,11 @@ public class FlowExecutionWorker : BackgroundService
         IServiceProvider serviceProvider,
         ExecutionCancellationRegistry cancellationRegistry,
         IOptions<ExecutionOptions> options,
-        ILogger<FlowExecutionWorker> logger)
+        ILogger<FlowExecutionWorker> logger,
+        FlowRunGate gate)
     {
         _serviceProvider = serviceProvider;
+        _gate = gate;
         _cancellationRegistry = cancellationRegistry;
         _options = options.Value;
         _logger = logger;
@@ -79,11 +85,22 @@ public class FlowExecutionWorker : BackgroundService
                 await slots.WaitAsync(stoppingToken);
 
                 QueuedExecutionClaim? claim = null;
+                IAsyncDisposable? lease = null;
                 try
                 {
                     using var scope = _serviceProvider.CreateScope();
-                    claim = await scope.ServiceProvider.GetRequiredService<IExecutionRepository>()
-                        .TryClaimNextQueuedExecutionAsync(_runningFlows.Keys.ToList());
+                    var repository = scope.ServiceProvider.GetRequiredService<IExecutionRepository>();
+                    claim = await repository.TryClaimNextQueuedExecutionAsync(ExcludedFlows());
+                    if (claim != null)
+                    {
+                        lease = await TryEnterFlowAsync(claim, repository);
+                        if (lease == null)
+                        {
+                            claim = null;
+                            slots.Release();
+                            continue; // the flow is running elsewhere: look for other work straight away
+                        }
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -122,7 +139,7 @@ public class FlowExecutionWorker : BackgroundService
 
                 _runningFlows[claim.FlowId] = 0;
                 var flowId = claim.FlowId;
-                var task = RunClaimAsync(claim);
+                var task = RunClaimAsync(claim, lease!);
                 running[task] = 0;
                 _ = task.ContinueWith(finished =>
                 {
@@ -155,10 +172,56 @@ public class FlowExecutionWorker : BackgroundService
         }
     }
 
-    // Runs one claimed execution to completion. Never throws: every failure is logged here so a bad run cannot
-    // take the poller down.
-    private async Task RunClaimAsync(QueuedExecutionClaim claim)
+    private List<Guid> ExcludedFlows()
     {
+        var now = DateTime.UtcNow;
+        foreach (var (flowId, until) in _busyElsewhere)
+        {
+            if (until < now) _busyElsewhere.TryRemove(flowId, out _);
+        }
+
+        return _runningFlows.Keys.Concat(_busyElsewhere.Keys).Distinct().ToList();
+    }
+
+    // Takes the flow's run gate for a claimed run. If another Engine is running the flow, the claim goes back to the
+    // queue untouched and the flow is skipped briefly.
+    private async Task<IAsyncDisposable?> TryEnterFlowAsync(QueuedExecutionClaim claim, IExecutionRepository repository)
+    {
+        IAsyncDisposable? lease;
+        try
+        {
+            lease = await _gate.TryEnterAsync(claim.FlowId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not take the run gate for flow {FlowId}; returning execution {ExecutionId} to the queue", claim.FlowId, claim.ExecutionId);
+            lease = null;
+        }
+
+        if (lease != null)
+        {
+            return lease;
+        }
+
+        _busyElsewhere[claim.FlowId] = DateTime.UtcNow + BusyElsewhereCooldown;
+        try
+        {
+            await repository.ReleaseClaimAsync(claim.ExecutionId);
+            _logger.LogDebug("Flow {FlowId} is running on another Engine; execution {ExecutionId} returned to the queue", claim.FlowId, claim.ExecutionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not return execution {ExecutionId} to the queue; stale-run recovery will resolve it", claim.ExecutionId);
+        }
+
+        return null;
+    }
+
+    // Runs one claimed execution to completion. Never throws: every failure is logged here so a bad run cannot
+    // take the poller down. Holds the flow's run gate (lease) until the run is finished.
+    private async Task RunClaimAsync(QueuedExecutionClaim claim, IAsyncDisposable lease)
+    {
+        await using var gate = lease;
         await Task.Yield();
 
         // Everything logged inside this scope carries the correlation ids, so the
@@ -209,20 +272,10 @@ public class FlowExecutionWorker : BackgroundService
         }
     }
 
+    // Runs of one flow are serialised across Engines (cross references and persisted state assume it): the caller
+    // holds the flow's run gate for the whole run.
     private async Task ExecuteRequestAsync(QueuedExecutionClaim request)
     {
-        // Runs of one flow are serialised (cross references and persisted state assume it). The claim already skips
-        // flows running here; the lock also covers anything else that runs a flow in this process.
-        var flowLock = _flowLocks.GetOrAdd(request.FlowId, _ => new SemaphoreSlim(1, 1));
-        var lockWaitStartedAt = Stopwatch.GetTimestamp();
-        await flowLock.WaitAsync(_abortRuns.Token);
-        var lockWaitMs = (long)Stopwatch.GetElapsedTime(lockWaitStartedAt).TotalMilliseconds;
-        if (lockWaitMs > 0)
-        {
-            _logger.LogInformation(new EventId(1210, "flow.lock.waited"), "Flow lock wait for execution {ExecutionId} was {LockWaitMs}ms", request.ExecutionId, lockWaitMs);
-        }
-
-        try
         {
             using var scope = _serviceProvider.CreateScope();
             var executionRepository = scope.ServiceProvider.GetRequiredService<IExecutionRepository>();
@@ -337,10 +390,6 @@ public class FlowExecutionWorker : BackgroundService
                     "Execution {ExecutionId} finished with status {Status} in {DurationMs}ms ({SuccessRecords} succeeded, {FailedRecords} failed)",
                     request.ExecutionId, result.Status, elapsedMs, result.SuccessRecords, result.FailedRecords);
             }
-        }
-        finally
-        {
-            flowLock.Release();
         }
     }
 

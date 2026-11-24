@@ -11,6 +11,7 @@ using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
 using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain.Entities;
+using SimpleIPaaS.Engine;
 using SimpleIPaaS.Engine.Workers;
 
 namespace SimpleIPaaS.Tests.Engine;
@@ -74,7 +75,8 @@ public sealed class FlowExecutionWorkerDispatchTests
             provider,
             new ExecutionCancellationRegistry(),
             Options.Create(new ExecutionOptions { MaxConcurrency = concurrency, PollIntervalSeconds = pollSeconds }),
-            NullLogger<FlowExecutionWorker>.Instance);
+            NullLogger<FlowExecutionWorker>.Instance,
+            new FlowRunGate(provider, NullLogger<FlowRunGate>.Instance));
         return (worker, fake);
     }
 

@@ -728,6 +728,11 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         return flow;
     }
 
+    public async Task<bool> TryAdvanceNextRunAtAsync(Guid flowId, DateTime expectedDue, DateTime? nextRunAt) =>
+        await _context.IntegrationFlows
+            .Where(f => f.Id == flowId && f.NextRunAt == expectedDue)
+            .ExecuteUpdateAsync(set => set.SetProperty(f => f.NextRunAt, nextRunAt)) == 1;
+
     public async Task UpdateNextRunAtAsync(Guid flowId, DateTime? nextRunAt)
     {
         var flow = await _context.IntegrationFlows

@@ -86,9 +86,12 @@ public class CronTriggerScheduler : BackgroundService
                     "One-time schedule fired for flow {FlowId} '{FlowName}' (was due {DueAt:u})",
                     flow.Id, flow.Name, flow.NextRunAt);
 
-                // Clear the marker before enqueueing — at-most-once dispatch.
-                await scheduleRepository.UpdateNextRunAtAsync(flow.Id, null);
-                await EnqueueAsync(flow.Id, "Schedule", stoppingToken);
+                // Clear the marker before enqueueing — at-most-once dispatch, and only the Engine that wins the
+                // compare-and-set enqueues.
+                if (await scheduleRepository.TryAdvanceNextRunAtAsync(flow.Id, flow.NextRunAt.Value, null))
+                {
+                    await EnqueueAsync(flow.Id, "Schedule", stoppingToken);
+                }
                 continue;
             }
 
@@ -119,12 +122,19 @@ public class CronTriggerScheduler : BackgroundService
             }
 
             var nextRun = expression.GetNextOccurrence(now);
+
+            // Advance first (compare-and-set), then enqueue: with several Engines exactly one wins each firing, and a
+            // crash between the two steps loses one firing instead of running it twice (at-most-once, like RunAt).
+            if (!await scheduleRepository.TryAdvanceNextRunAtAsync(flow.Id, flow.NextRunAt.Value, nextRun))
+            {
+                _logger.LogDebug("Cron firing for flow {FlowId} (due {DueAt:u}) was taken by another Engine", flow.Id, flow.NextRunAt);
+                continue;
+            }
+
             _logger.LogInformation(
                 "Cron '{CronExpression}' fired for flow {FlowId} '{FlowName}' (due {DueAt:u}); next run at {NextRunAt:u}",
                 flow.CronExpression, flow.Id, flow.Name, flow.NextRunAt, nextRun);
-
             await EnqueueAsync(flow.Id, "Cron", stoppingToken);
-            await scheduleRepository.UpdateNextRunAtAsync(flow.Id, nextRun);
         }
     }
 

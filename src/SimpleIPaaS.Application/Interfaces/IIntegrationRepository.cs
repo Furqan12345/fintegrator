@@ -32,4 +32,8 @@ public interface IIntegrationRepository
 public interface ICronScheduleRepository
 {
     Task UpdateNextRunAtAsync(Guid flowId, DateTime? nextRunAt);
+
+    // Compare-and-set: moves NextRunAt from the due value the scheduler read to the next one. Only one scheduler
+    // (one Engine) wins a given firing, so a due schedule is enqueued once however many Engines scan it.
+    Task<bool> TryAdvanceNextRunAtAsync(Guid flowId, DateTime expectedDue, DateTime? nextRunAt);
 }

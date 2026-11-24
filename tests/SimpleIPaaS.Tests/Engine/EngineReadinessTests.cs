@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Domain;
 using SimpleIPaaS.Domain.Entities;
@@ -164,6 +165,44 @@ public sealed class EngineReadinessTests : IDisposable
         }
 
         Assert.Equal("{\"count\":7}", await repository.GetPersistedStateAsync(flow));
+    }
+
+    // ---- cron: one firing, one winner
+
+    [Fact]
+    public async Task Cron_firing_is_taken_by_exactly_one_scheduler()
+    {
+        var flow = await SeedFlowAsync("Cron");
+        var due = new DateTime(2026, 11, 24, 10, 0, 0, DateTimeKind.Utc);
+        await using (var context = new IPaaSContext(_options))
+        {
+            await new IntegrationRepository(context).UpdateNextRunAtAsync(flow, due);
+        }
+
+        await using var first = new IPaaSContext(_options);
+        await using var second = new IPaaSContext(_options);
+        var wins = new[]
+        {
+            await new IntegrationRepository(first).TryAdvanceNextRunAtAsync(flow, due, due.AddMinutes(1)),
+            await new IntegrationRepository(second).TryAdvanceNextRunAtAsync(flow, due, due.AddMinutes(1)),
+        };
+        Assert.Equal(1, wins.Count(won => won));
+    }
+
+    // ---- the flow gate (in-process half; the PostgreSQL advisory half is covered by the scale-out suite)
+
+    [Fact]
+    public async Task Flow_gate_admits_one_run_per_flow_and_reopens_on_release()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection().BuildServiceProvider();
+        var gate = new SimpleIPaaS.Engine.FlowRunGate(services, Microsoft.Extensions.Logging.Abstractions.NullLogger<SimpleIPaaS.Engine.FlowRunGate>.Instance);
+        var flow = Guid.NewGuid();
+        var lease = await gate.TryEnterAsync(flow);
+        Assert.NotNull(lease);
+        Assert.Null(await gate.TryEnterAsync(flow));
+        Assert.NotNull(await gate.TryEnterAsync(Guid.NewGuid()));
+        await lease!.DisposeAsync();
+        Assert.NotNull(await gate.TryEnterAsync(flow));
     }
 
     private async Task<Guid> SeedFlowAsync(string name)

@@ -76,6 +76,7 @@ public static class EngineServiceRegistration
 
         // Execution tier — engine-only concerns.
         services.AddSingleton<ExecutionCancellationRegistry>();
+        services.AddSingleton<FlowRunGate>();
         services.AddScoped<FlowExecutor>();
         services.AddScoped<FlowTestResultRecorder>();
         services.AddScoped<DeadLetterService>();

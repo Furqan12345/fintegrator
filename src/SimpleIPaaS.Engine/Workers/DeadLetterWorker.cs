@@ -130,6 +130,12 @@ public class DeadLetterWorker : BackgroundService
             {
                 using var scope = _serviceProvider.CreateScope();
                 var deadLetterService = scope.ServiceProvider.GetRequiredService<DeadLetterService>();
+                // A replay runs part of the flow, so it waits for the flow to be free (see FlowRunGate) instead of
+                // overlapping a run of the same flow on this or another Engine.
+                var execution = await scope.ServiceProvider.GetRequiredService<IExecutionRepository>().GetFlowExecutionAsync(entry.FlowExecutionId);
+                await using var gate = execution == null
+                    ? null
+                    : await scope.ServiceProvider.GetRequiredService<FlowRunGate>().EnterAsync(execution.FlowId, TimeSpan.FromMinutes(15), stoppingToken);
                 await deadLetterService.ReplayEntryAsync(entry.Id, force, entry.ReplayFromStepId, stoppingToken);
 
                 _logger.LogInformation(
