@@ -68,7 +68,7 @@ public class DeadLetterService
         _maxAutoRetryAttempts = configuration?.GetValue("DeadLetter:MaxAutoRetryAttempts", 0) ?? 0;
     }
 
-    public bool CanAutoRetry(DeadLetterEntry entry) => entry.RetryCount < _maxAutoRetryAttempts;
+    public bool CanAutoRetry(DeadLetterEntry entry) => !entry.ManualReplayOnly && entry.RetryCount < _maxAutoRetryAttempts;
 
     // Shared with API/UI so the discard threshold has a single source of truth.
     public const int MaxReplayAttemptsBeforeDiscard = 5;
@@ -96,7 +96,7 @@ public class DeadLetterService
             return await SkipAsync(entry);
         }
 
-        if (!force && entry.RetryCount >= _maxAutoRetryAttempts)
+        if (!force && (entry.ManualReplayOnly || entry.RetryCount >= _maxAutoRetryAttempts))
         {
             _logger.LogInformation(
                 "Dead letter {DeadLetterId} left for manual review; automatic retries are disabled (limit {MaxAutoRetryAttempts}).",

@@ -30,6 +30,7 @@ public static class PostgresSchema
             {
                 context.Database.EnsureCreated();
                 EnsureModelTables(context, connection, logger);
+                MoveColumnsToColdTables(connection, logger);
                 EnsureModelColumns(context, connection, logger);
                 foreach (var table in PostgresLayout.PartitionedTables)
                 {
@@ -151,6 +152,55 @@ public static class PostgresSchema
         }
 
         logger.LogInformation("PostgreSQL: created missing table(s) {Tables}.", string.Join(", ", missing.OrderBy(name => name)));
+    }
+
+    // A database created before the run and dead-letter payload tables still has those columns on the hot rows.
+    // Their values are copied to the cold tables once, then the columns are dropped: the model no longer writes
+    // them, and the dead-letter ones are NOT NULL without a default, so every new dead letter would fail.
+    private static void MoveColumnsToColdTables(NpgsqlConnection connection, ILogger logger)
+    {
+        foreach (var (table, coldTable, keyColumn, columns) in PostgresLayout.MovedColumns)
+        {
+            var present = new HashSet<string>(StringComparer.Ordinal);
+            var coldNullable = new Dictionary<string, bool>(StringComparer.Ordinal);
+            using (var command = new NpgsqlCommand(
+                "SELECT table_name, column_name, is_nullable = 'YES' FROM information_schema.columns " +
+                "WHERE table_schema = current_schema() AND table_name IN (@hot, @cold);", connection))
+            {
+                command.Parameters.AddWithValue("hot", table);
+                command.Parameters.AddWithValue("cold", coldTable);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (reader.GetString(0) == table) present.Add(reader.GetString(1));
+                    else coldNullable[reader.GetString(1)] = reader.GetBoolean(2);
+                }
+            }
+
+            var legacy = columns.Where(present.Contains).ToList();
+            if (legacy.Count == 0)
+            {
+                continue;
+            }
+
+            var source = columns.Select(column => present.Contains(column)
+                ? $"\"{column}\""
+                : coldNullable.GetValueOrDefault(column, true) ? "NULL" : column.EndsWith("Json", StringComparison.Ordinal) ? "'{}'" : "''");
+            var anyValue = string.Join(" OR ", legacy.Select(column => $"\"{column}\" IS NOT NULL"));
+            using var transaction = connection.BeginTransaction();
+            var moved = ExecuteCount(connection,
+                $"INSERT INTO \"{coldTable}\" (\"{keyColumn}\", {string.Join(", ", columns.Select(column => $"\"{column}\""))}) " +
+                $"SELECT \"Id\", {string.Join(", ", source)} FROM \"{table}\" WHERE {anyValue} ON CONFLICT (\"{keyColumn}\") DO NOTHING;",
+                transaction);
+            foreach (var column in legacy)
+            {
+                Execute(connection, $"ALTER TABLE \"{table}\" DROP COLUMN \"{column}\";", transaction);
+            }
+
+            transaction.Commit();
+            logger.LogInformation("PostgreSQL: moved {Columns} of {Rows} {Table} row(s) to {ColdTable}.",
+                string.Join(", ", legacy), moved, table, coldTable);
+        }
     }
 
     // Additive upgrades, the PostgreSQL counterpart of the EnsureColumn lists for SQLite and SQL Server: every

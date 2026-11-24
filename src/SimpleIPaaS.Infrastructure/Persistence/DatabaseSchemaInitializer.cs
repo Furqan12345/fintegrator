@@ -41,6 +41,7 @@ public static class DatabaseSchemaInitializer
             EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "PersistedStateJson", "nvarchar(max) NOT NULL CONSTRAINT DF_DeadLetterEntries_PersistedStateJson DEFAULT N'{}'");
             EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "ReplayFromStepId", "uniqueidentifier NULL");
             EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "AlertedAt", "datetime2 NULL");
+            EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "ManualReplayOnly", "bit NOT NULL CONSTRAINT DF_DeadLetterEntries_ManualReplayOnly DEFAULT 0");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "ParentExecutionId", "uniqueidentifier NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "FanOutNodeId", "uniqueidentifier NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "FanOutNodeName", "nvarchar(256) NOT NULL CONSTRAINT DF_FlowExecutions_FanOutNodeName DEFAULT N''");
@@ -111,6 +112,7 @@ public static class DatabaseSchemaInitializer
         EnsureColumn(connection, "FlowExecutions", "QueuedAt", "TEXT NULL");
         EnsureColumn(connection, "DeadLetterEntries", "ResolvedAt", "TEXT NULL");
         EnsureColumn(connection, "DeadLetterEntries", "AlertedAt", "TEXT NULL");
+        EnsureColumn(connection, "DeadLetterEntries", "ManualReplayOnly", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "DeadLetterEntries", "AttemptHistoryJson", "TEXT NOT NULL DEFAULT '[]'");
         EnsureColumn(connection, "DeadLetterEntries", "FlowName", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(connection, "DeadLetterEntries", "IntegrationName", "TEXT NOT NULL DEFAULT ''");

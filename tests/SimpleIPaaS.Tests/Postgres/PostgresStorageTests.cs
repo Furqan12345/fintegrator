@@ -414,7 +414,9 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
         await using (var context = _db.NewContext())
         {
             var repository = new ExecutionRepository(context);
-            var child = await context.FlowExecutions.AsNoTracking().SingleAsync(run => run.ParentExecutionId == parentId);
+            // Loaded the way the Engine loads it: the item lives in the run's cold payload row.
+            var childId = await context.FlowExecutions.Where(run => run.ParentExecutionId == parentId).Select(run => run.Id).SingleAsync();
+            var child = (await repository.GetFlowExecutionAsync(childId))!;
             var state = Newtonsoft.Json.Linq.JObject.Parse((await Application.Services.FanOutState.ResolveInitialFlowStateAsync(child, repository))!);
             Assert.Equal(7, (int)state["order"]!["id"]!);
             Assert.Equal(3, state["big"]!.Count());
@@ -423,6 +425,137 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
             await context.FlowExecutions.Where(run => run.ParentExecutionId == parentId).ExecuteDeleteAsync();
             await context.FlowExecutions.Where(run => run.Id == parentId).ExecuteDeleteAsync();
             Assert.Null(await repository.GetFanOutSnapshotAsync(snapshot.Id));
+        }
+    }
+
+    [PostgresFact]
+    public async Task Run_and_dead_letter_payloads_live_in_cold_tables_and_status_updates_never_rewrite_them()
+    {
+        var (flowId, nodeId) = await SeedFlowAsync("Webhook orders");
+        var body = "{\"order\":\"" + new string('w', 200_000) + "\"}";
+        var run = new FlowExecution { FlowId = flowId, FlowName = "Webhook orders", Status = ExecutionStatus.Queued, TriggerSource = "Webhook", TriggerPayloadJson = body, QueuedAt = DateTime.UtcNow.AddYears(-1) };
+        var deadLetter = new DeadLetterEntry { FlowExecutionId = run.Id, StepId = nodeId, Payload = "{\"p\":1}", FlowStateJson = "{\"s\":1}", PersistedStateJson = "{\"w\":1}" };
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            await repository.AddFlowExecutionAsync(run);
+            await repository.AddDeadLetterEntryAsync(deadLetter);
+        }
+
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        {
+            foreach (var (table, column) in new[] { ("FlowExecutions", "TriggerPayloadJson"), ("DeadLetterEntries", "FlowStateJson") })
+            {
+                await using var hot = new NpgsqlCommand(
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = @t AND column_name = @c;", connection);
+                hot.Parameters.AddWithValue("t", table);
+                hot.Parameters.AddWithValue("c", column);
+                Assert.Equal(0L, await hot.ExecuteScalarAsync());
+            }
+        }
+
+        string? xminBefore;
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            var claim = await repository.TryClaimNextQueuedExecutionAsync();
+            Assert.Equal(run.Id, claim!.ExecutionId);
+            Assert.Equal(body, claim.TriggerPayload);
+
+            xminBefore = await XminAsync(run.Id);
+            var loaded = await repository.GetFlowExecutionAsync(run.Id);
+            Assert.Equal(body, loaded!.TriggerPayloadJson);
+            loaded.Status = ExecutionStatus.Success;
+            loaded.CompletedAt = DateTime.UtcNow;
+            await repository.UpdateFlowExecutionAsync(loaded);
+        }
+
+        // The cold row was not touched by the status update (same row version).
+        Assert.Equal(xminBefore, await XminAsync(run.Id));
+
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            var entry = await repository.GetDeadLetterAsync(deadLetter.Id);
+            Assert.Equal("{\"p\":1}", entry!.Payload);
+            Assert.Equal("{\"s\":1}", entry.FlowStateJson);
+            Assert.Equal("{\"w\":1}", entry.PersistedStateJson);
+
+            Assert.True(await repository.TryRequestManualReplayAsync(deadLetter.Id, nodeId, DateTime.UtcNow, "{\"s\":2}"));
+            Assert.False(await repository.TryRequestManualReplayAsync(deadLetter.Id, nodeId, DateTime.UtcNow, "{\"s\":3}"));
+        }
+
+        await using (var context = _db.NewContext())
+        {
+            Assert.Equal("{\"s\":2}", (await new ExecutionRepository(context).GetDeadLetterAsync(deadLetter.Id))!.FlowStateJson);
+
+            // Deleting the run takes both cold rows with it.
+            await context.FlowExecutions.Where(e => e.Id == run.Id).ExecuteDeleteAsync();
+            Assert.Equal(0, await context.Set<FlowExecutionPayload>().CountAsync(p => p.FlowExecutionId == run.Id));
+            Assert.Equal(0, await context.Set<DeadLetterPayload>().CountAsync(p => p.DeadLetterId == deadLetter.Id));
+        }
+
+        async Task<string?> XminAsync(Guid id)
+        {
+            await using var connection = await _db.DataSource!.OpenConnectionAsync();
+            await using var command = new NpgsqlCommand("SELECT xmin::text FROM \"FlowExecutionPayloads\" WHERE \"FlowExecutionId\" = @id;", connection);
+            command.Parameters.AddWithValue("id", id);
+            return (string?)await command.ExecuteScalarAsync();
+        }
+    }
+
+    [PostgresFact]
+    public async Task Start_up_moves_payload_columns_of_an_older_database_into_the_cold_tables()
+    {
+        var (flowId, nodeId) = await SeedFlowAsync("Legacy");
+        var runId = Guid.NewGuid();
+        var deadLetterId = Guid.NewGuid();
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            await repository.AddFlowExecutionAsync(new FlowExecution { Id = runId, FlowId = flowId, FlowName = "Legacy" });
+            await repository.AddDeadLetterEntryAsync(new DeadLetterEntry { Id = deadLetterId, FlowExecutionId = runId, StepId = nodeId });
+        }
+
+        // The layout before this change: payload columns on the hot rows (dead-letter ones NOT NULL), no cold rows.
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        await using (var legacy = new NpgsqlCommand($$"""
+            DELETE FROM "FlowExecutionPayloads" WHERE "FlowExecutionId" = '{{runId}}';
+            DELETE FROM "DeadLetterPayloads" WHERE "DeadLetterId" = '{{deadLetterId}}';
+            ALTER TABLE "FlowExecutions" ADD COLUMN "TriggerPayloadJson" text NULL, ADD COLUMN "TestDefinitionJson" text NULL,
+                ADD COLUMN "FanOutItemJson" text NULL, ADD COLUMN "InitialFlowStateJson" text NULL, ADD COLUMN "InitialPersistedStateJson" text NULL;
+            ALTER TABLE "DeadLetterEntries" ADD COLUMN "Payload" text NOT NULL DEFAULT '', ADD COLUMN "FlowStateJson" text NOT NULL DEFAULT '{}',
+                ADD COLUMN "PersistedStateJson" text NOT NULL DEFAULT '{}';
+            UPDATE "FlowExecutions" SET "TriggerPayloadJson" = '{"legacy":true}' WHERE "Id" = '{{runId}}';
+            UPDATE "DeadLetterEntries" SET "Payload" = 'old payload', "FlowStateJson" = '{"old":1}' WHERE "Id" = '{{deadLetterId}}';
+            """, connection))
+        {
+            await legacy.ExecuteNonQueryAsync();
+        }
+
+        await using (var context = _db.NewContext())
+        {
+            DatabaseSchemaInitializer.EnsureUpToDate(context, NullLogger.Instance);
+        }
+
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            Assert.Equal("{\"legacy\":true}", (await repository.GetFlowExecutionAsync(runId))!.TriggerPayloadJson);
+            var entry = await repository.GetDeadLetterAsync(deadLetterId);
+            Assert.Equal("old payload", entry!.Payload);
+            Assert.Equal("{\"old\":1}", entry.FlowStateJson);
+
+            // New rows insert without the dropped columns.
+            await repository.AddDeadLetterEntryAsync(new DeadLetterEntry { FlowExecutionId = runId, StepId = nodeId, Payload = "new" });
+        }
+
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        await using (var count = new NpgsqlCommand(
+            "SELECT count(*) FROM information_schema.columns WHERE table_name IN ('FlowExecutions', 'DeadLetterEntries') " +
+            "AND column_name IN ('TriggerPayloadJson', 'Payload', 'FlowStateJson', 'PersistedStateJson', 'InitialFlowStateJson');", connection))
+        {
+            Assert.Equal(0L, await count.ExecuteScalarAsync());
         }
     }
 

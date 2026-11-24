@@ -34,8 +34,83 @@ public class ExecutionRepository : IExecutionRepository
 
     public async Task<FlowExecution?> GetFlowExecutionAsync(Guid id)
     {
-        return await _context.FlowExecutions.FirstOrDefaultAsync(e => e.Id == id);
+        var execution = await _context.FlowExecutions.FirstOrDefaultAsync(e => e.Id == id);
+        if (_postgres && execution != null)
+        {
+            await HydrateRunPayloadAsync(execution);
+        }
+
+        return execution;
     }
+
+    // PostgreSQL: a run's large JSON lives in FlowExecutionPayloads (see PostgresLayout). Written with the run,
+    // never by a status update. A run without any of it has no cold row.
+    private void StageRunPayload(FlowExecution execution)
+    {
+        if (!_postgres || (execution.TriggerPayloadJson == null && execution.TestDefinitionJson == null
+            && execution.FanOutItemJson == null && execution.InitialFlowStateJson == null && execution.InitialPersistedStateJson == null))
+        {
+            return;
+        }
+
+        _context.Set<FlowExecutionPayload>().Add(new FlowExecutionPayload
+        {
+            FlowExecutionId = execution.Id,
+            TriggerPayloadJson = CleanOrNull(execution.TriggerPayloadJson),
+            TestDefinitionJson = CleanOrNull(execution.TestDefinitionJson),
+            FanOutItemJson = CleanOrNull(execution.FanOutItemJson),
+            InitialFlowStateJson = CleanOrNull(execution.InitialFlowStateJson),
+            InitialPersistedStateJson = CleanOrNull(execution.InitialPersistedStateJson),
+        });
+    }
+
+    private async Task HydrateRunPayloadAsync(FlowExecution execution)
+    {
+        var payload = await _context.Set<FlowExecutionPayload>().AsNoTracking()
+            .FirstOrDefaultAsync(row => row.FlowExecutionId == execution.Id);
+        if (payload == null)
+        {
+            return;
+        }
+
+        execution.TriggerPayloadJson = payload.TriggerPayloadJson;
+        execution.TestDefinitionJson = payload.TestDefinitionJson;
+        execution.FanOutItemJson = payload.FanOutItemJson;
+        execution.InitialFlowStateJson = payload.InitialFlowStateJson;
+        execution.InitialPersistedStateJson = payload.InitialPersistedStateJson;
+    }
+
+    private void StageDeadLetterPayload(DeadLetterEntry entry)
+    {
+        if (!_postgres)
+        {
+            return;
+        }
+
+        _context.Set<DeadLetterPayload>().Add(new DeadLetterPayload
+        {
+            DeadLetterId = entry.Id,
+            Payload = Storage.PostgresPacketIngestor.Clean(entry.Payload),
+            FlowStateJson = string.IsNullOrEmpty(entry.FlowStateJson) ? "{}" : Storage.PostgresPacketIngestor.Clean(entry.FlowStateJson),
+            PersistedStateJson = string.IsNullOrEmpty(entry.PersistedStateJson) ? "{}" : Storage.PostgresPacketIngestor.Clean(entry.PersistedStateJson),
+        });
+    }
+
+    private async Task HydrateDeadLetterPayloadAsync(DeadLetterEntry entry)
+    {
+        var payload = await _context.Set<DeadLetterPayload>().AsNoTracking()
+            .FirstOrDefaultAsync(row => row.DeadLetterId == entry.Id);
+        if (payload == null)
+        {
+            return;
+        }
+
+        entry.Payload = payload.Payload;
+        entry.FlowStateJson = payload.FlowStateJson;
+        entry.PersistedStateJson = payload.PersistedStateJson;
+    }
+
+    private static string? CleanOrNull(string? value) => value == null ? null : Storage.PostgresPacketIngestor.Clean(value);
 
     public async Task<IEnumerable<FlowExecution>> GetFlowExecutionsAsync(ExecutionQuery query)
     {
@@ -152,6 +227,7 @@ public class ExecutionRepository : IExecutionRepository
     public async Task AddFlowExecutionAsync(FlowExecution execution)
     {
         _context.FlowExecutions.Add(execution);
+        StageRunPayload(execution);
         await _context.SaveChangesAsync();
     }
 
@@ -163,6 +239,11 @@ public class ExecutionRepository : IExecutionRepository
         }
 
         _context.FlowExecutions.AddRange(executions);
+        foreach (var execution in executions)
+        {
+            StageRunPayload(execution);
+        }
+
         await _context.SaveChangesAsync();
     }
 
@@ -180,6 +261,11 @@ public class ExecutionRepository : IExecutionRepository
 
         _context.FanOutSnapshots.Add(snapshot);
         _context.FlowExecutions.AddRange(children);
+        foreach (var child in children)
+        {
+            StageRunPayload(child);
+        }
+
         await _context.SaveChangesAsync();
     }
 
@@ -491,12 +577,18 @@ public class ExecutionRepository : IExecutionRepository
         var execution = await _context.FlowExecutions
             .AsNoTracking()
             .FirstAsync(e => e.Id == nextId.Value);
+        var triggerPayload = _postgres
+            ? await _context.Set<FlowExecutionPayload>().AsNoTracking()
+                .Where(row => row.FlowExecutionId == execution.Id)
+                .Select(row => row.TriggerPayloadJson)
+                .FirstOrDefaultAsync()
+            : execution.TriggerPayloadJson;
 
         return new QueuedExecutionClaim(
             execution.Id,
             execution.FlowId,
             execution.TriggerSource,
-            execution.TriggerPayloadJson,
+            triggerPayload,
             execution.FlowName,
             execution.IntegrationId,
             execution.IntegrationName,
@@ -599,12 +691,19 @@ public class ExecutionRepository : IExecutionRepository
 
     {
         _context.DeadLetterEntries.Add(entry);
+        StageDeadLetterPayload(entry);
         await _context.SaveChangesAsync();
     }
 
     public async Task<DeadLetterEntry?> GetDeadLetterAsync(Guid id)
     {
-        return await _context.DeadLetterEntries.FirstOrDefaultAsync(d => d.Id == id);
+        var entry = await _context.DeadLetterEntries.FirstOrDefaultAsync(d => d.Id == id);
+        if (_postgres && entry != null)
+        {
+            await HydrateDeadLetterPayloadAsync(entry);
+        }
+
+        return entry;
     }
 
     public async Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize)
@@ -675,7 +774,45 @@ public class ExecutionRepository : IExecutionRepository
         Guid id,
         Guid startStepId,
         DateTime requestedAt,
-        string? flowStateJson = null) =>
+        string? flowStateJson = null)
+    {
+        if (!_postgres)
+        {
+            return await TryRequestManualReplayInRowAsync(id, startStepId, requestedAt, flowStateJson);
+        }
+
+        // PostgreSQL: the flow state lives in DeadLetterPayloads. The guarded update and the edited state commit
+        // together, so a losing concurrent click still cannot overwrite the winner's state.
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+        var claimed = await _context.DeadLetterEntries
+            .Where(entry => entry.Id == id && entry.ReplayRequestedAt == null &&
+                (entry.Status == "Pending" || entry.Status == "Retrying"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(entry => entry.Status, "Retrying")
+                .SetProperty(entry => entry.ReplayFromStepId, startStepId)
+                .SetProperty(entry => entry.ReplayRequestedAt, requestedAt)) == 1;
+        if (claimed && flowStateJson != null)
+        {
+            var state = Storage.PostgresPacketIngestor.Clean(flowStateJson);
+            var updated = await _context.Set<DeadLetterPayload>()
+                .Where(row => row.DeadLetterId == id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(row => row.FlowStateJson, state));
+            if (updated == 0)
+            {
+                _context.Set<DeadLetterPayload>().Add(new DeadLetterPayload { DeadLetterId = id, FlowStateJson = state });
+                await _context.SaveChangesAsync();
+            }
+        }
+
+        await transaction.CommitAsync();
+        return claimed;
+    }
+
+    private async Task<bool> TryRequestManualReplayInRowAsync(
+        Guid id,
+        Guid startStepId,
+        DateTime requestedAt,
+        string? flowStateJson) =>
         await _context.DeadLetterEntries
             .Where(entry => entry.Id == id && entry.ReplayRequestedAt == null &&
                 (entry.Status == "Pending" || entry.Status == "Retrying"))

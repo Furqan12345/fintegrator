@@ -80,6 +80,7 @@ public static class EngineServiceRegistration
         services.AddScoped<FlowExecutor>();
         services.AddScoped<FlowTestResultRecorder>();
         services.AddScoped<DeadLetterService>();
+        services.AddScoped<RecoveredRunDeadLetters>();
 
         // Failure alerts: one digest per scan, sent through the shared email stack.
         services.AddSingleton<FailureAlertEmailBuilder>();

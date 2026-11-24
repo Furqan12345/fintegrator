@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
+using SimpleIPaaS.Application.Services;
 
 namespace SimpleIPaaS.Engine.Workers;
 
@@ -14,6 +15,7 @@ namespace SimpleIPaaS.Engine.Workers;
 // older than that plus Execution:StaleRunGraceSeconds belongs to a dead process. Test runs may run inside the API,
 // capped at 120 s, so their cutoff is max(MaxFlowDurationSeconds, 120) plus the grace. Each row is failed with a guarded update, so any number
 // of Engines can sweep at once. The run is not retried automatically: its cards may already have had side effects.
+// It gets a dead letter (RecoveredRunDeadLetters) so it alerts and can be replayed by hand.
 public sealed class StaleExecutionRecoveryWorker : BackgroundService
 {
     private const int TestRunCapSeconds = 120;
@@ -70,10 +72,27 @@ public sealed class StaleExecutionRecoveryWorker : BackgroundService
                       "It was marked failed by recovery and was not retried automatically, because some of its cards may already have run.";
         var now = DateTime.UtcNow;
         var failed = await repository.FailStaleExecutionsAsync(now - StaleAfter, now - TestRunStaleAfter, message);
+        var deadLetters = scope.ServiceProvider.GetRequiredService<RecoveredRunDeadLetters>();
         foreach (var id in failed)
         {
             _logger.LogError(new EventId(1250, "flow.execution.recovered"),
                 "Execution {ExecutionId} was InProgress with no live Engine for over {StaleSeconds}s; marked Failed by recovery", id, StaleAfter.TotalSeconds);
+
+            // A dead letter makes the run alert and gives it a replay entry point. Only the sweep that failed the
+            // run gets its id (the update is guarded per row), so several Engines never write two.
+            try
+            {
+                var entry = await deadLetters.CreateAsync(id, message);
+                if (entry != null)
+                {
+                    _logger.LogInformation("Recovered run {ExecutionId}: dead letter {DeadLetterId} written for card {NodeName} (manual replay only)",
+                        id, entry.Id, entry.NodeName);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Recovered run {ExecutionId}: the dead letter could not be written; the run stays Failed", id);
+            }
         }
 
         return failed.Count;

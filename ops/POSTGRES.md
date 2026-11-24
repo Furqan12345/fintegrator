@@ -40,6 +40,12 @@ the lookup carries the row's date, so it touches a single partition:
 |---|---|
 | `StepExecutionPayloads` | a step's received input, request and response |
 | `StepPacketPayloads` | an HTTP call's request and response headers and bodies |
+| `FlowExecutionPayloads` | a run's trigger payload, test definition, Fan Out item and start state (not partitioned; deleted with the run) |
+| `DeadLetterPayloads` | a dead letter's payload, flow state and persisted state (not partitioned; deleted with the entry) |
+
+The run and dead-letter payloads are written once, when the row is created. A run's row is updated several times
+(claimed, finished); before the split each update rewrote a webhook body of any size. A Fan Out keeps the shared
+start state once in `FanOutSnapshots`, not in every child.
 
 PostgreSQL also moves values over about 2 KB into out-of-line TOAST storage.
 
@@ -77,7 +83,7 @@ first start writes those values down so they are visible on the page.
 | Dataset | On PostgreSQL |
 |---|---|
 | Packet logs | Whole days older than the window are detached concurrently and dropped, for both `StepPacketLogs` and `StepPacketPayloads`. |
-| Executions | `StepExecutionPayloads` days older than the window are dropped first. Then finished, non-test runs older than the window are deleted in batches: their HTTP call logs and payloads are deleted explicitly (they have no foreign key), steps, dead letters and Fan Out snapshots cascade. |
+| Executions | `StepExecutionPayloads` days older than the window are dropped first. Then finished, non-test runs older than the window are deleted in batches: their HTTP call logs and payloads are deleted explicitly (they have no foreign key); steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade. |
 | Logs | The log sink drops whole days older than the longer of its two windows (detail, warnings). It deletes only what the shorter window still covers, then applies the row cap. |
 | Cross references | Batched delete, as on the other providers. |
 

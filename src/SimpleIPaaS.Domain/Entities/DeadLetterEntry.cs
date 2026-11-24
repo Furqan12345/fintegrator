@@ -28,5 +28,9 @@ public class DeadLetterEntry
     public DateTime? ReplayRequestedAt { get; set; }
     public Guid? ReplayFromStepId { get; set; }
 
+    // Never replayed automatically (DeadLetter:MaxAutoRetryAttempts is ignored), only when someone asks: set for
+    // runs recovered after an Engine crash, whose flow state is rebuilt and whose last card may have half-run.
+    public bool ManualReplayOnly { get; set; }
+
     public string Status { get; set; } = "Pending"; // Pending, Retried, Discarded
 }

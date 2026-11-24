@@ -68,9 +68,11 @@ Two Engines ran 500 runs in 34 s, each run executed exactly once.
 - **Crash recovery is slow by design.** A run orphaned by a crash is failed after `MaxFlowDurationSeconds` +
   `StaleRunGraceSeconds` (15 minutes by default). It is not retried automatically, because its cards may already
   have had side effects.
-- **Alerts come from dead letters.** Failures and timeouts alert. A run recovered after a crash is marked Failed but
-  has no dead letter, so it does not appear in the alert digest: watch for `flow.execution.recovered` (event 1250)
-  in the logs.
+- **Alerts come from dead letters.** Failures and timeouts alert. A run recovered after a crash also gets a dead
+  letter, so it appears in the alert digest and can be replayed by hand. Its flow state is rebuilt from the saved
+  card outputs; the entry says when that is approximate (an HTTP card with a post-flight script, For Each bodies).
+  It is marked manual-replay-only: `DeadLetter:MaxAutoRetryAttempts` never replays it, because the card that was
+  running may already have sent its request. Event 1250 (`flow.execution.recovered`) is still logged.
 
 ## Known limits
 

@@ -10,7 +10,8 @@ namespace SimpleIPaaS.Infrastructure.Persistence;
 // payload sizes so a summary never has to touch a payload.
 //
 // Cold tables hold what only the data inspector opens: a step's input/request/response and an HTTP call's
-// headers and bodies. PostgreSQL keeps values over ~2 KB in out-of-line TOAST storage on top of that.
+// headers and bodies, a run's trigger payload, test definition and start state, and a dead letter's payload and
+// flow state. PostgreSQL keeps values over ~2 KB in out-of-line TOAST storage on top of that.
 //
 // The append-only tables are range-partitioned by day, so retention drops whole days (detach + drop) instead
 // of deleting rows. FlowExecutions and StepExecutions are deliberately not partitioned: PostgreSQL requires the
@@ -21,6 +22,10 @@ public static class PostgresLayout
     public const string StepPacketPayloads = "StepPacketPayloads";
     public const string StepPacketLogs = "StepPacketLogs";
     public const string AppLogEntries = "AppLogEntries";
+    public const string FlowExecutions = "FlowExecutions";
+    public const string DeadLetterEntries = "DeadLetterEntries";
+    public const string FlowExecutionPayloads = "FlowExecutionPayloads";
+    public const string DeadLetterPayloads = "DeadLetterPayloads";
 
     // Shadow properties on the hot rows (PostgreSQL model only).
     public const string ReceivedInputLength = "ReceivedInputLength";
@@ -81,7 +86,69 @@ public static class PostgresLayout
             entity.ToTable(StepPacketPayloads);
             entity.HasKey(payload => new { payload.PacketId, payload.StartedAt });
         });
+
+        // A run's and a dead letter's large JSON is written once, when the row is created; status updates rewrite
+        // the hot row many times per run and must not rewrite (and re-TOAST) a megabyte webhook body each time.
+        modelBuilder.Entity<FlowExecution>(entity =>
+        {
+            entity.Ignore(run => run.TriggerPayloadJson);
+            entity.Ignore(run => run.TestDefinitionJson);
+            entity.Ignore(run => run.FanOutItemJson);
+            entity.Ignore(run => run.InitialFlowStateJson);
+            entity.Ignore(run => run.InitialPersistedStateJson);
+        });
+
+        modelBuilder.Entity<DeadLetterEntry>(entity =>
+        {
+            entity.Ignore(entry => entry.Payload);
+            entity.Ignore(entry => entry.FlowStateJson);
+            entity.Ignore(entry => entry.PersistedStateJson);
+        });
+
+        modelBuilder.Entity<FlowExecutionPayload>(entity =>
+        {
+            entity.ToTable(FlowExecutionPayloads);
+            entity.HasKey(payload => payload.FlowExecutionId);
+            entity.HasOne<FlowExecution>().WithOne().HasForeignKey<FlowExecutionPayload>(payload => payload.FlowExecutionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<DeadLetterPayload>(entity =>
+        {
+            entity.ToTable(DeadLetterPayloads);
+            entity.HasKey(payload => payload.DeadLetterId);
+            entity.HasOne<DeadLetterEntry>().WithOne().HasForeignKey<DeadLetterPayload>(payload => payload.DeadLetterId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
     }
+
+    // Columns that lived on the hot rows before the cold tables existed (moved once by PostgresSchema).
+    internal static readonly (string Table, string ColdTable, string KeyColumn, string[] Columns)[] MovedColumns =
+    {
+        (FlowExecutions, FlowExecutionPayloads, "FlowExecutionId",
+            new[] { "TriggerPayloadJson", "TestDefinitionJson", "FanOutItemJson", "InitialFlowStateJson", "InitialPersistedStateJson" }),
+        (DeadLetterEntries, DeadLetterPayloads, "DeadLetterId", new[] { "Payload", "FlowStateJson", "PersistedStateJson" }),
+    };
+}
+
+// Cold half of a FlowExecution (PostgreSQL only): written when the run is created, deleted with it.
+public sealed class FlowExecutionPayload
+{
+    public Guid FlowExecutionId { get; set; }
+    public string? TriggerPayloadJson { get; set; }
+    public string? TestDefinitionJson { get; set; }
+    public string? FanOutItemJson { get; set; }
+    public string? InitialFlowStateJson { get; set; }
+    public string? InitialPersistedStateJson { get; set; }
+}
+
+// Cold half of a DeadLetterEntry (PostgreSQL only).
+public sealed class DeadLetterPayload
+{
+    public Guid DeadLetterId { get; set; }
+    public string Payload { get; set; } = string.Empty;
+    public string FlowStateJson { get; set; } = "{}";
+    public string PersistedStateJson { get; set; } = "{}";
 }
 
 // Cold half of a StepExecution (PostgreSQL only). CreatedAt is the step's StartedAt, which never changes after
