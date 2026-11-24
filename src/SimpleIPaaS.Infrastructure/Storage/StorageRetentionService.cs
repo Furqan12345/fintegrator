@@ -226,17 +226,18 @@ public sealed class StorageRetentionService
 
             case StorageDatasets.Executions:
             {
+                // Step payloads follow the executions window. Whole days go first, so the per-run cleanup below
+                // only finds what is left (the newest day around the cutoff).
+                var cold = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepExecutionPayloads, cutoff, cancellationToken).ConfigureAwait(false);
+                partitions = cold.Partitions;
                 removed = await DeleteInBatchesAsync(
                     () => context.FlowExecutions.IgnoreQueryFilters()
                         .Where(execution => !execution.IsTest && execution.CompletedAt != null && execution.CompletedAt < cutoff)
                         .Select(execution => execution.Id)
                         .Take(BatchSize)
                         .ToListAsync(cancellationToken),
-                    ids => context.FlowExecutions.IgnoreQueryFilters().Where(execution => ids.Contains(execution.Id)).ExecuteDeleteAsync(cancellationToken),
+                    ids => DeletePostgresRunsAsync(context, ids, cancellationToken),
                     cancellationToken).ConfigureAwait(false);
-                // Step payloads follow the executions window.
-                var cold = await PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.StepExecutionPayloads, cutoff, cancellationToken).ConfigureAwait(false);
-                partitions = cold.Partitions;
                 break;
             }
 
@@ -254,6 +255,17 @@ public sealed class StorageRetentionService
                 ? $"Dropped {partitions} day partition(s) older than {settings.RetentionDays}d"
                 : $"Deleted rows older than {settings.RetentionDays}d";
         return new StorageRetentionOutcome(dataset, "Database", status, (int)Math.Min(removed, int.MaxValue));
+    }
+
+    // Deletes a batch of runs on PostgreSQL. Steps and dead letters go with the run (foreign keys), but the packet
+    // logs and the cold payloads have no foreign key, so they are deleted here first: otherwise a run's HTTP call
+    // logs would outlive it whenever "Messages and payloads" keeps data longer than "Runs" (or forever).
+    internal static async Task<int> DeletePostgresRunsAsync(IPaaSContext context, List<Guid> runIds, CancellationToken cancellationToken)
+    {
+        var stepIds = context.StepExecutions.Where(step => runIds.Contains(step.FlowExecutionId)).Select(step => step.Id);
+        await ColdStorage.DeleteForStepsAsync(context, stepIds, cancellationToken).ConfigureAwait(false);
+        await context.StepPacketLogs.Where(packet => stepIds.Contains(packet.StepExecutionId)).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        return await context.FlowExecutions.IgnoreQueryFilters().Where(execution => runIds.Contains(execution.Id)).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
     // Every pass also keeps a week of future day partitions in place (cheap when they already exist).

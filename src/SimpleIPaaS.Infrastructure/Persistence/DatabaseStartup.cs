@@ -23,7 +23,9 @@ public static class DatabaseStartup
             try
             {
                 using var scope = services.CreateScope();
-                DatabaseSchemaInitializer.EnsureUpToDate(scope.ServiceProvider.GetRequiredService<IPaaSContext>(), logger);
+                var context = scope.ServiceProvider.GetRequiredService<IPaaSContext>();
+                DatabaseSchemaInitializer.EnsureUpToDate(context, logger);
+                Storage.StorageSettingsSeeder.EnsureRow(context, logger);
                 return;
             }
             catch (Exception exception) when (IsConnectionFailure(exception) && DateTime.UtcNow + delay < deadline)

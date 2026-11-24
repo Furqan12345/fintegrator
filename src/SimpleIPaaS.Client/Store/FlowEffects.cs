@@ -74,6 +74,10 @@ public class FlowEffects
         {
             dispatcher.Dispatch(new SaveFlowResultAction { Flow = savedFlow });
             dispatcher.Dispatch(new ShowToastAction { Message = $"Flow \"{savedFlow.Name}\" saved." });
+            foreach (var warning in savedFlow.Warnings ?? new List<string>())
+            {
+                dispatcher.Dispatch(new ShowToastAction { Message = warning, Level = "warning" });
+            }
 
             // Bind a new-flow AI session to the flow id the save just assigned. Without this,
             // the session keeps using its stale draft and its next "apply" creates a new flow.

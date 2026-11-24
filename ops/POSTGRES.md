@@ -69,12 +69,15 @@ small, so the batched delete that expires them stays cheap.
 
 ## Retention
 
-Retention follows the windows on the Settings page:
+Retention follows the windows on Settings → Storage. A new installation starts with logs 3 days, messages and
+payloads 14 days, runs, steps and dead letters 30 days, and cross references kept forever. An installation upgraded
+from a build without these defaults keeps what it had (runs and payloads forever) until someone changes it; the
+first start writes those values down so they are visible on the page.
 
 | Dataset | On PostgreSQL |
 |---|---|
 | Packet logs | Whole days older than the window are detached concurrently and dropped, for both `StepPacketLogs` and `StepPacketPayloads`. |
-| Executions | Finished, non-test runs older than the window are deleted in batches, and their steps cascade. `StepExecutionPayloads` days older than the window are dropped. |
+| Executions | `StepExecutionPayloads` days older than the window are dropped first. Then finished, non-test runs older than the window are deleted in batches: their HTTP call logs and payloads are deleted explicitly (they have no foreign key), steps, dead letters and Fan Out snapshots cascade. |
 | Logs | The log sink drops whole days older than the longer of its two windows (detail, warnings). It deletes only what the shorter window still covers, then applies the row cap. |
 | Cross references | Batched delete, as on the other providers. |
 
@@ -86,9 +89,10 @@ Run and log search use `ILIKE`. PostgreSQL's `LIKE` is case-sensitive, and on SQ
 
 ## Upgrades
 
-At start-up every column the model maps but the database lacks is added. NOT NULL columns get a type default. This
-is the PostgreSQL counterpart of the additive column lists for SQLite and SQL Server. Columns are never dropped or
-altered automatically.
+At start-up every table and column the model maps but the database lacks is added: tables with EF's own CREATE
+TABLE and CREATE INDEX statements (a new append-only table is then partitioned), columns with a type default for
+NOT NULL. This is the PostgreSQL counterpart of the additive lists for SQLite and SQL Server. Tables and columns
+are never dropped or altered automatically.
 
 ## Not covered
 

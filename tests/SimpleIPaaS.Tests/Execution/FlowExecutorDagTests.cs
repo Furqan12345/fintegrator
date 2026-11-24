@@ -417,16 +417,28 @@ public class FlowExecutorDagTests
         Assert.All(children, child => Assert.Equal(fanOut.Id, child.FanOutNodeId));
         Assert.All(children, child => Assert.Equal(new[] { processItem.Id }, JsonSerializer.Deserialize<Guid[]>(child.StartStepIdsJson!)));
 
-        var firstState = JsonNode.Parse(children[0].InitialFlowStateJson!)!;
+        // The parent's state is stored once and shared; a child stores only its item.
+        var snapshot = Assert.Single(_executions.FanOutSnapshots.Values);
+        Assert.Equal(parent.Id, snapshot.ParentExecutionId);
+        Assert.All(children, child => Assert.Equal(snapshot.Id, child.FanOutSnapshotId));
+        Assert.All(children, child => Assert.Null(child.InitialFlowStateJson));
+        Assert.Contains("\"orders\"", snapshot.FlowStateJson);
+
+        var firstStateJson = await FanOutState.ResolveInitialFlowStateAsync(children[0], _executions);
+        var firstState = JsonNode.Parse(firstStateJson!)!;
         Assert.Equal(1, firstState["order"]?["id"]?.GetValue<int>());
+        Assert.Equal(1, firstState["FanOutOrders"]?["id"]?.GetValue<int>());
+        Assert.Equal(2, firstState["trigger"]?["orders"]?.AsArray().Count);
         Assert.Equal("{\"id\":1}", children[0].FanOutItemJson);
+        var secondState = JsonNode.Parse((await FanOutState.ResolveInitialFlowStateAsync(children[1], _executions))!)!;
+        Assert.Equal(2, secondState["order"]?["id"]?.GetValue<int>());
 
         var firstChild = children[0];
         var childResult = await executor.ExecuteFlowFromNodesAsync(
             flow.Id,
             firstChild.Id,
             JsonSerializer.Deserialize<Guid[]>(firstChild.StartStepIdsJson!)!,
-            firstChild.InitialFlowStateJson!,
+            firstStateJson!,
             firstChild.InitialPersistedStateJson!,
             CancellationToken.None);
 

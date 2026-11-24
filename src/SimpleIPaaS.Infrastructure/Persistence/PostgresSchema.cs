@@ -1,4 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -25,6 +29,7 @@ public static class PostgresSchema
             try
             {
                 context.Database.EnsureCreated();
+                EnsureModelTables(context, connection, logger);
                 EnsureModelColumns(context, connection, logger);
                 foreach (var table in PostgresLayout.PartitionedTables)
                 {
@@ -105,6 +110,47 @@ public static class PostgresSchema
             transaction.Commit();
             logger.LogInformation("PostgreSQL: {Table} is now partitioned by day on {Column} ({Rows} existing rows moved).", name, key, copied);
         }
+    }
+
+    // EnsureCreated does nothing on a database that already has tables, so a table added by a later release is
+    // created here: EF generates the CREATE TABLE (keys, foreign keys) and CREATE INDEX statements for every table
+    // the model maps but the database lacks. A new append-only table is then partitioned by the next step.
+    private static void EnsureModelTables(IPaaSContext context, NpgsqlConnection connection, ILogger logger)
+    {
+        var existing = new HashSet<string>(StringComparer.Ordinal);
+        using (var command = new NpgsqlCommand(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema();", connection))
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                existing.Add(reader.GetString(0));
+            }
+        }
+
+        var designModel = context.GetService<IDesignTimeModel>().Model;
+        var relationalModel = designModel.GetRelationalModel();
+        var missing = relationalModel.Tables.Select(table => table.Name).Where(name => !existing.Contains(name)).ToHashSet(StringComparer.Ordinal);
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        var operations = context.GetService<IMigrationsModelDiffer>()
+            .GetDifferences(null, relationalModel)
+            .Where(operation => operation switch
+            {
+                CreateTableOperation table => missing.Contains(table.Name),
+                CreateIndexOperation index => missing.Contains(index.Table),
+                _ => false,
+            })
+            .ToList();
+        foreach (var command in context.GetService<IMigrationsSqlGenerator>().Generate(operations, designModel))
+        {
+            Execute(connection, command.CommandText);
+        }
+
+        logger.LogInformation("PostgreSQL: created missing table(s) {Tables}.", string.Join(", ", missing.OrderBy(name => name)));
     }
 
     // Additive upgrades, the PostgreSQL counterpart of the EnsureColumn lists for SQLite and SQL Server: every

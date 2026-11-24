@@ -123,6 +123,10 @@ public interface IExecutionRepository
     Task AddFlowExecutionsAsync(IReadOnlyCollection<FlowExecution> executions);
     Task UpdateFlowExecutionAsync(FlowExecution execution);
 
+    // A Fan Out's shared start state and its child runs, saved together (one transaction).
+    Task AddFanOutAsync(FanOutSnapshot snapshot, IReadOnlyCollection<FlowExecution> children);
+    Task<FanOutSnapshot?> GetFanOutSnapshotAsync(Guid id);
+
     // Cross-process queue: the standalone Engine claims Queued rows atomically. excludedFlowIds skips flows this
     // Engine is already running (runs of one flow are serialised), so a claimed run never waits holding a slot.
     Task<QueuedExecutionClaim?> TryClaimNextQueuedExecutionAsync(IReadOnlyCollection<Guid>? excludedFlowIds = null);

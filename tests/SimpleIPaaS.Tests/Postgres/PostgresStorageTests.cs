@@ -339,6 +339,94 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
     }
 
     [PostgresFact]
+    public async Task Run_retention_deletes_the_runs_packet_logs_and_payloads_too()
+    {
+        var (flowId, nodeId) = await SeedFlowAsync("Retention");
+        var oldRun = Guid.NewGuid();
+        var oldStep = Guid.NewGuid();
+        var keptRun = Guid.NewGuid();
+        var keptStep = Guid.NewGuid();
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            foreach (var (run, step) in new[] { (oldRun, oldStep), (keptRun, keptStep) })
+            {
+                await repository.AddFlowExecutionAsync(new FlowExecution { Id = run, FlowId = flowId, FlowName = "Retention", Status = ExecutionStatus.Success, CompletedAt = DateTime.UtcNow });
+                await repository.AddStepExecutionAsync(new StepExecution { Id = step, FlowExecutionId = run, StepId = nodeId, ReceivedInput = "in" });
+            }
+        }
+
+        var ingestor = new PostgresPacketIngestor(_db.DataSource!, NullLogger<PostgresPacketIngestor>.Instance);
+        await ingestor.EnqueueAsync(new StepPacketLog { StepExecutionId = oldStep, Kind = "HTTP", ResponseBody = "old" });
+        await ingestor.EnqueueAsync(new StepPacketLog { StepExecutionId = keptStep, Kind = "HTTP", ResponseBody = "kept" });
+        await ingestor.FlushAsync();
+
+        await using (var context = _db.NewContext())
+        {
+            Assert.Equal(1, await StorageRetentionService.DeletePostgresRunsAsync(context, new List<Guid> { oldRun }, default));
+        }
+
+        await using var verify = _db.NewContext();
+        // No foreign key reaches the packet tables on PostgreSQL: without the explicit delete these would remain.
+        Assert.Equal(0, await verify.StepPacketLogs.CountAsync(packet => packet.StepExecutionId == oldStep));
+        Assert.Equal(0, await verify.Set<StepPacketPayload>().CountAsync(payload => payload.ResponseBody == "old"));
+        Assert.Equal(0, await verify.Set<StepExecutionPayload>().CountAsync(payload => payload.StepExecutionId == oldStep));
+        Assert.Equal(0, await verify.StepExecutions.CountAsync(step => step.Id == oldStep));
+        Assert.Equal(1, await verify.StepPacketLogs.CountAsync(packet => packet.StepExecutionId == keptStep));
+        Assert.Equal(1, await verify.Set<StepPacketPayload>().CountAsync(payload => payload.ResponseBody == "kept"));
+        Assert.Equal(1, await verify.FlowExecutions.CountAsync(run => run.Id == keptRun));
+    }
+
+    [PostgresFact]
+    public async Task Start_up_creates_a_table_an_older_database_is_missing_and_fan_out_snapshots_round_trip()
+    {
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        await using (var drop = new NpgsqlCommand("DROP TABLE \"FanOutSnapshots\";", connection))
+        {
+            await drop.ExecuteNonQueryAsync();
+        }
+
+        await using (var context = _db.NewContext())
+        {
+            DatabaseSchemaInitializer.EnsureUpToDate(context, NullLogger.Instance);
+        }
+
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        await using (var check = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_constraint WHERE conrelid = to_regclass('\"FanOutSnapshots\"') AND contype = 'f';", connection))
+        {
+            Assert.Equal(1L, await check.ExecuteScalarAsync());
+        }
+
+        var (flowId, _) = await SeedFlowAsync("Fan out");
+        var parentId = Guid.NewGuid();
+        var snapshot = new FanOutSnapshot { ParentExecutionId = parentId, FanOutNodeId = Guid.NewGuid(), ItemVariable = "order", NodeName = "Split", FlowStateJson = "{\"big\":[1,2,3]}" };
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            await repository.AddFlowExecutionAsync(new FlowExecution { Id = parentId, FlowId = flowId, FlowName = "Fan out" });
+            await repository.AddFanOutAsync(snapshot, new[]
+            {
+                new FlowExecution { FlowId = flowId, ParentExecutionId = parentId, FanOutSnapshotId = snapshot.Id, FanOutItemJson = "{\"id\":7}", Status = ExecutionStatus.Queued },
+            });
+        }
+
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            var child = await context.FlowExecutions.AsNoTracking().SingleAsync(run => run.ParentExecutionId == parentId);
+            var state = Newtonsoft.Json.Linq.JObject.Parse((await Application.Services.FanOutState.ResolveInitialFlowStateAsync(child, repository))!);
+            Assert.Equal(7, (int)state["order"]!["id"]!);
+            Assert.Equal(3, state["big"]!.Count());
+
+            // The snapshot goes with its parent run.
+            await context.FlowExecutions.Where(run => run.ParentExecutionId == parentId).ExecuteDeleteAsync();
+            await context.FlowExecutions.Where(run => run.Id == parentId).ExecuteDeleteAsync();
+            Assert.Null(await repository.GetFanOutSnapshotAsync(snapshot.Id));
+        }
+    }
+
+    [PostgresFact]
     public async Task Start_up_adds_model_columns_an_older_database_is_missing()
     {
         await using (var connection = await _db.DataSource!.OpenConnectionAsync())

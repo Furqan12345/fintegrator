@@ -348,11 +348,22 @@ public class FlowExecutionWorker : BackgroundService
             if (!string.IsNullOrWhiteSpace(execution.StartStepIdsJson))
             {
                 var startStepIds = JsonSerializer.Deserialize<Guid[]>(execution.StartStepIdsJson) ?? Array.Empty<Guid>();
+                var initialFlowState = await FanOutState.ResolveInitialFlowStateAsync(execution, executionRepository);
+                if (initialFlowState == null)
+                {
+                    execution.Status = ExecutionStatus.Failed;
+                    execution.ErrorMessage = "The Fan Out state this run starts from no longer exists (its parent run was deleted).";
+                    execution.CompletedAt = DateTime.UtcNow;
+                    await executionRepository.UpdateFlowExecutionAsync(execution);
+                    _logger.LogWarning("Execution {ExecutionId} failed: Fan Out snapshot {SnapshotId} not found", execution.Id, execution.FanOutSnapshotId);
+                    return;
+                }
+
                 result = await executor.ExecuteFlowFromNodesAsync(
                     request.FlowId,
                     request.ExecutionId,
                     startStepIds,
-                    execution.InitialFlowStateJson ?? "{}",
+                    initialFlowState,
                     execution.InitialPersistedStateJson ?? "{}",
                     linked.Token,
                     testContext);

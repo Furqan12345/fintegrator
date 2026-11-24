@@ -437,7 +437,12 @@ public class FlowExecutor
         await _executionRepository.AddStepExecutionAsync(stepExecution);
         lock (_executionLock) { flowExecution.TotalRecords++; }
 
-        string flowStateJson = flowStateContext.ToString(Newtonsoft.Json.Formatting.None);
+        // The flow state as text is what scripts, Email cards and dead letters receive. Converting a large state
+        // costs time and memory, so it happens only for the cards that use it. A card's output is added to the
+        // state only after its work, so every script sees the same text as before. (A failure after that point,
+        // while saving the step, dead-letters a state that already holds this card's output; replaying from this
+        // card overwrites that entry.)
+        var flowStateText = new Lazy<string>(() => flowStateContext.ToString(Newtonsoft.Json.Formatting.None));
         string persistedStateJson = persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None);
         string currentPayload = string.Empty;
 
@@ -533,7 +538,7 @@ public class FlowExecutor
             else if (node.StepType == StepType.HttpAction)
             {
                 var httpResult =
-                    await ExecuteHttpNodeAsync(node, flowStateJson, persistedStateJson, cancellationToken, testContext, flow.HelperCode);
+                    await ExecuteHttpNodeAsync(node, () => flowStateText.Value, persistedStateJson, cancellationToken, testContext, flow.HelperCode);
 
                 stepExecution.RequestPayload = httpResult.RequestPayload;
                 stepExecution.HttpStatusCode = httpResult.StatusCode;
@@ -578,7 +583,7 @@ public class FlowExecutor
                     if (!string.IsNullOrWhiteSpace(node.PostFlightCode))
                     {
                         currentPayload = await RunScriptAsync(node, "PostFlight",
-                            () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateJson, persistedStateJson, httpResult.Response, flow.HelperCode));
+                            () => _codeExecutionService.ExecutePostFlightAsync(node.PostFlightCode, flowStateText.Value, persistedStateJson, httpResult.Response, flow.HelperCode));
                     }
 
                     var outgoing = flow.Edges.Where(e => e.SourceNodeId == node.Id
@@ -594,7 +599,7 @@ public class FlowExecutor
                 if (!string.IsNullOrWhiteSpace(node.MappingCode))
                 {
                     currentPayload = await RunScriptAsync(node, "Mapping",
-                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateText.Value, persistedStateJson, flow.HelperCode));
                     stepExecution.ResponsePayload = currentPayload;
                 }
 
@@ -612,7 +617,7 @@ public class FlowExecutor
                 if (!string.IsNullOrWhiteSpace(node.MappingCode))
                 {
                     currentPayload = await RunScriptAsync(node, node.StepType.ToString(),
-                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateText.Value, persistedStateJson, flow.HelperCode));
                     stepExecution.ResponsePayload = currentPayload;
 
                     var value = currentPayload?.Trim() ?? string.Empty;
@@ -634,7 +639,7 @@ public class FlowExecutor
                 if (!string.IsNullOrWhiteSpace(node.MappingCode))
                 {
                     branchResult = await RunScriptAsync(node, "Branch",
-                        () => _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
+                        () => _codeExecutionService.ExecuteBranchAsync(node.MappingCode, flowStateText.Value, persistedStateJson, flow.HelperCode));
                 }
 
                 stepExecution.ResponsePayload = $"{{\"branchResult\": {branchResult.ToString().ToLower()}}}";
@@ -678,7 +683,7 @@ public class FlowExecutor
                 try
                 {
                     var resolved = await ResolveEmailAsync(
-                        node, config, flow, flowStateJson, persistedStateJson);
+                        node, config, flow, flowStateText.Value, persistedStateJson);
 
                     if (testContext != null)
                     {
@@ -772,7 +777,7 @@ public class FlowExecutor
                     }
 
                     currentPayload = await RunScriptAsync(node, "PersistedState",
-                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateJson, persistedStateJson, flow.HelperCode));
+                        () => _codeExecutionService.ExecuteMappingAsync(node.MappingCode, flowStateText.Value, persistedStateJson, flow.HelperCode));
                     persistedStateBox.Value = ParseObjectOrEmpty(currentPayload);
                     if (testContext == null && !suppressPersistedStateWrite)
                     {
@@ -956,17 +961,24 @@ public class FlowExecutor
                     .Distinct()
                     .ToList();
                 var queuedAt = DateTime.UtcNow;
+                // The state every child starts from is saved once (FanOutSnapshot); a child adds only its own item.
+                // Copying it into every child grew with items x state size: the state usually still holds the
+                // array being fanned out.
+                var snapshot = new FanOutSnapshot
+                {
+                    ParentExecutionId = flowExecution.Id,
+                    FanOutNodeId = node.Id,
+                    ItemVariable = config.ItemVariable,
+                    NodeName = node.NodeName ?? string.Empty,
+                    FlowStateJson = flowStateContext.ToString(Newtonsoft.Json.Formatting.None),
+                    CreatedAt = queuedAt
+                };
+                var startStepIdsJson = JsonConvert.SerializeObject(startStepIds);
+                var initialPersistedStateJson = persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None);
                 var children = new List<FlowExecution>(arrayElements.Count);
                 for (var index = 0; index < arrayElements.Count; index++)
                 {
-                    var item = arrayElements[index].DeepClone();
-                    var itemJson = item.ToString(Newtonsoft.Json.Formatting.None);
-                    var itemState = (JObject)flowStateContext.DeepClone();
-                    itemState[config.ItemVariable] = item.DeepClone();
-                    if (!string.IsNullOrWhiteSpace(node.NodeName))
-                    {
-                        itemState[node.NodeName] = item.DeepClone();
-                    }
+                    var itemJson = arrayElements[index].ToString(Newtonsoft.Json.Formatting.None);
 
                     children.Add(new FlowExecution
                     {
@@ -986,14 +998,14 @@ public class FlowExecutor
                         FanOutItemIndex = index + 1,
                         FanOutItemCount = arrayElements.Count,
                         FanOutItemJson = itemJson,
-                        StartStepIdsJson = JsonConvert.SerializeObject(startStepIds),
-                        InitialFlowStateJson = itemState.ToString(Newtonsoft.Json.Formatting.None),
-                        InitialPersistedStateJson = persistedStateBox.Value.ToString(Newtonsoft.Json.Formatting.None)
+                        StartStepIdsJson = startStepIdsJson,
+                        FanOutSnapshotId = snapshot.Id,
+                        InitialPersistedStateJson = initialPersistedStateJson
                     });
                 }
 
                 stepExecution.RequestPayload = input.ToString(Newtonsoft.Json.Formatting.None);
-                await _executionRepository.AddFlowExecutionsAsync(children);
+                await _executionRepository.AddFanOutAsync(snapshot, children);
                 currentPayload = new JObject
                 {
                     ["itemCount"] = children.Count,
@@ -1249,7 +1261,7 @@ public class FlowExecutor
                     IntegrationName = flowExecution.IntegrationName,
                     NodeName = string.IsNullOrWhiteSpace(node.NodeName) ? node.StepType.ToString() : node.NodeName,
                     Payload = string.IsNullOrWhiteSpace(stepExecution.RequestPayload) ? stepExecution.ReceivedInput : stepExecution.RequestPayload,
-                    FlowStateJson = flowStateJson,
+                    FlowStateJson = flowStateText.Value,
                     PersistedStateJson = persistedStateJson,
                     ErrorMessage = failure,
                     Status = "Pending"
@@ -1342,9 +1354,15 @@ public class FlowExecutor
         IReadOnlyList<StepPacketLog> Packets,
         IReadOnlyDictionary<string, string[]> ResponseHeaders);
 
-    public async Task<HttpExecutionResult> ExecuteHttpNodeAsync(
+    public Task<HttpExecutionResult> ExecuteHttpNodeAsync(
         IntegrationStep node, string flowStateJson, string persistedStateJson, CancellationToken cancellationToken,
-        FlowTestContext? testContext = null, string? helperCode = null)
+        FlowTestContext? testContext = null, string? helperCode = null) =>
+        ExecuteHttpNodeAsync(node, () => flowStateJson, persistedStateJson, cancellationToken, testContext, helperCode);
+
+    // flowStateJson is read only when the card has a URL or pre-flight script.
+    private async Task<HttpExecutionResult> ExecuteHttpNodeAsync(
+        IntegrationStep node, Func<string> flowStateJson, string persistedStateJson, CancellationToken cancellationToken,
+        FlowTestContext? testContext, string? helperCode)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -1352,14 +1370,14 @@ public class FlowExecutor
         if (!string.IsNullOrWhiteSpace(node.UrlCode))
         {
             url = await RunScriptAsync(node, "Url",
-                () => _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson, persistedStateJson, helperCode));
+                () => _codeExecutionService.ExecuteUrlAsync(node.UrlCode, flowStateJson(), persistedStateJson, helperCode));
         }
 
         string requestPayload = string.Empty;
         if (!string.IsNullOrWhiteSpace(node.PreFlightCode))
         {
             requestPayload = await RunScriptAsync(node, "PreFlight",
-                () => _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson, persistedStateJson, helperCode));
+                () => _codeExecutionService.ExecuteMappingAsync(node.PreFlightCode, flowStateJson(), persistedStateJson, helperCode));
         }
 
         var nodeToDispatch = new IntegrationStep

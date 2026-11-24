@@ -26,6 +26,7 @@ public class IPaaSContext : IdentityUserContext<AppUser, Guid>
     public DbSet<FlowExecution> FlowExecutions { get; set; } = null!;
     public DbSet<StepExecution> StepExecutions { get; set; } = null!;
     public DbSet<StepPacketLog> StepPacketLogs { get; set; } = null!;
+    public DbSet<FanOutSnapshot> FanOutSnapshots { get; set; } = null!;
     public DbSet<DeadLetterEntry> DeadLetterEntries { get; set; } = null!;
     public DbSet<ApiKey> ApiKeys { get; set; } = null!;
     public DbSet<AiProviderSettings> AiProviderSettings { get; set; } = null!;
@@ -239,6 +240,18 @@ public class IPaaSContext : IdentityUserContext<AppUser, Guid>
             .WithMany()
             .HasForeignKey(e => e.FlowExecutionId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<FanOutSnapshot>(entity =>
+        {
+            entity.HasKey(snapshot => snapshot.Id);
+            entity.Property(snapshot => snapshot.ItemVariable).HasMaxLength(200);
+            entity.Property(snapshot => snapshot.NodeName).HasMaxLength(256);
+            entity.HasIndex(snapshot => snapshot.ParentExecutionId);
+            entity.HasOne<FlowExecution>()
+                .WithMany()
+                .HasForeignKey(snapshot => snapshot.ParentExecutionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
             
         modelBuilder.Entity<DeadLetterEntry>()
             .HasOne<IntegrationStep>()

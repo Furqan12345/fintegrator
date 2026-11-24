@@ -7,7 +7,7 @@ using SimpleIPaaS.Domain.Entities;
 namespace SimpleIPaaS.Application.Models.Storage;
 
 // A dataset the settings page can describe: what it holds, whether it can move to
-// Elasticsearch, and the defaults that preserve today's behaviour when nothing is configured.
+// Elasticsearch, and its default for a new installation.
 public sealed record StorageDatasetDefinition(
     string Dataset,
     string Name,
@@ -22,10 +22,10 @@ public sealed record StorageDatasetDefinition(
 
 public static class StorageCatalog
 {
-    // Defaults mirror the behaviour that existed before this page: logs keep 72 hours of
-    // detail (and longer for warnings and errors, handled by the relational log writer),
-    // while packets, cross references and executions were never pruned. Configuring a
-    // retention of 0 therefore changes nothing — nothing is deleted behind the operator's back.
+    // Defaults for a new installation: logs keep 3 days of detail (longer for warnings and errors, handled by
+    // the relational log writer), messages and payloads 14 days, runs, steps and dead letters 30 days, and
+    // cross references forever (deleting a key would let a duplicate through). Without retention the database
+    // only grows. An existing installation keeps what it had (PreviousDefaults), and 0 always means forever.
     public static IReadOnlyList<StorageDatasetDefinition> Definitions { get; } = new[]
     {
         new StorageDatasetDefinition(
@@ -48,7 +48,7 @@ public static class StorageCatalog
             CanUseElasticsearch: true,
             CanUseIlm: true,
             StorageGranularity.Daily,
-            DefaultRetentionDays: 0,
+            DefaultRetentionDays: 14,
             DefaultUseIlm: true,
             "StepPacketLogs"),
 
@@ -72,10 +72,29 @@ public static class StorageCatalog
             CanUseElasticsearch: false,
             CanUseIlm: false,
             StorageGranularity.Monthly,
-            DefaultRetentionDays: 0,
+            DefaultRetentionDays: 30,
             DefaultUseIlm: false,
             "FlowExecutions")
     };
+
+    // Retention defaults before production defaults were introduced (everything but logs kept forever). An
+    // existing installation that never saved storage settings gets these written down on upgrade, so an upgrade
+    // never starts deleting history on its own (see StorageSettingsSeeder).
+    private static readonly IReadOnlyDictionary<string, int> PreviousRetentionDays =
+        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            [StorageDatasets.Logs] = 3,
+            [StorageDatasets.PacketLogs] = 0,
+            [StorageDatasets.CrossReferences] = 0,
+            [StorageDatasets.Executions] = 0,
+        };
+
+    public static IReadOnlyList<StorageDatasetSettings> PreviousDefaults() =>
+        Defaults().Select(settings =>
+        {
+            settings.RetentionDays = PreviousRetentionDays.TryGetValue(settings.Dataset, out var days) ? days : settings.RetentionDays;
+            return settings;
+        }).ToList();
 
     public static StorageDatasetDefinition Definition(string dataset) =>
         Definitions.FirstOrDefault(definition => string.Equals(definition.Dataset, dataset, StringComparison.OrdinalIgnoreCase))

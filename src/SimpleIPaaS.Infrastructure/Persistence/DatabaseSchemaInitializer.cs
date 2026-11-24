@@ -50,6 +50,8 @@ public static class DatabaseSchemaInitializer
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "StartStepIdsJson", "nvarchar(max) NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "InitialFlowStateJson", "nvarchar(max) NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "InitialPersistedStateJson", "nvarchar(max) NULL");
+            EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "FanOutSnapshotId", "uniqueidentifier NULL");
+            EnsureSqlServerFanOutSnapshotsTable(sqlConnection);
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "Identifier", "nvarchar(512) NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "Message", "nvarchar(max) NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowTestRuns", "SuiteRunId", "uniqueidentifier NULL");
@@ -124,6 +126,8 @@ public static class DatabaseSchemaInitializer
         EnsureColumn(connection, "FlowExecutions", "StartStepIdsJson", "TEXT NULL");
         EnsureColumn(connection, "FlowExecutions", "InitialFlowStateJson", "TEXT NULL");
         EnsureColumn(connection, "FlowExecutions", "InitialPersistedStateJson", "TEXT NULL");
+        EnsureColumn(connection, "FlowExecutions", "FanOutSnapshotId", "TEXT NULL");
+        EnsureFanOutSnapshotsTable(connection);
         EnsureColumn(connection, "FlowExecutions", "IsTest", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "FlowExecutions", "TestCaseId", "TEXT NULL");
         EnsureColumn(connection, "FlowExecutions", "TestRunId", "TEXT NULL");
@@ -327,6 +331,52 @@ public static class DatabaseSchemaInitializer
         using var optimizeCommand = connection.CreateCommand();
         optimizeCommand.CommandText = "PRAGMA optimize=0x10002;";
         optimizeCommand.ExecuteNonQuery();
+    }
+
+    // One shared start state per Fan Out (see FanOutSnapshot); deleted with the parent run.
+    private static void EnsureFanOutSnapshotsTable(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS FanOutSnapshots (
+                Id TEXT NOT NULL CONSTRAINT PK_FanOutSnapshots PRIMARY KEY,
+                ParentExecutionId TEXT NOT NULL,
+                FanOutNodeId TEXT NOT NULL,
+                ItemVariable TEXT NOT NULL,
+                NodeName TEXT NOT NULL,
+                FlowStateJson TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                CONSTRAINT FK_FanOutSnapshots_FlowExecutions_ParentExecutionId FOREIGN KEY (ParentExecutionId)
+                    REFERENCES FlowExecutions (Id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_FanOutSnapshots_ParentExecutionId
+                ON FanOutSnapshots (ParentExecutionId);
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    private static void EnsureSqlServerFanOutSnapshotsTable(SqlConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            IF OBJECT_ID('dbo.FanOutSnapshots', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.FanOutSnapshots (
+                    Id uniqueidentifier NOT NULL CONSTRAINT PK_FanOutSnapshots PRIMARY KEY,
+                    ParentExecutionId uniqueidentifier NOT NULL,
+                    FanOutNodeId uniqueidentifier NOT NULL,
+                    ItemVariable nvarchar(200) NOT NULL,
+                    NodeName nvarchar(256) NOT NULL,
+                    FlowStateJson nvarchar(max) NOT NULL,
+                    CreatedAt datetime2 NOT NULL,
+                    CONSTRAINT FK_FanOutSnapshots_FlowExecutions_ParentExecutionId FOREIGN KEY (ParentExecutionId)
+                        REFERENCES dbo.FlowExecutions (Id) ON DELETE CASCADE
+                );
+                CREATE INDEX IX_FanOutSnapshots_ParentExecutionId ON dbo.FanOutSnapshots (ParentExecutionId);
+            END
+            """;
+        command.ExecuteNonQuery();
     }
 
     private static void EnsureHostHeartbeatsTable(SqliteConnection connection)

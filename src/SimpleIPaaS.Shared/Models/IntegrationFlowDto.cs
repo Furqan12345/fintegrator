@@ -28,6 +28,10 @@ public class IntegrationFlowDto
     
     public List<IntegrationStepDto> Nodes { get; set; } = new();
     public List<IntegrationEdgeDto> Edges { get; set; } = new();
+
+    // Response only: problems the save did not block, e.g. a renamed card still referenced by its old name.
+    // Ignored when sent to the API.
+    public List<string> Warnings { get; set; } = new();
 }
 
 public class IntegrationStepDto

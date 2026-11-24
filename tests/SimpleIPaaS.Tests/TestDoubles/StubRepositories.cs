@@ -170,6 +170,21 @@ public sealed class StubExecutionRepository : IExecutionRepository
         return Task.CompletedTask;
     }
 
+    public Dictionary<Guid, FanOutSnapshot> FanOutSnapshots { get; } = new();
+
+    public Task AddFanOutAsync(FanOutSnapshot snapshot, IReadOnlyCollection<FlowExecution> children)
+    {
+        lock (_lock)
+        {
+            FanOutSnapshots[snapshot.Id] = snapshot;
+            foreach (var child in children) _flowExecutions[child.Id] = child;
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<FanOutSnapshot?> GetFanOutSnapshotAsync(Guid id) =>
+        Task.FromResult(FanOutSnapshots.TryGetValue(id, out var snapshot) ? snapshot : null);
+
     public Task AddStepExecutionAsync(StepExecution execution)
     {
         lock (_lock) { StepExecutions.Add(execution); }

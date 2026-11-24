@@ -122,6 +122,8 @@ public class IntegrationFlowController : ControllerBase
             return FlowValidationProblem(new List<string> { helperError });
         }
 
+        var renameWarnings = FlowRenameCheck.FindStaleReferences(existingFlow, dto);
+
         var flow = dto.ToEntity();
         flow.WebhookSecret = IssueWebhookSecret(flow.TriggerType);
         await ProtectStepSecretsAsync(flow);
@@ -132,7 +134,14 @@ public class IntegrationFlowController : ControllerBase
         }
 
         var updated = await _repository.GetByIdAsync(flowId);
-        return updated == null ? NotFound() : Ok(updated.ToDto());
+        if (updated == null)
+        {
+            return NotFound();
+        }
+
+        var result = updated.ToDto();
+        result.Warnings = renameWarnings;
+        return Ok(result);
     }
 
     [HttpGet("{flowId}/versions")]

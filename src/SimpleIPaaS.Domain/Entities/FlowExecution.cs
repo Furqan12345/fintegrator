@@ -32,6 +32,9 @@ public class FlowExecution
     public int? FanOutItemCount { get; set; }
     public string? FanOutItemJson { get; set; }
     public string? StartStepIdsJson { get; set; }
+    // A Fan Out child starts from its parent's shared snapshot plus FanOutItemJson. Children queued before the
+    // snapshot existed carry their whole start state in InitialFlowStateJson instead.
+    public Guid? FanOutSnapshotId { get; set; }
     public string? InitialFlowStateJson { get; set; }
     public string? InitialPersistedStateJson { get; set; }
     public int TotalRecords { get; set; }

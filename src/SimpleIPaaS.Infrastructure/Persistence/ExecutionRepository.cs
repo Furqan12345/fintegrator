@@ -166,6 +166,26 @@ public class ExecutionRepository : IExecutionRepository
         await _context.SaveChangesAsync();
     }
 
+    public async Task AddFanOutAsync(FanOutSnapshot snapshot, IReadOnlyCollection<FlowExecution> children)
+    {
+        if (children.Count == 0)
+        {
+            return;
+        }
+
+        if (_postgres)
+        {
+            snapshot.FlowStateJson = Storage.PostgresPacketIngestor.Clean(snapshot.FlowStateJson);
+        }
+
+        _context.FanOutSnapshots.Add(snapshot);
+        _context.FlowExecutions.AddRange(children);
+        await _context.SaveChangesAsync();
+    }
+
+    public Task<FanOutSnapshot?> GetFanOutSnapshotAsync(Guid id) =>
+        _context.FanOutSnapshots.AsNoTracking().FirstOrDefaultAsync(snapshot => snapshot.Id == id);
+
     public async Task UpdateFlowExecutionAsync(FlowExecution execution)
     {
         _context.FlowExecutions.Update(execution);

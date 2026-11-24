@@ -398,12 +398,12 @@ public class ShopifyBusinessCentralFlowTests
         // One child transaction per order, each starting at the Business Central call.
         var children = await ChildrenOfAsync(execution);
         Assert.Equal(2, children.Count);
-        Assert.All(children, child =>
+        foreach (var child in children)
         {
             Assert.Equal(ExecutionStatus.Queued, child.Status);
             Assert.Equal("FanOut", child.TriggerSource);
-            Assert.Contains("gid://shopify/Order/510000100", child.InitialFlowStateJson);
-        });
+            Assert.Contains("gid://shopify/Order/510000100", await FanOutState.ResolveInitialFlowStateAsync(child, _executions));
+        }
         Assert.Equal(new[] { "gid://shopify/Order/5100001001", "gid://shopify/Order/5100001002" }, children
             .OrderBy(child => child.FanOutItemIndex)
             .Select(child => JObject.Parse(child.FanOutItemJson!)["id"]!.ToString())

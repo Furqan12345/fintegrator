@@ -185,7 +185,10 @@ public sealed class StorageRoutingTests
         Assert.Equal("fusetor", snapshot.IndexPrefix);
         Assert.Equal(3, snapshot.For(StorageDatasets.Logs).RetentionDays);
         Assert.Equal(StorageGranularity.Monthly, snapshot.For(StorageDatasets.CrossReferences).Granularity);
-        Assert.Equal(0, snapshot.For(StorageDatasets.PacketLogs).RetentionDays);
+        // Production defaults; an existing installation gets its old values written down instead (StorageSettingsSeeder).
+        Assert.Equal(14, snapshot.For(StorageDatasets.PacketLogs).RetentionDays);
+        Assert.Equal(30, snapshot.For(StorageDatasets.Executions).RetentionDays);
+        Assert.Equal(0, snapshot.For(StorageDatasets.CrossReferences).RetentionDays);
 
         var clamped = StorageCatalog.Parse("[{\"Dataset\":\"logs\",\"RetentionDays\":99999,\"UseElasticsearch\":true,\"Granularity\":\"Weekly\"},{\"Dataset\":\"unknown-thing\",\"RetentionDays\":5}]");
 
