@@ -33,6 +33,9 @@ services:
       Execution__MaxConcurrency: "4"
       Execution__MaxFlowDurationSeconds: "600"
       Execution__PollIntervalSeconds: "2"
+      # On stop the Engine stops claiming and lets in-flight runs finish for this long (see ops/ENGINE-READINESS.md).
+      Execution__ShutdownDrainSeconds: "25"
+      Execution__StaleRunGraceSeconds: "300"
       Scripting__TimeoutSeconds: "10"
       Operations__EngineHeartbeatIntervalSeconds: "${IPAAS_ENGINE_HEARTBEAT_INTERVAL_SECONDS:-15}"
       Operations__EngineHeartbeatTimeoutSeconds: "${IPAAS_ENGINE_HEARTBEAT_TIMEOUT_SECONDS:-90}"
@@ -41,6 +44,9 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+    # Docker sends SIGKILL 10 s after SIGTERM by default, which would cut the 25 s drain short and fail in-flight
+    # runs on every deploy. Drain + time to fail what is left and flush the packet queue.
+    stop_grace_period: 50s
 
   web:
     build:

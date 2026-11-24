@@ -24,6 +24,7 @@ public class IntegrationCatalogRepository : IIntegrationCatalogRepository
                 .ThenInclude(flow => flow.Nodes)
             .Include(integration => integration.Flows)
                 .ThenInclude(flow => flow.Edges)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(integration => integration.Id == id);
     }
 
@@ -34,6 +35,7 @@ public class IntegrationCatalogRepository : IIntegrationCatalogRepository
                 .ThenInclude(flow => flow.Nodes)
             .Include(integration => integration.Flows)
                 .ThenInclude(flow => flow.Edges)
+            .AsSplitQuery()
             .OrderBy(integration => integration.Name)
             .ToListAsync();
     }

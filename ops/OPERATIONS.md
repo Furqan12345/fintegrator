@@ -58,6 +58,8 @@ The script stops API and Engine, replaces ipaas.db, removes stale WAL/shared-mem
 
 ## Recovery expectations
 
+Engine settings, deployment rules (stop timeout, one Engine on SQLite/SQL Server) and the readiness test results are in [ENGINE-READINESS.md](ENGINE-READINESS.md).
+
 PostgreSQL is the supported client/server database: see [POSTGRES.md](POSTGRES.md) for configuration, the hot/cold storage layout, partitioned retention and batched ingestion.
 
 SQLite with the shared Docker volume is a single-node deployment. Backups protect against data loss, but they do not provide automatic failover. For higher availability, move persistence to a supported client/server database and run API/Engine instances with coordinated storage and backup policy.

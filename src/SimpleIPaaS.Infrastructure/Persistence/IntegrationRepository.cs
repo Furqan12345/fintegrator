@@ -24,6 +24,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
             .OrderByDescending(f => f.UpdatedAt)
             .Include(f => f.Nodes.Where(node => !node.IsArchived))
             .Include(f => f.Edges)
+            .AsSplitQuery()
             .ToListAsync();
     }
 
@@ -70,6 +71,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
             .OrderByDescending(flow => flow.UpdatedAt)
             .Include(flow => flow.Nodes.Where(node => !node.IsArchived))
             .Include(flow => flow.Edges)
+            .AsSplitQuery()
             .ToListAsync();
     }
 
@@ -78,6 +80,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         return await _context.IntegrationFlows
             .Include(f => f.Nodes.Where(node => !node.IsArchived))
             .Include(f => f.Edges)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(f => f.Id == id);
     }
 
@@ -109,6 +112,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         var existing = await _context.IntegrationFlows
             .Include(f => f.Nodes.Where(node => !node.IsArchived))
             .Include(f => f.Edges)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(f => f.Id == flow.Id);
 
         if (existing == null)
@@ -408,6 +412,7 @@ public class IntegrationRepository : IIntegrationRepository, ICronScheduleReposi
         var flow = await _context.IntegrationFlows
             .Include(item => item.Nodes.Where(node => !node.IsArchived))
             .Include(item => item.Edges)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(item => item.Id == flowId);
         if (flow == null) return null;
 
