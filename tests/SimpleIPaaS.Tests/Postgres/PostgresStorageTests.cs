@@ -858,6 +858,96 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
         }
     }
 
+    [PostgresFact]
+    public async Task A_fan_out_childs_dead_letter_keeps_only_its_difference_in_the_cold_table()
+    {
+        var (flowId, nodeId) = await SeedFlowAsync("Fan Out dead letters");
+        var orders = "[" + string.Join(",", Enumerable.Range(1, 200).Select(i => $"{{\"id\":{i},\"note\":\"{new string('x', 1000)}\"}}")) + "]";
+        var snapshotState = $"{{\"trigger\":{{\"orders\":{orders}}},\"Lookup\":{{\"currency\":\"EUR\"}}}}";
+        var parent = new FlowExecution { FlowId = flowId, FlowName = "Fan Out dead letters", Status = ExecutionStatus.Success };
+        var snapshot = new FanOutSnapshot { ParentExecutionId = parent.Id, ItemVariable = "order", NodeName = "Split", FlowStateJson = snapshotState };
+        var child = new FlowExecution { FlowId = flowId, FlowName = "Fan Out dead letters", ParentExecutionId = parent.Id, FanOutSnapshotId = snapshot.Id, FanOutItemJson = "{\"id\":9}" };
+        var full = Newtonsoft.Json.Linq.JObject.Parse(snapshotState);
+        full["order"] = Newtonsoft.Json.Linq.JObject.Parse("{\"id\":9}");
+        full["MapOrder"] = Newtonsoft.Json.Linq.JObject.Parse("{\"customer\":\"C-9\"}");
+        var entry = new DeadLetterEntry
+        {
+            FlowExecutionId = child.Id, StepId = nodeId, NodeName = "Node", Payload = "{}",
+            FlowStateJson = full.ToString(Newtonsoft.Json.Formatting.None), FanOutSnapshotId = snapshot.Id,
+        };
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            await repository.AddFlowExecutionAsync(parent);
+            await repository.AddFanOutAsync(snapshot, new[] { child });
+            await repository.AddDeadLetterEntryAsync(entry);
+        }
+
+        async Task<long> StoredLengthAsync()
+        {
+            await using var connection = await _db.DataSource!.OpenConnectionAsync();
+            await using var command = new NpgsqlCommand("SELECT length(\"FlowStateJson\") FROM \"DeadLetterPayloads\" WHERE \"DeadLetterId\" = @id;", connection);
+            command.Parameters.AddWithValue("id", entry.Id);
+            return Convert.ToInt64(await command.ExecuteScalarAsync());
+        }
+
+        Assert.True(await StoredLengthAsync() < 1_000);
+        await using (var context = _db.NewContext())
+        {
+            var loaded = (await new ExecutionRepository(context).GetDeadLetterAsync(entry.Id))!;
+            Assert.True(Newtonsoft.Json.Linq.JToken.DeepEquals(full, Newtonsoft.Json.Linq.JObject.Parse(loaded.FlowStateJson)));
+        }
+
+        // An edit that changes a snapshot key and deletes another is stored the same way.
+        var edited = (Newtonsoft.Json.Linq.JObject)full.DeepClone();
+        edited["Lookup"] = Newtonsoft.Json.Linq.JObject.Parse("{\"currency\":\"USD\"}");
+        edited.Remove("trigger");
+        await using (var context = _db.NewContext())
+        {
+            Assert.True(await new ExecutionRepository(context).TryRequestManualReplayAsync(entry.Id, nodeId, DateTime.UtcNow, edited.ToString(Newtonsoft.Json.Formatting.None)));
+        }
+
+        Assert.True(await StoredLengthAsync() < 1_000);
+        await using (var context = _db.NewContext())
+        {
+            var loaded = (await new ExecutionRepository(context).GetDeadLetterAsync(entry.Id))!;
+            Assert.Equal("[\"trigger\"]", loaded.RemovedStateKeysJson);
+            Assert.True(Newtonsoft.Json.Linq.JToken.DeepEquals(edited, Newtonsoft.Json.Linq.JObject.Parse(loaded.FlowStateJson)));
+        }
+    }
+
+    [PostgresFact]
+    public async Task A_step_whose_day_was_dropped_reports_its_details_as_expired()
+    {
+        var (flowId, nodeId) = await SeedFlowAsync("Old test run");
+        var oldAt = DateTime.UtcNow.AddDays(-45);
+        var oldRun = new FlowExecution { FlowId = flowId, FlowName = "Old test run", IsTest = true, Status = ExecutionStatus.Success, StartedAt = oldAt, CompletedAt = oldAt };
+        var oldStep = new StepExecution { FlowExecutionId = oldRun.Id, StepId = nodeId, StartedAt = oldAt, ReceivedInput = "{\"a\":1}", ResponsePayload = "{\"b\":2}" };
+        var newRun = new FlowExecution { FlowId = flowId, FlowName = "Old test run", IsTest = true, Status = ExecutionStatus.Success };
+        var newStep = new StepExecution { FlowExecutionId = newRun.Id, StepId = nodeId, ReceivedInput = "{\"a\":1}" };
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            await repository.AddFlowExecutionAsync(oldRun);
+            await repository.AddFlowExecutionAsync(newRun);
+            await repository.AddStepExecutionAsync(oldStep);
+            await repository.AddStepExecutionAsync(newStep);
+        }
+
+        await PostgresPartitions.DropOlderThanAsync(_db.DataSource!, PostgresLayout.StepExecutionPayloads, DateTime.UtcNow.AddDays(-30));
+
+        await using (var context = _db.NewContext())
+        {
+            var repository = new ExecutionRepository(context);
+            var expired = (await repository.GetStepPayloadAsync(oldRun.Id, oldStep.Id))!;
+            Assert.True(expired.Expired);
+            Assert.Equal(string.Empty, expired.ReceivedInput);
+            var kept = (await repository.GetStepPayloadAsync(newRun.Id, newStep.Id))!;
+            Assert.False(kept.Expired);
+            Assert.Equal("{\"a\":1}", kept.ReceivedInput);
+        }
+    }
+
     private async Task<(Guid FlowId, Guid NodeId)> SeedFlowAsync(string name)
     {
         var flowId = Guid.NewGuid();

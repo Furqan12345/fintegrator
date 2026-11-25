@@ -42,6 +42,8 @@ public static class DatabaseSchemaInitializer
             EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "ReplayFromStepId", "uniqueidentifier NULL");
             EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "AlertedAt", "datetime2 NULL");
             EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "ManualReplayOnly", "bit NOT NULL CONSTRAINT DF_DeadLetterEntries_ManualReplayOnly DEFAULT 0");
+            EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "FanOutSnapshotId", "uniqueidentifier NULL");
+            EnsureSqlServerColumn(sqlConnection, "DeadLetterEntries", "RemovedStateKeysJson", "nvarchar(max) NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "ParentExecutionId", "uniqueidentifier NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "FanOutNodeId", "uniqueidentifier NULL");
             EnsureSqlServerColumn(sqlConnection, "FlowExecutions", "FanOutNodeName", "nvarchar(256) NOT NULL CONSTRAINT DF_FlowExecutions_FanOutNodeName DEFAULT N''");
@@ -113,6 +115,8 @@ public static class DatabaseSchemaInitializer
         EnsureColumn(connection, "DeadLetterEntries", "ResolvedAt", "TEXT NULL");
         EnsureColumn(connection, "DeadLetterEntries", "AlertedAt", "TEXT NULL");
         EnsureColumn(connection, "DeadLetterEntries", "ManualReplayOnly", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "DeadLetterEntries", "FanOutSnapshotId", "TEXT NULL");
+        EnsureColumn(connection, "DeadLetterEntries", "RemovedStateKeysJson", "TEXT NULL");
         EnsureColumn(connection, "DeadLetterEntries", "AttemptHistoryJson", "TEXT NOT NULL DEFAULT '[]'");
         EnsureColumn(connection, "DeadLetterEntries", "FlowName", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(connection, "DeadLetterEntries", "IntegrationName", "TEXT NOT NULL DEFAULT ''");
@@ -162,6 +166,8 @@ public static class DatabaseSchemaInitializer
         // Retention finds expired runs by CompletedAt and expired cross-reference keys by CreatedAt; without these
         // every batch (up to 20 per pass) scanned the whole table. Partial: unfinished runs are never candidates.
         ("IX_FlowExecutions_CompletedAt", "FlowExecutions", "CompletedAt", "CompletedAt IS NOT NULL"),
+        // Retention keeps a Fan Out parent while a child still uses its snapshot.
+        ("IX_FlowExecutions_FanOutSnapshotId", "FlowExecutions", "FanOutSnapshotId", "FanOutSnapshotId IS NOT NULL"),
         ("IX_CrossReferenceEntries_CreatedAt", "CrossReferenceEntries", "CreatedAt", null),
     };
 

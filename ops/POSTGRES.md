@@ -45,7 +45,10 @@ the lookup carries the row's date, so it touches a single partition:
 
 The run and dead-letter payloads are written once, when the row is created. A run's row is updated several times
 (claimed, finished); before the split each update rewrote a webhook body of any size. A Fan Out keeps the shared
-start state once in `FanOutSnapshots`, not in every child.
+start state once in `FanOutSnapshots`, not in every child. A failed child's dead letter stores only what differs from
+that snapshot (its item and what its own cards added) and the full state is rebuilt when the entry is opened or
+replayed; an edited state is stored the same way. Measured: 1,000 failed children of a 0.9 MB state stored 1.7 MB of
+dead-letter state instead of ~834 MB. This applies to every database provider.
 
 PostgreSQL also moves values over about 2 KB into out-of-line TOAST storage.
 
@@ -89,7 +92,7 @@ first start writes those values down so they are visible on the page.
 | Dataset | On PostgreSQL |
 |---|---|
 | Packet logs | Whole days older than the window are detached concurrently and dropped, for both `StepPacketLogs` and `StepPacketPayloads`. The window is never longer than the runs window: a packet whose run is gone cannot be opened from anywhere. |
-| Executions | `StepExecutionPayloads` days older than the window are dropped. Finished, non-test runs older than the window are deleted in batches; steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade. |
+| Executions | `StepExecutionPayloads` days older than the window are dropped. Finished, non-test runs older than the window are deleted in batches; steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade. A Fan Out parent is kept while any of its child runs still exists, because the children and their dead letters rebuild their state from its snapshot. Test runs are not deleted by age (the latest 20 per test case are kept), but their card inputs and outputs go with their day; the UI then shows "Details expired". |
 | Logs | Whole days older than the window are detached concurrently and dropped, so a 3-day window keeps 3 to 4 days. The row cap (`Logging:Database:MaxRows`, 1,000,000) also drops whole days, oldest first, keeping today and the newest day with rows. Only when that newest day alone is over the cap (a runaway log loop) are rows deleted, within that day. |
 | Cross references | Batched delete, as on the other providers. |
 

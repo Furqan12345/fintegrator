@@ -466,6 +466,7 @@ public sealed class AiFlowAgentTools
         if (target == null) return $"No step named '{nodeName}' ran in that execution.";
         var payload = await _executions.GetStepPayloadAsync(executionId, target.Id);
         if (payload == null) return $"Step {nodeName} recorded no payload.";
+        if (payload.Expired) return $"Step {nodeName}'s input and output are no longer stored: they expired with the runs retention window.";
         return Json(new
         {
             node = target.NodeName,

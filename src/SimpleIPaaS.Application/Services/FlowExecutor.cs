@@ -1262,6 +1262,8 @@ public class FlowExecutor
                     NodeName = string.IsNullOrWhiteSpace(node.NodeName) ? node.StepType.ToString() : node.NodeName,
                     Payload = string.IsNullOrWhiteSpace(stepExecution.RequestPayload) ? stepExecution.ReceivedInput : stepExecution.RequestPayload,
                     FlowStateJson = flowStateText.Value,
+                    // A Fan Out child: the repository stores only what differs from the shared snapshot.
+                    FanOutSnapshotId = flowExecution.FanOutSnapshotId,
                     PersistedStateJson = persistedStateJson,
                     ErrorMessage = failure,
                     Status = "Pending"

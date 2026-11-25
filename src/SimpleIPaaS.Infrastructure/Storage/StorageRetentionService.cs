@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models.Storage;
+using SimpleIPaaS.Domain.Entities;
 using SimpleIPaaS.Infrastructure.Elasticsearch;
 using SimpleIPaaS.Infrastructure.Persistence;
 
@@ -181,10 +182,7 @@ public sealed class StorageRetentionService
                 // Finished runs only: a queued or running execution must never be swept away, and
                 // deleting the run cascades to its steps and (relational) packet logs.
                 StorageDatasets.Executions => await DeleteInBatchesAsync(
-                    () => context.FlowExecutions.IgnoreQueryFilters()
-                        .Where(execution => !execution.IsTest
-                            && execution.CompletedAt != null
-                            && execution.CompletedAt < cutoff)
+                    () => ExpiredRuns(context, cutoff)
                         .Select(execution => execution.Id)
                         .Take(BatchSize)
                         .ToListAsync(cancellationToken),
@@ -255,8 +253,7 @@ public sealed class StorageRetentionService
                 partitions = cold.Partitions;
                 // Steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade.
                 removed = await DeleteInBatchesAsync(
-                    () => context.FlowExecutions.IgnoreQueryFilters()
-                        .Where(execution => !execution.IsTest && execution.CompletedAt != null && execution.CompletedAt < cutoff)
+                    () => ExpiredRuns(context, cutoff)
                         .Select(execution => execution.Id)
                         .Take(BatchSize)
                         .ToListAsync(cancellationToken),
@@ -311,6 +308,17 @@ public sealed class StorageRetentionService
             _logger.LogWarning(exception, "Creating the upcoming PostgreSQL day partitions failed; writers create a missing day on demand.");
         }
     }
+
+    // Finished, non-test runs past the cutoff. A Fan Out parent stays while any of its child runs still uses its
+    // snapshot (the children start from it and their dead letters rebuild their flow state from it); it goes on a
+    // later pass, after the children.
+    private static IQueryable<FlowExecution> ExpiredRuns(IPaaSContext context, DateTime cutoff) =>
+        context.FlowExecutions.IgnoreQueryFilters()
+            .Where(execution => !execution.IsTest
+                && execution.CompletedAt != null
+                && execution.CompletedAt < cutoff
+                && !context.FanOutSnapshots.Any(snapshot => snapshot.ParentExecutionId == execution.Id
+                    && context.FlowExecutions.Any(child => child.FanOutSnapshotId == snapshot.Id)));
 
     private static async Task<int> DeleteInBatchesAsync(
         Func<Task<List<Guid>>> selectBatch,

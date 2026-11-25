@@ -77,6 +77,8 @@ public class StepPayloadDto
     public string ReceivedInput { get; set; } = string.Empty;
     public string RequestPayload { get; set; } = string.Empty;
     public string ResponsePayload { get; set; } = string.Empty;
+    // The input and output are no longer stored: they expired with the runs retention window (Settings → Storage).
+    public bool Expired { get; set; }
 }
 
 public class StepPacketBodyDto

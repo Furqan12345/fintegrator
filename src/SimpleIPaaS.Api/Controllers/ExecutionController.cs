@@ -153,7 +153,8 @@ public class ExecutionController : ControllerBase
             Id = payload.Id,
             ReceivedInput = payload.ReceivedInput,
             RequestPayload = payload.RequestPayload,
-            ResponsePayload = payload.ResponsePayload
+            ResponsePayload = payload.ResponsePayload,
+            Expired = payload.Expired
         });
     }
 

@@ -43,7 +43,9 @@ public record StepPacketLogSummary(
     int ResponseHeadersSize,
     int ResponseBodySize);
 
-public record StepPayload(Guid Id, string ReceivedInput, string RequestPayload, string ResponsePayload);
+// Expired: the step's input and output are no longer stored (PostgreSQL drops them with their day when the runs window
+// passes; test runs outlive it, because only their count is limited).
+public record StepPayload(Guid Id, string ReceivedInput, string RequestPayload, string ResponsePayload, bool Expired = false);
 
 public record StepPacketBody(Guid Id, string RequestHeadersJson, string RequestBody, string ResponseHeadersJson, string ResponseBody);
 

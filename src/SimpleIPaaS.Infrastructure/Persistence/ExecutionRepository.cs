@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using SimpleIPaaS.Application.Interfaces;
 using SimpleIPaaS.Application.Models;
+using SimpleIPaaS.Application.Services;
 using SimpleIPaaS.Domain;
 
 using SimpleIPaaS.Domain.Entities;
@@ -503,11 +504,13 @@ public class ExecutionRepository : IExecutionRepository
                 .AsNoTracking()
                 .Where(p => p.StepExecutionId == step.Id && p.CreatedAt == at)
                 .FirstOrDefaultAsync();
+            // Every step write stores a cold row, empty or not: a missing one was dropped with its day.
             return new StepPayload(
                 step.Id,
                 payload?.ReceivedInput ?? string.Empty,
                 payload?.RequestPayload ?? string.Empty,
-                payload?.ResponsePayload ?? string.Empty);
+                payload?.ResponsePayload ?? string.Empty,
+                Expired: payload == null);
         }
 
         return await _context.StepExecutions
@@ -731,11 +734,19 @@ public class ExecutionRepository : IExecutionRepository
 
 
     public async Task AddDeadLetterEntryAsync(DeadLetterEntry entry)
-
     {
+        var fullState = entry.FlowStateJson;
+        var asDifference = await StoreStateAsDifferenceAsync(entry);
         _context.DeadLetterEntries.Add(entry);
         StageDeadLetterPayload(entry);
         await _context.SaveChangesAsync();
+        if (asDifference)
+        {
+            // The caller keeps the full state; the row keeps the difference. Detached first, so a later SaveChanges in
+            // this context (the Engine goes on writing steps) cannot write the full state into the row.
+            _context.Entry(entry).State = EntityState.Detached;
+            entry.FlowStateJson = fullState;
+        }
     }
 
     public async Task<DeadLetterEntry?> GetDeadLetterAsync(Guid id)
@@ -746,8 +757,57 @@ public class ExecutionRepository : IExecutionRepository
             await HydrateDeadLetterPayloadAsync(entry);
         }
 
+        if (entry?.FanOutSnapshotId is Guid snapshotId)
+        {
+            await RebuildStateAsync(entry, snapshotId);
+        }
+
         return entry;
     }
+
+    // A Fan Out child's entry stores only what differs from the shared snapshot (see DeadLetterEntry). False when the
+    // entry is stored in full: not a Fan Out child, its snapshot is gone, or the state is not a JSON object.
+    private async Task<bool> StoreStateAsDifferenceAsync(DeadLetterEntry entry)
+    {
+        if (entry.FanOutSnapshotId is not Guid snapshotId)
+        {
+            return false;
+        }
+
+        var snapshotState = await SnapshotStateAsync(snapshotId);
+        var difference = snapshotState == null ? null : FanOutState.Diff(snapshotState, entry.FlowStateJson);
+        if (difference == null)
+        {
+            entry.FanOutSnapshotId = null;
+            entry.RemovedStateKeysJson = null;
+            return false;
+        }
+
+        entry.FlowStateJson = difference.Value.ChangedJson;
+        entry.RemovedStateKeysJson = difference.Value.RemovedKeysJson;
+        return true;
+    }
+
+    // The full state, from the snapshot plus the stored difference. Retention keeps a snapshot while any child run uses
+    // it, and the entry is deleted with its child run, so the snapshot is there. Marked unchanged so that saving the
+    // entry later (a status change) writes the difference it was loaded with, not the rebuilt state.
+    private async Task RebuildStateAsync(DeadLetterEntry entry, Guid snapshotId)
+    {
+        var full = FanOutState.Apply(await SnapshotStateAsync(snapshotId) ?? "{}", entry.FlowStateJson, entry.RemovedStateKeysJson);
+        entry.FlowStateJson = full;
+        if (!_postgres)
+        {
+            var property = _context.Entry(entry).Property(row => row.FlowStateJson);
+            property.OriginalValue = full;
+            property.IsModified = false;
+        }
+    }
+
+    private Task<string?> SnapshotStateAsync(Guid snapshotId) =>
+        _context.FanOutSnapshots.AsNoTracking()
+            .Where(snapshot => snapshot.Id == snapshotId)
+            .Select(snapshot => snapshot.FlowStateJson)
+            .FirstOrDefaultAsync();
 
     public async Task<IEnumerable<DeadLetterEntry>> GetPendingDeadLettersAsync(int batchSize)
     {
@@ -819,9 +879,25 @@ public class ExecutionRepository : IExecutionRepository
         DateTime requestedAt,
         string? flowStateJson = null)
     {
+        // An edited Fan Out child state is stored like the original: as its difference from the snapshot.
+        string? removedKeysJson = null;
+        if (flowStateJson != null)
+        {
+            var snapshotId = await _context.DeadLetterEntries.AsNoTracking()
+                .Where(entry => entry.Id == id)
+                .Select(entry => entry.FanOutSnapshotId)
+                .FirstOrDefaultAsync();
+            var snapshotState = snapshotId is Guid existing ? await SnapshotStateAsync(existing) : null;
+            if (snapshotState != null && FanOutState.Diff(snapshotState, flowStateJson) is { } difference)
+            {
+                flowStateJson = difference.ChangedJson;
+                removedKeysJson = difference.RemovedKeysJson;
+            }
+        }
+
         if (!_postgres)
         {
-            return await TryRequestManualReplayInRowAsync(id, startStepId, requestedAt, flowStateJson);
+            return await TryRequestManualReplayInRowAsync(id, startStepId, requestedAt, flowStateJson, removedKeysJson);
         }
 
         // PostgreSQL: the flow state lives in DeadLetterPayloads. The guarded update and the edited state commit
@@ -833,7 +909,8 @@ public class ExecutionRepository : IExecutionRepository
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(entry => entry.Status, "Retrying")
                 .SetProperty(entry => entry.ReplayFromStepId, startStepId)
-                .SetProperty(entry => entry.ReplayRequestedAt, requestedAt)) == 1;
+                .SetProperty(entry => entry.ReplayRequestedAt, requestedAt)
+                .SetProperty(entry => entry.RemovedStateKeysJson, entry => removedKeysJson ?? entry.RemovedStateKeysJson)) == 1;
         if (claimed && flowStateJson != null)
         {
             var state = Storage.PostgresPacketIngestor.Clean(flowStateJson);
@@ -855,7 +932,8 @@ public class ExecutionRepository : IExecutionRepository
         Guid id,
         Guid startStepId,
         DateTime requestedAt,
-        string? flowStateJson) =>
+        string? flowStateJson,
+        string? removedKeysJson) =>
         await _context.DeadLetterEntries
             .Where(entry => entry.Id == id && entry.ReplayRequestedAt == null &&
                 (entry.Status == "Pending" || entry.Status == "Retrying"))
@@ -865,7 +943,8 @@ public class ExecutionRepository : IExecutionRepository
                 .SetProperty(entry => entry.ReplayRequestedAt, requestedAt)
                 // A null edit leaves the captured state untouched; the update stays atomic,
                 // so a losing concurrent click can never overwrite the winner's state.
-                .SetProperty(entry => entry.FlowStateJson, entry => flowStateJson ?? entry.FlowStateJson)) == 1;
+                .SetProperty(entry => entry.FlowStateJson, entry => flowStateJson ?? entry.FlowStateJson)
+                .SetProperty(entry => entry.RemovedStateKeysJson, entry => removedKeysJson ?? entry.RemovedStateKeysJson)) == 1;
 
     public async Task<int> ResetStaleRetryingDeadLettersAsync(TimeSpan age)
     {
@@ -911,6 +990,13 @@ public class ExecutionRepository : IExecutionRepository
     public async Task UpdateDeadLetterEntryAsync(DeadLetterEntry entry)
     {
         _context.DeadLetterEntries.Update(entry);
+        if (!_postgres && entry.FanOutSnapshotId != null)
+        {
+            // The loaded entry carries the rebuilt full state; the row keeps its difference. (On PostgreSQL the state
+            // is in DeadLetterPayloads, which a status update never touches.)
+            _context.Entry(entry).Property(row => row.FlowStateJson).IsModified = false;
+        }
+
         await _context.SaveChangesAsync();
     }
 

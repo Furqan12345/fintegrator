@@ -96,6 +96,7 @@ public sealed class RecoveredRunDeadLetters
             Payload = interrupted == null ? string.Empty
                 : string.IsNullOrWhiteSpace(interrupted.RequestPayload) ? interrupted.ReceivedInput : interrupted.RequestPayload,
             FlowStateJson = state.ToString(Newtonsoft.Json.Formatting.None),
+            FanOutSnapshotId = run.FanOutSnapshotId,
             PersistedStateJson = string.IsNullOrWhiteSpace(flow.PersistedStateJson) ? "{}" : flow.PersistedStateJson,
             ErrorMessage = error,
             ManualReplayOnly = true,

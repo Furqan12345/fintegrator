@@ -82,6 +82,16 @@
             var payload = await Http.GetFromJsonAsync<StepPayloadDto>(
                 $"api/executions/{executionId}/steps/{debugStep.Id}/payload");
 
+            if (payload?.Expired == true)
+            {
+                _error = "This card's captured state has expired (kept for the runs window on Settings → Storage).";
+                if (openFullscreen)
+                {
+                    OpenFullscreenFromHost();
+                }
+                return;
+            }
+
             _stateJson = FormatJson(payload?.ResponsePayload ?? string.Empty);
             if (openFullscreen)
             {
