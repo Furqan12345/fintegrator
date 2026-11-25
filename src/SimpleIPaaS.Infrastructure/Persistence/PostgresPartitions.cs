@@ -103,23 +103,10 @@ public static class PostgresPartitions
         NpgsqlDataSource dataSource, string table, DateTime cutoffUtc, CancellationToken cancellationToken = default)
     {
         var cutoffDay = UtcDay(cutoffUtc);
-        var dropped = 0;
-        long rows = 0;
-
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        // Both hosts run retention: the second one would find its DETACH refused and fall back to a plain DROP,
-        // which locks the whole table. Only the host holding this lock drops; the other skips the pass.
-        await using (var tryLock = new NpgsqlCommand($"SELECT pg_try_advisory_lock({DropLockKey});", connection))
+        var result = await WithDropLockAsync(dataSource, async connection =>
         {
-            if (!(bool)(await tryLock.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
-            {
-                return (0, 0);
-            }
-        }
-
-        try
-        {
+            var dropped = 0;
+            long rows = 0;
             var partitions = await ListAsync(connection, null, table, cancellationToken).ConfigureAwait(false);
             foreach (var partition in partitions.OrderBy(name => name, StringComparer.Ordinal))
             {
@@ -130,49 +117,119 @@ public static class PostgresPartitions
                 }
 
                 var estimate = await EstimateRowsAsync(connection, partition, cancellationToken).ConfigureAwait(false);
-                var detached = true;
-                try
+                if (await DropPartitionAsync(connection, table, partition, cancellationToken).ConfigureAwait(false))
                 {
-                    await ExecuteAsync(connection, $"ALTER TABLE \"{table}\" DETACH PARTITION \"{partition}\" CONCURRENTLY;", cancellationToken).ConfigureAwait(false);
-                }
-                catch (PostgresException)
-                {
-                    // Older server, or a detach left half-done by a crash: a plain DROP still works, but it locks the
-                    // parent, so it gets the maintenance lock timeout and waits for the next pass if the table is busy.
-                    detached = false;
-                }
-
-                try
-                {
-                    if (!detached)
-                    {
-                        await ExecuteAsync(connection, $"SET lock_timeout = '{(int)MaintenanceLockTimeout.TotalMilliseconds}ms';", cancellationToken).ConfigureAwait(false);
-                    }
-
-                    await ExecuteAsync(connection, $"DROP TABLE IF EXISTS \"{partition}\";", cancellationToken).ConfigureAwait(false);
                     rows += estimate;
                     dropped++;
                 }
-                catch (PostgresException exception) when (!detached && exception.SqlState == PostgresErrorCodes.LockNotAvailable)
+            }
+
+            return (dropped, rows, 0L);
+        }, cancellationToken).ConfigureAwait(false);
+
+        return (result.Partitions, result.Rows);
+    }
+
+    // A row cap applied in whole days: keeps the newest days whose rows add up to at most maxRows and drops every
+    // older day. Today, future days and the newest day holding rows are always kept. Returns what was dropped and the
+    // rows kept; kept is over maxRows only when the kept days alone exceed it (the caller decides what to do then).
+    // (0, 0, 0) when the other host holds the drop lock.
+    public static Task<(int Partitions, long Rows, long KeptRows)> DropOldestOverCapAsync(
+        NpgsqlDataSource dataSource, string table, long maxRows, CancellationToken cancellationToken = default) =>
+        WithDropLockAsync(dataSource, async connection =>
+        {
+            var today = UtcDay(DateTime.UtcNow);
+            var dropped = 0;
+            long rows = 0;
+            long kept = 0;
+            var overCap = false;
+            var partitions = (await ListAsync(connection, null, table, cancellationToken).ConfigureAwait(false))
+                .Select(name => (Name: name, Parsed: TryParseDay(table, name, out var day), Day: day))
+                .Where(partition => partition.Parsed)
+                .OrderByDescending(partition => partition.Day)
+                .ToList();
+            foreach (var partition in partitions)
+            {
+                var count = await CountRowsAsync(connection, partition.Name, cancellationToken).ConfigureAwait(false);
+                overCap = overCap || (partition.Day < today && kept > 0 && kept + count > maxRows);
+                if (!overCap)
                 {
-                    // The parent is busy; the next pass drops it.
+                    kept += count;
+                    continue;
                 }
-                finally
+
+                // This day and every older one go.
+                if (await DropPartitionAsync(connection, table, partition.Name, cancellationToken).ConfigureAwait(false))
                 {
-                    if (!detached)
-                    {
-                        await ExecuteAsync(connection, "RESET lock_timeout;", CancellationToken.None).ConfigureAwait(false);
-                    }
+                    rows += count;
+                    dropped++;
                 }
             }
+
+            return (dropped, rows, kept);
+        }, cancellationToken);
+
+    // Only the host holding this lock drops: the other host's DETACH would be refused and it would fall back to a
+    // plain DROP, which locks the whole table. The other host skips the pass and gets (0, 0, 0).
+    private static async Task<(int Partitions, long Rows, long KeptRows)> WithDropLockAsync(
+        NpgsqlDataSource dataSource, Func<NpgsqlConnection, Task<(int, long, long)>> drop, CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using (var tryLock = new NpgsqlCommand($"SELECT pg_try_advisory_lock({DropLockKey});", connection))
+        {
+            if (!(bool)(await tryLock.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
+            {
+                return (0, 0, 0);
+            }
+        }
+
+        try
+        {
+            return await drop(connection).ConfigureAwait(false);
         }
         finally
         {
             await using var unlock = new NpgsqlCommand($"SELECT pg_advisory_unlock({DropLockKey});", connection);
             await unlock.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
         }
+    }
 
-        return (dropped, rows);
+    // Detaches CONCURRENTLY, then drops. False when the fallback plain DROP met a busy parent (the next pass retries).
+    private static async Task<bool> DropPartitionAsync(NpgsqlConnection connection, string table, string partition, CancellationToken cancellationToken)
+    {
+        var detached = true;
+        try
+        {
+            await ExecuteAsync(connection, $"ALTER TABLE \"{table}\" DETACH PARTITION \"{partition}\" CONCURRENTLY;", cancellationToken).ConfigureAwait(false);
+        }
+        catch (PostgresException)
+        {
+            // Older server, or a detach left half-done by a crash: a plain DROP still works, but it locks the
+            // parent, so it gets the maintenance lock timeout and waits for the next pass if the table is busy.
+            detached = false;
+        }
+
+        try
+        {
+            if (!detached)
+            {
+                await ExecuteAsync(connection, $"SET lock_timeout = '{(int)MaintenanceLockTimeout.TotalMilliseconds}ms';", cancellationToken).ConfigureAwait(false);
+            }
+
+            await ExecuteAsync(connection, $"DROP TABLE IF EXISTS \"{partition}\";", cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (PostgresException exception) when (!detached && exception.SqlState == PostgresErrorCodes.LockNotAvailable)
+        {
+            return false;
+        }
+        finally
+        {
+            if (!detached)
+            {
+                await ExecuteAsync(connection, "RESET lock_timeout;", CancellationToken.None).ConfigureAwait(false);
+            }
+        }
     }
 
     public static async Task<HashSet<string>> ListAsync(
@@ -226,6 +283,20 @@ public static class PostgresPartitions
         await using var command = new NpgsqlCommand("SELECT GREATEST(reltuples, 0)::bigint FROM pg_class WHERE oid = to_regclass(@name);", connection);
         command.Parameters.AddWithValue("name", $"\"{partition}\"");
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long value ? value : 0;
+    }
+
+    // The planner's estimate, or an exact count for a partition never analyzed yet (usually today's, still filling).
+    private static async Task<long> CountRowsAsync(NpgsqlConnection connection, string partition, CancellationToken cancellationToken)
+    {
+        await using var estimate = new NpgsqlCommand("SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass(@name);", connection);
+        estimate.Parameters.AddWithValue("name", $"\"{partition}\"");
+        if (await estimate.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long value && value >= 0)
+        {
+            return value;
+        }
+
+        await using var count = new NpgsqlCommand($"SELECT count(*) FROM \"{partition}\";", connection);
+        return (long)(await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
     private static async Task ExecuteAsync(NpgsqlConnection connection, string sql, CancellationToken cancellationToken)

@@ -81,8 +81,8 @@ small, so the batched delete that expires them stays cheap.
 
 ## Retention
 
-Retention follows the windows on Settings → Storage. A new installation starts with logs 3 days, messages and
-payloads 14 days, runs, steps and dead letters 30 days, and cross references kept forever. An installation upgraded
+Retention follows the windows on Settings → Storage. A new installation starts with logs 3 days (whole days, so 3 to 4 on
+PostgreSQL), messages and payloads 14 days, runs, steps and dead letters 30 days, and cross references kept forever. An installation upgraded
 from a build without these defaults keeps what it had (runs and payloads forever) until someone changes it; the
 first start writes those values down so they are visible on the page.
 
@@ -90,6 +90,8 @@ first start writes those values down so they are visible on the page.
 |---|---|
 | Packet logs | Whole days older than the window are detached concurrently and dropped, for both `StepPacketLogs` and `StepPacketPayloads`. The window is never longer than the runs window: a packet whose run is gone cannot be opened from anywhere. |
 | Executions | `StepExecutionPayloads` days older than the window are dropped. Finished, non-test runs older than the window are deleted in batches; steps, dead letters, Fan Out snapshots and the run and dead-letter payload rows cascade. |
+| Logs | Whole days older than the window are detached concurrently and dropped, so a 3-day window keeps 3 to 4 days. The row cap (`Logging:Database:MaxRows`, 1,000,000) also drops whole days, oldest first, keeping today and the newest day with rows. Only when that newest day alone is over the cap (a runaway log loop) are rows deleted, within that day. |
+| Cross references | Batched delete, as on the other providers. |
 
 Deleting a run does not delete its packets or step payloads row by row: they go with their day. A run deleted today
 leaves them for at most about a day, unreachable from the UI. Deleting them with the run turned every expired run
@@ -97,8 +99,6 @@ into row-by-row deletes in the partitioned tables (runs cross the cutoff all day
 a day later), which is what the partitions are for. Deleting a flow, trimming test runs and the demo reseed still
 delete them at once. Runs, steps and dead letters are deleted row by row; `IX_FlowExecutions_CompletedAt` lets each
 batch find its runs without scanning the table.
-| Logs | The log sink drops whole days older than the longer of its two windows (detail, warnings). It deletes only what the shorter window still covers, then applies the row cap. |
-| Cross references | Batched delete, as on the other providers. |
 
 Dropping a partition frees its disk space immediately, with no VACUUM needed.
 

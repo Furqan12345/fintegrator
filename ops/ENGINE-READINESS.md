@@ -62,6 +62,7 @@ Webhook bodies are limited to 1,000,000 bytes (`WebhooksController`).
 | Flow loads joined cards with links | cards × links rows on every run | Split queries |
 | A finished run did not wake the claim loop | Runs of one flow (a Fan Out's children) waited up to a poll interval each: 1,000 children were not done after 15 minutes | The poller wakes when a run finishes: 86 s |
 | Fan Out copied the whole flow state into every child | 1,000 children of a 0.9 MB state: ~834 MB written | One shared snapshot per Fan Out: 1.7 MB |
+| PostgreSQL log retention deleted rows | The age cutoff moves every 5 minutes, so the oldest day was emptied row by row before it could be dropped; the 1,000,000-row cap deleted by id | Drop-only: whole days for the window and for the cap; rows are deleted only when today alone is over the cap |
 
 ## Settings
 

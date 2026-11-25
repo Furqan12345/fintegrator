@@ -55,8 +55,8 @@ public sealed class SqliteAppLogBatchStore : IAppLogBatchStore
     }
 }
 
-// PostgreSQL: one binary COPY per batch into the day-partitioned AppLogEntries. Retention drops whole days that
-// fell out of the longest window and deletes only what a shorter window still covers, in recent partitions.
+// PostgreSQL: one binary COPY per batch into the day-partitioned AppLogEntries. Retention is drop-only: whole days
+// that fell out of the window, then the oldest whole days over the row cap (see Prune).
 public sealed class PostgresAppLogBatchStore : IAppLogBatchStore, IDisposable
 {
     private const string Columns =
@@ -115,7 +115,10 @@ public sealed class PostgresAppLogBatchStore : IAppLogBatchStore, IDisposable
         var dataSource = _dataSource();
         var removed = 0;
 
-        // Whole days older than the longest window go at once (0 = keep that class forever).
+        // Drop-only: logs leave in whole days, never row by row. A row-level age delete would empty the oldest day
+        // slice by slice (the cutoff moves every pass), so every row would be deleted singly and the day dropped
+        // empty. A window therefore keeps between N and N+1 days. Both levels share one window (the longer; the
+        // settings page sets them equal); 0 for either keeps everything by age.
         if (windows.DetailRetentionHours > 0 && windows.WarningRetentionHours > 0)
         {
             var longest = Math.Max(windows.DetailRetentionHours, windows.WarningRetentionHours);
@@ -123,27 +126,21 @@ public sealed class PostgresAppLogBatchStore : IAppLogBatchStore, IDisposable
                 .GetAwaiter().GetResult().Rows;
         }
 
-        using var connection = dataSource.OpenConnection();
-        if (windows.DetailRetentionHours > 0)
-        {
-            removed += Execute(connection,
-                "DELETE FROM \"AppLogEntries\" WHERE \"Timestamp\" < @cutoff AND \"Level\" NOT IN ('Warning', 'Error', 'Critical');",
-                DateTime.UtcNow.AddHours(-windows.DetailRetentionHours));
-        }
-
-        if (windows.WarningRetentionHours > 0)
-        {
-            removed += Execute(connection,
-                "DELETE FROM \"AppLogEntries\" WHERE \"Timestamp\" < @cutoff AND \"Level\" IN ('Warning', 'Error', 'Critical');",
-                DateTime.UtcNow.AddHours(-windows.WarningRetentionHours));
-        }
-
+        // The row cap also drops whole days, oldest first. Only when the newest day alone is over it (a runaway log
+        // loop) does it delete rows, and then only in that day: it is a safety valve against a full disk.
         if (windows.MaxRows > 0)
         {
-            using var byCount = new NpgsqlCommand(
-                "DELETE FROM \"AppLogEntries\" WHERE \"Id\" <= COALESCE((SELECT max(\"Id\") FROM \"AppLogEntries\"), 0) - @maxRows;", connection);
-            byCount.Parameters.AddWithValue("maxRows", (long)windows.MaxRows);
-            removed += byCount.ExecuteNonQuery();
+            var cap = PostgresPartitions.DropOldestOverCapAsync(dataSource, PostgresLayout.AppLogEntries, windows.MaxRows)
+                .GetAwaiter().GetResult();
+            removed += (int)cap.Rows;
+            if (cap.KeptRows > windows.MaxRows)
+            {
+                using var connection = dataSource.OpenConnection();
+                using var byCount = new NpgsqlCommand(
+                    "DELETE FROM \"AppLogEntries\" WHERE \"Id\" <= COALESCE((SELECT max(\"Id\") FROM \"AppLogEntries\"), 0) - @maxRows;", connection);
+                byCount.Parameters.AddWithValue("maxRows", (long)windows.MaxRows);
+                removed += byCount.ExecuteNonQuery();
+            }
         }
 
         return removed;
@@ -196,13 +193,6 @@ public sealed class PostgresAppLogBatchStore : IAppLogBatchStore, IDisposable
         }
 
         importer.Complete();
-    }
-
-    private static int Execute(NpgsqlConnection connection, string sql, DateTime cutoff)
-    {
-        using var command = new NpgsqlCommand(sql, connection);
-        command.Parameters.AddWithValue("cutoff", NpgsqlDbType.TimestampTz, cutoff);
-        return command.ExecuteNonQuery();
     }
 
     private static DateTime Utc(DateTime value) =>

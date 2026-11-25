@@ -290,6 +290,76 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
     }
 
     [PostgresFact]
+    public async Task Log_retention_drops_whole_days_and_never_row_deletes_the_boundary_day()
+    {
+        var store = new PostgresAppLogBatchStore(() => _db.DataSource!);
+        var marker = "Age" + Guid.NewGuid().ToString("N")[..8];
+        var now = DateTime.UtcNow;
+        var cutoff = now.AddHours(-72);
+        var cutoffDayStart = cutoff.Date;
+        // Older than the window, but on the day the cutoff falls in: the old prune deleted it row by row.
+        var boundaryAt = cutoffDayStart + (cutoff - cutoffDayStart) / 2;
+        var old = now.AddDays(-5);
+        store.Write(new[] { (old, "old"), (boundaryAt, "boundary"), (now, "recent") }
+            .Select(item => new AppLogEntry { Timestamp = item.Item1, Level = "Information", Source = "Engine", Category = "Tests", Message = $"{marker} {item.Item2}" })
+            .ToList());
+
+        store.Prune(new LogRetentionWindows(72, 72, 0));
+
+        await using var context = _db.NewContext();
+        Assert.Equal(0, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} old"));
+        Assert.Equal(1, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} boundary"));
+        Assert.Equal(1, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} recent"));
+        await using var connection = await _db.DataSource!.OpenConnectionAsync();
+        var partitions = await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogEntries);
+        Assert.DoesNotContain(PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, PostgresPartitions.UtcDay(old)), partitions);
+        Assert.Contains(PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, PostgresPartitions.UtcDay(boundaryAt)), partitions);
+    }
+
+    [PostgresFact]
+    public async Task Log_row_cap_drops_the_oldest_whole_days_and_deletes_rows_only_when_today_alone_is_over_it()
+    {
+        var store = new PostgresAppLogBatchStore(() => _db.DataSource!);
+        var marker = "Cap" + Guid.NewGuid().ToString("N")[..8];
+        var now = DateTime.UtcNow;
+        AppLogEntry Entry(DateTime at, string day) =>
+            new() { Timestamp = at, Level = "Information", Source = "Engine", Category = "Tests", Message = $"{marker} {day}" };
+        foreach (var daysAgo in new[] { 3, 2, 1 })
+        {
+            store.Write(Enumerable.Range(0, 100).Select(_ => Entry(now.AddDays(-daysAgo), $"d{daysAgo}")).ToList());
+        }
+
+        store.Write(Enumerable.Range(0, 50).Select(_ => Entry(now, "d0")).ToList());
+
+        await using var connection = await _db.DataSource!.OpenConnectionAsync();
+        await using (var analyze = new NpgsqlCommand("ANALYZE \"AppLogEntries\";", connection))
+        {
+            await analyze.ExecuteNonQueryAsync();
+        }
+
+        await using var context = _db.NewContext();
+        var today = PostgresPartitions.UtcDay(now);
+        var todayStart = today.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var todayRows = await context.AppLogEntries.CountAsync(entry => entry.Timestamp >= todayStart);
+
+        // Room for today and yesterday, not for the day before: that day and every older one are dropped whole.
+        store.Prune(new LogRetentionWindows(0, 0, todayRows + 150));
+
+        Assert.Equal(100, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} d1"));
+        Assert.Equal(todayRows, await context.AppLogEntries.CountAsync(entry => entry.Timestamp >= todayStart));
+        var partitions = await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogEntries);
+        foreach (var daysAgo in new[] { 3, 2 })
+        {
+            Assert.DoesNotContain(PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, today.AddDays(-daysAgo)), partitions);
+        }
+
+        // Today alone over the cap (a runaway log loop): yesterday is dropped and today is trimmed row by row.
+        store.Prune(new LogRetentionWindows(0, 0, 10));
+        Assert.Equal(0, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} d1"));
+        Assert.True(await context.AppLogEntries.CountAsync() <= 10);
+    }
+
+    [PostgresFact]
     public async Task Run_search_is_case_insensitive_and_non_utc_datetimes_are_accepted()
     {
         var (flowId, _) = await SeedFlowAsync("Shopify Orders");
