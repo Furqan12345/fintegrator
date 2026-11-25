@@ -102,6 +102,35 @@ batch find its runs without scanning the table.
 
 Dropping a partition frees its disk space immediately, with no VACUUM needed.
 
+## Server settings and WAL
+
+Fusetor needs no server settings and turns nothing on. It only sets `lock_timeout` on its own sessions for
+partition maintenance. It creates no replication slots, uses no archiving or logical decoding, and changes no
+logging settings. Run PostgreSQL with its defaults unless you have a reason not to.
+
+The write-ahead log (WAL) cannot be switched off. PostgreSQL writes every change to it first, which is how it
+survives a crash or power loss without corruption. With the defaults it is bounded:
+
+| | Default | Meaning |
+|---|---|---|
+| Memory | `wal_buffers` 4 MB (1/32 of `shared_buffers`, at most 16 MB) | The only memory WAL uses |
+| Disk | `pg_wal` recycled at each checkpoint, about `max_wal_size` (1 GB) | Measured: 592 MB after the volume suite (1,000-child Fan Out, 50,000-run cleanup) |
+| Unbounded growth | `archive_mode=off`, no replication slots, `wal_keep_size=0` | Only a failing `archive_command`, a forgotten replication slot or `wal_keep_size` make `pg_wal` grow without limit |
+| Server log | `logging_collector=off`, `log_statement=none`, `log_min_duration_statement=-1` | No statement logging |
+
+Do not turn on `log_statement = 'all'` or a low `log_min_duration_statement` in production: the Engine polls and
+writes continuously, so the server log would grow quickly. If you enable archiving or a replica, monitor it:
+`SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) FROM pg_replication_slots;`
+and `SELECT failed_count, last_failed_time FROM pg_stat_archiver;`.
+
+Optional, if disk or write volume matters more than the features they give up:
+
+| Setting | Effect | Cost |
+|---|---|---|
+| `max_wal_size = 256MB` | Smaller `pg_wal` | More frequent checkpoints (slightly more WAL written) |
+| `wal_compression = lz4` | Smaller WAL records | Some CPU |
+| `wal_level = minimal`, `max_wal_senders = 0` | Less WAL for bulk loads | No replicas, no point-in-time recovery (`pg_dump` still works) |
+
 ## Search
 
 Run and log search use `ILIKE`. PostgreSQL's `LIKE` is case-sensitive, and on SQLite the same search is not.
