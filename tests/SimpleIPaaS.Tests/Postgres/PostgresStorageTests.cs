@@ -495,6 +495,26 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
         Assert.True(dropped.Partitions >= 1);
     }
 
+    [PostgresFact]
+    public async Task Start_up_warns_when_server_logging_is_turned_on()
+    {
+        await using var connection = await _db.DataSource!.OpenConnectionAsync();
+        // The test server runs with the defaults: nothing to report.
+        Assert.Empty(PostgresSchema.ServerLoggingWarnings(connection));
+
+        await using (var enable = new NpgsqlCommand("SET log_statement = 'all'; SET log_min_duration_statement = 0;", connection))
+        {
+            await enable.ExecuteNonQueryAsync();
+        }
+
+        var warnings = PostgresSchema.ServerLoggingWarnings(connection);
+        Assert.Contains(warnings, warning => warning.StartsWith("log_statement is 'all'"));
+        Assert.Contains(warnings, warning => warning.StartsWith("log_min_duration_statement is 0 ms"));
+
+        await using var reset = new NpgsqlCommand("RESET log_statement; RESET log_min_duration_statement;", connection);
+        await reset.ExecuteNonQueryAsync();
+    }
+
     [Fact]
     public void Packet_logs_never_outlive_the_runs_window()
     {

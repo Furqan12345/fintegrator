@@ -118,8 +118,12 @@ survives a crash or power loss without corruption. With the defaults it is bound
 | Unbounded growth | `archive_mode=off`, no replication slots, `wal_keep_size=0` | Only a failing `archive_command`, a forgotten replication slot or `wal_keep_size` make `pg_wal` grow without limit |
 | Server log | `logging_collector=off`, `log_statement=none`, `log_min_duration_statement=-1` | No statement logging |
 
-Do not turn on `log_statement = 'all'` or a low `log_min_duration_statement` in production: the Engine polls and
-writes continuously, so the server log would grow quickly. If you enable archiving or a replica, monitor it:
+**Keep the server log files off** (`logging_collector = off`, the default; errors still reach the service's console
+output). Do not turn on `log_statement` or a low `log_min_duration_statement` either: the Engine polls and writes
+continuously, so the server log would grow quickly, and PostgreSQL does not delete old log files unless rotation is
+configured. Fusetor never changes these settings; at start-up it logs a warning (`PostgreSQL: logging_collector is
+on ...`) if any of them is on. When PostgreSQL is added to a compose file, pass `-c logging_collector=off`
+explicitly. If you enable archiving or a replica, monitor it:
 `SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) FROM pg_replication_slots;`
 and `SELECT failed_count, last_failed_time FROM pg_stat_archiver;`.
 

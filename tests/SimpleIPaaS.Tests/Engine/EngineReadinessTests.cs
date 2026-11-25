@@ -58,6 +58,8 @@ public sealed class EngineReadinessTests : IDisposable
         var script = Microsoft.CodeAnalysis.CSharp.Scripting.CSharpScript.Create<object>(instrumented,
             Microsoft.CodeAnalysis.Scripting.ScriptOptions.Default.AddReferences(typeof(Enumerable).Assembly).AddImports("System", "System.Linq"),
             typeof(AdvancedScriptGlobals));
+        // Compile first: compilation can take seconds on a busy machine and is not what the 2 s bound measures.
+        script.Compile();
         var cancelled = new System.Threading.CancellationTokenSource();
         cancelled.Cancel();
         var run = Task.Run(() => script.RunAsync(new AdvancedScriptGlobals { CancellationToken = cancelled.Token }));

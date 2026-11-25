@@ -39,6 +39,10 @@ public static class PostgresSchema
 
                 EnsureIndexes(connection);
                 PostgresPartitions.EnsureAheadAsync(connection).GetAwaiter().GetResult();
+                foreach (var warning in ServerLoggingWarnings(connection))
+                {
+                    logger.LogWarning("PostgreSQL: {Warning}", warning);
+                }
             }
             finally
             {
@@ -111,6 +115,41 @@ public static class PostgresSchema
             transaction.Commit();
             logger.LogInformation("PostgreSQL: {Table} is now partitioned by day on {Column} ({Rows} existing rows moved).", name, key, copied);
         }
+    }
+
+    // Fusetor runs with the server log files off (ops/POSTGRES.md, "Server settings and WAL"). It never changes
+    // server settings itself (that needs a superuser and a restart); it reports the ones that make the server log
+    // grow: the Engine polls and writes continuously, so statement logging fills a disk quickly.
+    internal static IReadOnlyList<string> ServerLoggingWarnings(NpgsqlConnection connection)
+    {
+        var settings = new Dictionary<string, string>(StringComparer.Ordinal);
+        using (var command = new NpgsqlCommand(
+            "SELECT name, setting FROM pg_settings WHERE name IN ('logging_collector', 'log_statement', 'log_min_duration_statement');", connection))
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                settings[reader.GetString(0)] = reader.GetString(1);
+            }
+        }
+
+        var warnings = new List<string>();
+        if (settings.GetValueOrDefault("logging_collector") == "on")
+        {
+            warnings.Add("logging_collector is on: the server writes log files, and PostgreSQL does not delete old ones unless rotation is configured. Fusetor expects it off (set logging_collector = off and restart PostgreSQL).");
+        }
+
+        if (settings.TryGetValue("log_statement", out var statements) && statements != "none")
+        {
+            warnings.Add($"log_statement is '{statements}': every such statement the API and Engine run is logged. Set log_statement = none.");
+        }
+
+        if (settings.TryGetValue("log_min_duration_statement", out var duration) && int.TryParse(duration, out var ms) && ms >= 0 && ms < 1000)
+        {
+            warnings.Add($"log_min_duration_statement is {ms} ms: most statements are logged. Set it to -1 (off) or at least a few seconds.");
+        }
+
+        return warnings;
     }
 
     // EnsureCreated does nothing on a database that already has tables, so a table added by a later release is
