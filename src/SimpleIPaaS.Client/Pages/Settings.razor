@@ -101,7 +101,7 @@
                         <input id="alerts-recipients" class="form-control"
                                placeholder="ops@example.com; alerts@example.com"
                                @bind="_alerts.Recipients" @bind:event="oninput" />
-                        <small class="field-hint">Up to 10 addresses, separated by commas or semicolons. A Teams or Slack channel's email address works too.</small>
+                        <small class="field-hint">Up to 10 addresses, separated by commas or semicolons. A Teams or Slack channel's email address works too. They also get the log volume alert (Storage, below), even with failure alerts off.</small>
                     </div>
                     <div class="form-group">
                         <label for="alerts-cooldown">Cooldown (minutes)</label>
@@ -311,12 +311,31 @@
                             }
 
                             <div class="form-group">
-                                <label>Keep for (days)</label>
+                                <label>@(IsLogs(dataset) ? "Keep other levels for (days)" : "Keep for (days)")</label>
                                 <input type="number" min="0" max="3650" class="form-control"
                                        aria-label="@($"Retention days for {catalog?.Name}")"
                                        @bind="dataset.RetentionDays" @bind:after="MarkDirty" />
                                 <small class="field-hint">@RetentionHint(dataset, catalog)</small>
                             </div>
+
+                            @if (IsLogs(dataset))
+                            {
+                                <div class="form-group">
+                                    <label>Keep warnings and errors for (days)</label>
+                                    <input type="number" min="0" max="3650" class="form-control"
+                                           aria-label="Retention days for warnings and errors"
+                                           @bind="dataset.WarningRetentionDays" @bind:after="MarkDirty" />
+                                    <small class="field-hint">@WarningRetentionHint(dataset, isElastic)</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Alert when stored log lines reach</label>
+                                    <input type="number" min="0" step="100000" class="form-control"
+                                           aria-label="Log volume alert threshold"
+                                           @bind="dataset.AlertRows" @bind:after="MarkDirty" />
+                                    <small class="field-hint">@AlertHint(dataset, isElastic)</small>
+                                </div>
+                            }
 
                             @if (catalog is { CanUseIlm: true })
                             {
@@ -665,7 +684,9 @@
                     UseElasticsearch = dataset.UseElasticsearch,
                     Granularity = dataset.Granularity,
                     RetentionDays = dataset.RetentionDays,
-                    UseIlm = dataset.UseIlm
+                    UseIlm = dataset.UseIlm,
+                    WarningRetentionDays = dataset.WarningRetentionDays,
+                    AlertRows = dataset.AlertRows
                 }).ToList()
             };
 
@@ -854,6 +875,40 @@
     private static string RetentionText(int days) =>
         days <= 0 ? "Keep forever" : days == 1 ? "1 day" : $"{days} days";
 
+    private static bool IsLogs(StorageDatasetSettingsDto dataset) =>
+        string.Equals(dataset.Dataset, "logs", StringComparison.OrdinalIgnoreCase);
+
+    private static string WarningRetentionHint(StorageDatasetSettingsDto dataset, bool isElastic)
+    {
+        var warnings = dataset.WarningRetentionDays ?? dataset.RetentionDays;
+        if (dataset.RetentionDays > 0 && warnings > 0 && warnings < dataset.RetentionDays)
+        {
+            return "Must be at least the days above (or 0 to keep warnings and errors forever).";
+        }
+
+        if (isElastic)
+        {
+            return "Elasticsearch keeps every level in one index, so its indices live for the longer of the two windows.";
+        }
+
+        return warnings <= 0
+            ? "0 = keep warnings and errors forever."
+            : $"Warning, Error and Critical lines are deleted {warnings} day(s) after they were written, in whole days.";
+    }
+
+    private static string AlertHint(StorageDatasetSettingsDto dataset, bool isElastic)
+    {
+        if (isElastic)
+        {
+            return "Not used while logs are stored in Elasticsearch.";
+        }
+
+        var rows = dataset.AlertRows ?? 0;
+        return rows <= 0
+            ? "0 = no alert. Nothing is ever deleted because of the number of log lines."
+            : $"At 80% and at 100% of {rows:N0} lines, the alert recipients (Alerts, above) get an email and admins see a banner. Nothing is deleted because of it.";
+    }
+
     private string RetentionHint(StorageDatasetSettingsDto dataset, StorageDatasetCatalogDto? catalog)
     {
         if (dataset.RetentionDays <= 0)
@@ -871,6 +926,11 @@
         if (dataset.UseElasticsearch && _settings!.ElasticsearchEnabled)
         {
             return $"Indices whose period ended more than {dataset.RetentionDays} day(s) ago are deleted by the retention schedule.";
+        }
+
+        if (IsLogs(dataset))
+        {
+            return $"Information, Debug and Trace lines are deleted {dataset.RetentionDays} day(s) after they were written, in whole days.";
         }
 
         return catalog is { CanUseElasticsearch: false }

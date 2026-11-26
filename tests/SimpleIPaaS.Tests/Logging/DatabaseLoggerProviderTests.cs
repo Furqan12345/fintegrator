@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using SimpleIPaaS.Infrastructure.Logging;
 using SimpleIPaaS.Infrastructure.Persistence;
+using SimpleIPaaS.Infrastructure.Storage;
 
 namespace SimpleIPaaS.Tests.Logging;
 
@@ -348,8 +349,7 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
 
         var removed = DatabaseLogWriter.Prune(connection, new DatabaseLoggerOptions
         {
-            RetentionHours = 72,
-            MaxRows = 0
+            RetentionHours = 72
         });
 
         Assert.Equal(2, removed);
@@ -357,33 +357,28 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
     }
 
     [Fact]
-    public void Retention_EnforcesTheMaximumRowCap()
+    public void Retention_NeverDeletesByCount_AndKeepsWarningsForTheirOwnWindow()
     {
         using var connection = new SqliteConnection(_connectionString);
         connection.Open();
         DatabaseSchemaInitializer.EnsureAppLogEntriesTable(connection);
 
+        // Many recent lines: logs are removed by age only, never because of how many there are.
         for (var i = 0; i < 50; i++)
         {
             InsertAt(connection, DateTime.UtcNow);
         }
 
-        var removed = DatabaseLogWriter.Prune(connection, new DatabaseLoggerOptions
-        {
-            RetentionHours = 0,
-            MaxRows = 10
-        });
+        InsertAt(connection, DateTime.UtcNow.AddDays(-5));
+        InsertAt(connection, DateTime.UtcNow.AddDays(-5), "Warning");
+        InsertAt(connection, DateTime.UtcNow.AddDays(-5), "Error");
+        InsertAt(connection, DateTime.UtcNow.AddDays(-20), "Error");
 
-        Assert.Equal(40, removed);
-        Assert.Equal(10, CountRows(connection));
+        var removed = DatabaseLogWriter.Prune(connection, new LogRetentionWindows(DetailRetentionHours: 72, WarningRetentionHours: 14 * 24));
 
-        // The rows that survive are the newest ones.
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT MIN(Id), MAX(Id) FROM AppLogEntries;";
-        using var reader = command.ExecuteReader();
-        Assert.True(reader.Read());
-        Assert.Equal(41, reader.GetInt64(0));
-        Assert.Equal(50, reader.GetInt64(1));
+        // The 5-day-old information line and the 20-day-old error go; the 5-day-old warning and error stay.
+        Assert.Equal(2, removed);
+        Assert.Equal(52, CountRows(connection));
     }
 
     [Fact]
@@ -398,21 +393,22 @@ public sealed class DatabaseLoggerProviderTests : IDisposable
         var removed = DatabaseLogWriter.Prune(connection, new DatabaseLoggerOptions
         {
             RetentionHours = 0,
-            MaxRows = 0
+            WarningRetentionHours = 0
         });
 
         Assert.Equal(0, removed);
         Assert.Equal(1, CountRows(connection));
     }
 
-    private static void InsertAt(SqliteConnection connection, DateTime timestampUtc)
+    private static void InsertAt(SqliteConnection connection, DateTime timestampUtc, string level = "Information")
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO AppLogEntries (Timestamp, Level, Source, Category, Message)
-            VALUES ($timestamp, 'Information', 'Engine', 'Worker', 'seeded');
+            VALUES ($timestamp, $level, 'Engine', 'Worker', 'seeded');
             """;
         command.Parameters.AddWithValue("$timestamp", timestampUtc);
+        command.Parameters.AddWithValue("$level", level);
         command.ExecuteNonQuery();
     }
 

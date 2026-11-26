@@ -341,7 +341,7 @@ public sealed class DatabaseLogWriter : IDisposable
     // section when nothing has been configured (or before the settings have been loaded).
     private LogRetentionWindows ResolveWindows()
     {
-        var fallback = new LogRetentionWindows(_options.RetentionHours, _options.WarningRetentionHours, _options.MaxRows);
+        var fallback = new LogRetentionWindows(_options.RetentionHours, _options.WarningRetentionHours);
 
         try
         {
@@ -353,9 +353,9 @@ public sealed class DatabaseLogWriter : IDisposable
         }
     }
 
-    // Retention, exposed for tests. Age-based pruning first, then the hard row cap.
+    // Retention, exposed for tests. Age only: warnings and errors by their window, every other level by its own.
     public static int Prune(SqliteConnection connection, DatabaseLoggerOptions options) =>
-        Prune(connection, new LogRetentionWindows(options.RetentionHours, options.WarningRetentionHours, options.MaxRows));
+        Prune(connection, new LogRetentionWindows(options.RetentionHours, options.WarningRetentionHours));
 
     public static int Prune(SqliteConnection connection, LogRetentionWindows windows)
     {
@@ -375,17 +375,6 @@ public sealed class DatabaseLogWriter : IDisposable
             warningAge.CommandText = "DELETE FROM AppLogEntries WHERE Timestamp < $cutoff AND Level IN ('Warning', 'Error', 'Critical');";
             warningAge.Parameters.AddWithValue("$cutoff", DateTime.UtcNow.AddHours(-windows.WarningRetentionHours));
             removed += warningAge.ExecuteNonQuery();
-        }
-
-        if (windows.MaxRows > 0)
-        {
-            using var byCount = connection.CreateCommand();
-            byCount.CommandText = """
-                DELETE FROM AppLogEntries
-                WHERE Id <= COALESCE((SELECT MAX(Id) FROM AppLogEntries), 0) - $maxRows;
-                """;
-            byCount.Parameters.AddWithValue("$maxRows", windows.MaxRows);
-            removed += byCount.ExecuteNonQuery();
         }
 
         return removed;

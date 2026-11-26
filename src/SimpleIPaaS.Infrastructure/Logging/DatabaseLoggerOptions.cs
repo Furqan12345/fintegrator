@@ -16,14 +16,13 @@ public sealed class DatabaseLoggerOptions
     // "Logging:Database:MinimumLevel" (default Information).
     public LogLevel MinimumLevel { get; set; } = LogLevel.Information;
 
-    // Retention: rows older than this are pruned. <= 0 disables age-based pruning.
+    // Retention, used until the storage settings are loaded (Settings → Storage wins after that): rows older than
+    // this are pruned. <= 0 disables age-based pruning. Logs are only ever removed by age; there is no row cap (the
+    // log volume alert in Settings → Storage warns instead).
     public int RetentionHours { get; set; } = 72;
 
     // Warning and error events remain searchable longer than detailed informational events.
     public int WarningRetentionHours { get; set; } = 336;
-
-    // Hard row cap; the oldest rows above the cap are pruned. <= 0 disables the cap.
-    public int MaxRows { get; set; } = 1_000_000;
 
     // Flush every FlushIntervalSeconds, or immediately once BatchSize entries are queued.
     public int BatchSize { get; set; } = 200;

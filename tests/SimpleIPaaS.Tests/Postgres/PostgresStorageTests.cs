@@ -91,6 +91,19 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
             Assert.Contains(PostgresPartitions.PartitionName(table.Name, today.AddDays(PostgresPartitions.DaysAhead)), partitions);
         }
 
+        // The log table is split by level, each part by day.
+        Assert.True(await PostgresPartitions.IsPartitionedAsync(connection, PostgresLayout.AppLogEntries));
+        Assert.Equal(
+            new[] { PostgresLayout.AppLogDetail, PostgresLayout.AppLogWarnings }.OrderBy(name => name),
+            (await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogEntries)).OrderBy(name => name));
+        foreach (var part in new[] { PostgresLayout.AppLogWarnings, PostgresLayout.AppLogDetail })
+        {
+            var today = PostgresPartitions.UtcDay(DateTime.UtcNow);
+            var partitions = await PostgresPartitions.ListAsync(connection, null, part);
+            Assert.Contains(PostgresPartitions.PartitionName(part, today), partitions);
+            Assert.Contains(PostgresPartitions.PartitionName(part, today.AddDays(PostgresPartitions.DaysAhead)), partitions);
+        }
+
         var stepColumns = await ColumnsAsync(connection, "StepExecutions");
         Assert.DoesNotContain("ReceivedInput", stepColumns);
         Assert.DoesNotContain("ResponsePayload", stepColumns);
@@ -284,9 +297,16 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
         var page = await repository.GetPageAsync(new LogQuery { Search = marker.ToUpperInvariant() }, 1, 500);
         Assert.Equal(300, page.Total);
 
-        // Retention: nothing here is old enough to go; the row cap trims to the newest rows.
-        store.Prune(new LogRetentionWindows(72, 168, 100));
-        Assert.True(await context.AppLogEntries.CountAsync() <= 100);
+        // Warnings and errors land in their own partitions.
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        await using (var warnings = new NpgsqlCommand($"SELECT count(*) FROM \"{PostgresLayout.AppLogWarnings}\" WHERE \"Message\" LIKE '{marker}%';", connection))
+        {
+            Assert.Equal(30L, await warnings.ExecuteScalarAsync());
+        }
+
+        // Retention removes by age only: nothing here is old enough, so however many lines there are, all stay.
+        store.Prune(new LogRetentionWindows(72, 168));
+        Assert.Equal(300, await context.AppLogEntries.CountAsync(entry => entry.Message.StartsWith(marker)));
     }
 
     [PostgresFact]
@@ -304,59 +324,119 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
             .Select(item => new AppLogEntry { Timestamp = item.Item1, Level = "Information", Source = "Engine", Category = "Tests", Message = $"{marker} {item.Item2}" })
             .ToList());
 
-        store.Prune(new LogRetentionWindows(72, 72, 0));
+        store.Prune(new LogRetentionWindows(72, 72));
 
         await using var context = _db.NewContext();
         Assert.Equal(0, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} old"));
         Assert.Equal(1, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} boundary"));
         Assert.Equal(1, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} recent"));
         await using var connection = await _db.DataSource!.OpenConnectionAsync();
-        var partitions = await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogEntries);
-        Assert.DoesNotContain(PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, PostgresPartitions.UtcDay(old)), partitions);
-        Assert.Contains(PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, PostgresPartitions.UtcDay(boundaryAt)), partitions);
+        var partitions = await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogDetail);
+        Assert.DoesNotContain(PostgresPartitions.PartitionName(PostgresLayout.AppLogDetail, PostgresPartitions.UtcDay(old)), partitions);
+        Assert.Contains(PostgresPartitions.PartitionName(PostgresLayout.AppLogDetail, PostgresPartitions.UtcDay(boundaryAt)), partitions);
     }
 
     [PostgresFact]
-    public async Task Log_row_cap_drops_the_oldest_whole_days_and_deletes_rows_only_when_today_alone_is_over_it()
+    public async Task Log_warnings_and_errors_keep_their_own_window_and_nothing_is_removed_by_count()
     {
         var store = new PostgresAppLogBatchStore(() => _db.DataSource!);
-        var marker = "Cap" + Guid.NewGuid().ToString("N")[..8];
+        var marker = "Win" + Guid.NewGuid().ToString("N")[..8];
         var now = DateTime.UtcNow;
-        AppLogEntry Entry(DateTime at, string day) =>
-            new() { Timestamp = at, Level = "Information", Source = "Engine", Category = "Tests", Message = $"{marker} {day}" };
-        foreach (var daysAgo in new[] { 3, 2, 1 })
+        AppLogEntry Entry(DateTime at, string level, string label) =>
+            new() { Timestamp = at, Level = level, Source = "Engine", Category = "Tests", Message = $"{marker} {label}" };
+        store.Write(new[]
         {
-            store.Write(Enumerable.Range(0, 100).Select(_ => Entry(now.AddDays(-daysAgo), $"d{daysAgo}")).ToList());
-        }
+            Entry(now.AddDays(-5), "Information", "info-5d"),
+            Entry(now.AddDays(-5), "Warning", "warning-5d"),
+            Entry(now.AddDays(-5), "Error", "error-5d"),
+            Entry(now.AddDays(-20), "Error", "error-20d"),
+        }.Concat(Enumerable.Range(0, 200).Select(i => Entry(now, "Information", "today"))).ToList());
 
-        store.Write(Enumerable.Range(0, 50).Select(_ => Entry(now, "d0")).ToList());
-
-        await using var connection = await _db.DataSource!.OpenConnectionAsync();
-        await using (var analyze = new NpgsqlCommand("ANALYZE \"AppLogEntries\";", connection))
-        {
-            await analyze.ExecuteNonQueryAsync();
-        }
+        // Other levels 3 days, warnings and errors 14 days.
+        store.Prune(new LogRetentionWindows(72, 14 * 24));
 
         await using var context = _db.NewContext();
-        var today = PostgresPartitions.UtcDay(now);
-        var todayStart = today.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var todayRows = await context.AppLogEntries.CountAsync(entry => entry.Timestamp >= todayStart);
+        Assert.Equal(0, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} info-5d"));
+        Assert.Equal(1, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} warning-5d"));
+        Assert.Equal(1, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} error-5d"));
+        Assert.Equal(0, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} error-20d"));
+        Assert.Equal(200, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} today"));
 
-        // Room for today and yesterday, not for the day before: that day and every older one are dropped whole.
-        store.Prune(new LogRetentionWindows(0, 0, todayRows + 150));
+        await using var connection = await _db.DataSource!.OpenConnectionAsync();
+        var fiveDaysAgo = PostgresPartitions.UtcDay(now.AddDays(-5));
+        Assert.DoesNotContain(PostgresPartitions.PartitionName(PostgresLayout.AppLogDetail, fiveDaysAgo),
+            await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogDetail));
+        Assert.Contains(PostgresPartitions.PartitionName(PostgresLayout.AppLogWarnings, fiveDaysAgo),
+            await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogWarnings));
 
-        Assert.Equal(100, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} d1"));
-        Assert.Equal(todayRows, await context.AppLogEntries.CountAsync(entry => entry.Timestamp >= todayStart));
-        var partitions = await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogEntries);
-        foreach (var daysAgo in new[] { 3, 2 })
+        // The probe behind the log volume alert sees everything that is stored.
+        var volume = await new RelationalLogVolumeProbe(context).MeasureAsync(includeBreakdown: true);
+        Assert.True(volume.StoredLines >= 202);
+        Assert.True(volume.StoredBytes > 0);
+        Assert.Contains(volume.TopCategories, source => source.Name == "Tests");
+    }
+
+    [PostgresFact]
+    public async Task A_log_table_partitioned_only_by_day_is_split_by_level_on_start_up_with_its_rows()
+    {
+        var store = new PostgresAppLogBatchStore(() => _db.DataSource!);
+        var marker = "Legacy" + Guid.NewGuid().ToString("N")[..8];
+        var now = DateTime.UtcNow;
+        store.Write(new[] { (now.AddDays(-2), "Information"), (now.AddDays(-2), "Error"), (now, "Warning"), (now, "Debug") }
+            .Select(item => new AppLogEntry { Timestamp = item.Item1, Level = item.Item2, Source = "Engine", Category = "Tests", Message = $"{marker} {item.Item2}" })
+            .ToList());
+
+        // Rebuild the layout from before the split: AppLogEntries range-partitioned by day, Id from a sequence.
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
         {
-            Assert.DoesNotContain(PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, today.AddDays(-daysAgo)), partitions);
+            var from = PostgresPartitions.UtcDay(now.AddDays(-30));
+            var to = PostgresPartitions.UtcDay(now.AddDays(PostgresPartitions.DaysAhead));
+            var sql = new System.Text.StringBuilder();
+            sql.Append("CREATE TABLE \"AppLogEntries_legacy\" (LIKE \"AppLogEntries\") PARTITION BY RANGE (\"Timestamp\");");
+            for (var day = from; day <= to; day = day.AddDays(1))
+            {
+                sql.Append($"CREATE TABLE \"{PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, day)}\" PARTITION OF \"AppLogEntries_legacy\" ")
+                   .Append($"FOR VALUES FROM ('{day:yyyy-MM-dd} 00:00:00+00') TO ('{day.AddDays(1):yyyy-MM-dd} 00:00:00+00');");
+            }
+
+            sql.Append("INSERT INTO \"AppLogEntries_legacy\" SELECT * FROM \"AppLogEntries\" WHERE \"Timestamp\" >= '" + from.ToString("yyyy-MM-dd") + "';");
+            sql.Append("DROP TABLE \"AppLogEntries\";");
+            sql.Append("ALTER TABLE \"AppLogEntries_legacy\" RENAME TO \"AppLogEntries\";");
+            sql.Append("CREATE SEQUENCE \"AppLogEntries_Id_seq\" OWNED BY \"AppLogEntries\".\"Id\";");
+            sql.Append("ALTER TABLE \"AppLogEntries\" ALTER COLUMN \"Id\" SET DEFAULT nextval('\"AppLogEntries_Id_seq\"');");
+            sql.Append("SELECT setval('\"AppLogEntries_Id_seq\"', GREATEST((SELECT max(\"Id\") FROM \"AppLogEntries\"), 0) + 1, false);");
+            sql.Append("ALTER TABLE \"AppLogEntries\" ADD CONSTRAINT \"PK_AppLogEntries\" PRIMARY KEY (\"Id\", \"Timestamp\");");
+            sql.Append("CREATE INDEX \"IX_AppLogEntries_Timestamp\" ON \"AppLogEntries\" (\"Timestamp\");");
+            await using var legacy = new NpgsqlCommand(sql.ToString(), connection);
+            await legacy.ExecuteNonQueryAsync();
+            Assert.Contains(PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, PostgresPartitions.UtcDay(now)),
+                await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogEntries));
         }
 
-        // Today alone over the cap (a runaway log loop): yesterday is dropped and today is trimmed row by row.
-        store.Prune(new LogRetentionWindows(0, 0, 10));
-        Assert.Equal(0, await context.AppLogEntries.CountAsync(entry => entry.Message == $"{marker} d1"));
-        Assert.True(await context.AppLogEntries.CountAsync() <= 10);
+        long maxId;
+        await using (var context = _db.NewContext())
+        {
+            maxId = await context.AppLogEntries.MaxAsync(entry => entry.Id);
+            DatabaseSchemaInitializer.EnsureUpToDate(context, NullLogger.Instance);
+        }
+
+        await using (var connection = await _db.DataSource!.OpenConnectionAsync())
+        {
+            Assert.Equal(
+                new[] { PostgresLayout.AppLogDetail, PostgresLayout.AppLogWarnings }.OrderBy(name => name),
+                (await PostgresPartitions.ListAsync(connection, null, PostgresLayout.AppLogEntries)).OrderBy(name => name));
+            await using var warnings = new NpgsqlCommand($"SELECT count(*) FROM \"{PostgresLayout.AppLogWarnings}\" WHERE \"Message\" LIKE '{marker}%';", connection);
+            Assert.Equal(2L, await warnings.ExecuteScalarAsync());
+            await using var detail = new NpgsqlCommand($"SELECT count(*) FROM \"{PostgresLayout.AppLogDetail}\" WHERE \"Message\" LIKE '{marker}%';", connection);
+            Assert.Equal(2L, await detail.ExecuteScalarAsync());
+        }
+
+        // New lines continue the id sequence (the live tail reads by id).
+        store.Write(new[] { new AppLogEntry { Level = "Information", Source = "Engine", Category = "Tests", Message = $"{marker} after" } });
+        await using (var context = _db.NewContext())
+        {
+            Assert.True(await context.AppLogEntries.Where(entry => entry.Message == $"{marker} after").Select(entry => entry.Id).SingleAsync() > maxId);
+        }
     }
 
     [PostgresFact]
@@ -510,7 +590,7 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
         const long dropLock = 0x46_55_53_45_44_52_4F_50; // "FUSEDROP", PostgresPartitions.DropLockKey
         var lastDay = PostgresPartitions.UtcDay(DateTime.UtcNow).AddDays(PostgresPartitions.DaysAhead);
         var lastPacketDay = PostgresPartitions.PartitionName(PostgresLayout.StepPacketLogs, lastDay);
-        var lastLogDay = PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, lastDay);
+        var lastLogDay = PostgresPartitions.PartitionName(PostgresLayout.AppLogDetail, lastDay);
         await using (var connection = await _db.DataSource!.OpenConnectionAsync())
         await using (var drop = new NpgsqlCommand($"DROP TABLE \"{lastPacketDay}\"; DROP TABLE \"{lastLogDay}\";", connection))
         {
@@ -532,7 +612,7 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
             Assert.Equal(new[] { PostgresLayout.StepPacketLogs }, skipped);
             Assert.True(started.Elapsed < TimeSpan.FromSeconds(10), $"gave up after {started.Elapsed}");
             // The other tables were not held up by the busy one.
-            Assert.Contains(lastLogDay, await PostgresPartitions.ListAsync(maintenance, null, PostgresLayout.AppLogEntries));
+            Assert.Contains(lastLogDay, await PostgresPartitions.ListAsync(maintenance, null, PostgresLayout.AppLogDetail));
         }
 
         await readTransaction.CommitAsync();
@@ -556,12 +636,12 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
                 await hold.ExecuteNonQueryAsync();
             }
 
-            Assert.Equal((0, 0L), await PostgresPartitions.DropOlderThanAsync(_db.DataSource!, PostgresLayout.AppLogEntries, DateTime.UtcNow.AddDays(-30)));
+            Assert.Equal((0, 0L), await PostgresPartitions.DropOlderThanAsync(_db.DataSource!, PostgresLayout.AppLogDetail, DateTime.UtcNow.AddDays(-30)));
             await using var release = new NpgsqlCommand($"SELECT pg_advisory_unlock({dropLock});", otherHost);
             await release.ExecuteNonQueryAsync();
         }
 
-        var dropped = await PostgresPartitions.DropOlderThanAsync(_db.DataSource!, PostgresLayout.AppLogEntries, DateTime.UtcNow.AddDays(-30));
+        var dropped = await PostgresPartitions.DropOlderThanAsync(_db.DataSource!, PostgresLayout.AppLogDetail, DateTime.UtcNow.AddDays(-30));
         Assert.True(dropped.Partitions >= 1);
     }
 
@@ -610,7 +690,7 @@ public sealed class PostgresStorageTests : IClassFixture<PostgresDatabaseFixture
 
         // The run window is the run's own day plus one each side; the plan must not touch a day outside it.
         var farDay = PostgresPartitions.PartitionName(PostgresLayout.StepPacketLogs, PostgresPartitions.UtcDay(DateTime.UtcNow.AddDays(5)));
-        var farLogDay = PostgresPartitions.PartitionName(PostgresLayout.AppLogEntries, PostgresPartitions.UtcDay(DateTime.UtcNow.AddDays(5)));
+        var farLogDay = PostgresPartitions.PartitionName(PostgresLayout.AppLogDetail, PostgresPartitions.UtcDay(DateTime.UtcNow.AddDays(5)));
         await using var connection = await _db.DataSource!.OpenConnectionAsync();
         foreach (var (sql, notTouched) in new[]
         {

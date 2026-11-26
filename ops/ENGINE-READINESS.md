@@ -64,7 +64,7 @@ Webhook bodies are limited to 1,000,000 bytes (`WebhooksController`).
 | A finished run did not wake the claim loop | Runs of one flow (a Fan Out's children) waited up to a poll interval each: 1,000 children were not done after 15 minutes | The poller wakes when a run finishes: 86 s |
 | Fan Out copied the whole flow state into every child | 1,000 children of a 0.9 MB state: ~834 MB written | One shared snapshot per Fan Out: 1.7 MB |
 | A failed Fan Out child's dead letter copied the whole flow state | 1,000 failing children (upstream down) would write ~834 MB again | The entry stores its difference from the snapshot (edits too); the parent run is kept while its children exist |
-| PostgreSQL log retention deleted rows | The age cutoff moves every 5 minutes, so the oldest day was emptied row by row before it could be dropped; the 1,000,000-row cap deleted by id | Drop-only: whole days for the window and for the cap; rows are deleted only when today alone is over the cap |
+| PostgreSQL log retention deleted rows | The age cutoff moves every 5 minutes, so the oldest day was emptied row by row before it could be dropped; the 1,000,000-row cap deleted by id | Drop-only: whole days for the window. Later the cap was removed altogether: warnings and errors have their own window and partitions, and a log volume alert emails instead of deleting |
 
 ## Settings
 

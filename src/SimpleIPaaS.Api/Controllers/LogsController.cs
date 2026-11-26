@@ -106,6 +106,58 @@ public sealed class LogsController : ControllerBase
         }
     }
 
+    // The log volume alert for the app banner (admins). The measurement is cached for two minutes: every open page
+    // polls it, and counting the log table each time would add load for nothing.
+    [HttpGet("volume")]
+    [Authorize(Policy = "Admin")]
+    public async Task<IActionResult> Volume([FromServices] IStorageSettingsProvider settings, [FromServices] ILogVolumeProbe probe, CancellationToken cancellationToken = default)
+    {
+        var snapshot = await settings.GetAsync(cancellationToken);
+        var logs = snapshot.For(StorageDatasets.Logs);
+        var alertRows = StorageCatalog.LogAlertRows(logs);
+        var result = new LogVolumeDto
+        {
+            Level = "Off",
+            AlertRows = alertRows,
+            RetentionDays = logs.RetentionDays,
+            WarningRetentionDays = StorageCatalog.LogWarningRetentionDays(logs),
+            CheckedAtUtc = DateTime.UtcNow
+        };
+        if (alertRows <= 0 || snapshot.UsesElasticsearch(StorageDatasets.Logs))
+        {
+            return Ok(result);
+        }
+
+        var volume = await MeasureCachedAsync(probe, includeBreakdown: false, cancellationToken);
+        var level = Application.Services.LogVolumeAlertService.LevelFor(volume.StoredLines, alertRows);
+        if (level > Application.Services.LogVolumeLevel.Normal)
+        {
+            volume = await MeasureCachedAsync(probe, includeBreakdown: true, cancellationToken);
+            level = Application.Services.LogVolumeAlertService.LevelFor(volume.StoredLines, alertRows);
+        }
+
+        result.Level = level.ToString();
+        result.StoredLines = volume.StoredLines;
+        result.StoredBytes = volume.StoredBytes;
+        result.LastDayLines = volume.LastDayLines;
+        result.TopCategories = volume.TopCategories.Select(source => new LogVolumeSourceDto { Name = source.Name, Lines = source.Lines }).ToList();
+        result.TopFlows = volume.TopFlows.Select(source => new LogVolumeSourceDto { Name = source.Name, Lines = source.Lines }).ToList();
+        return Ok(result);
+    }
+
+    private async Task<LogVolume> MeasureCachedAsync(ILogVolumeProbe probe, bool includeBreakdown, CancellationToken cancellationToken)
+    {
+        var key = includeBreakdown ? "log-volume:detailed" : "log-volume";
+        if (_cache?.TryGetValue(key, out LogVolume? cached) == true && cached != null)
+        {
+            return cached;
+        }
+
+        var measured = await probe.MeasureAsync(includeBreakdown, cancellationToken);
+        _cache?.Set(key, measured, TimeSpan.FromMinutes(2));
+        return measured;
+    }
+
     [HttpGet("sources")]
     public async Task<IActionResult> GetSources(CancellationToken cancellationToken = default) =>
         await ExecuteAsync(async () => Ok(await _repository.GetSourcesAsync(cancellationToken)));

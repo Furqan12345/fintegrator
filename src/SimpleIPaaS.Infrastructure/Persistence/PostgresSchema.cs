@@ -14,6 +14,7 @@ namespace SimpleIPaaS.Infrastructure.Persistence;
 //  1. EnsureCreated builds every table from the PostgreSQL model (PostgresLayout).
 //  2. The append-only tables are converted, once, into tables partitioned by day: EnsureCreated cannot create
 //     a partitioned table, so the plain table it made is swapped for a partitioned one (rows copied over).
+//     AppLogEntries is split by level first, then by day (ConvertAppLogs).
 //  3. The hot-path indexes shared with the other providers, and partitions from yesterday to a week ahead.
 public static class PostgresSchema
 {
@@ -36,6 +37,8 @@ public static class PostgresSchema
                 {
                     ConvertToPartitioned(connection, table, logger);
                 }
+
+                ConvertAppLogs(connection, logger);
 
                 EnsureIndexes(connection);
                 PostgresPartitions.EnsureAheadAsync(connection).GetAwaiter().GetResult();
@@ -65,7 +68,6 @@ public static class PostgresSchema
         var name = table.Name;
         var old = name + "__unpartitioned";
         var key = table.PartitionColumn;
-        var identity = name == PostgresLayout.AppLogEntries;
 
         using (var transaction = connection.BeginTransaction())
         {
@@ -95,25 +97,97 @@ public static class PostgresSchema
             var copied = ExecuteCount(connection, $"INSERT INTO \"{name}\" SELECT * FROM \"{old}\";", transaction);
             Execute(connection, $"DROP TABLE \"{old}\";", transaction);
 
-            // LIKE does not copy the identity of AppLogEntries.Id; a sequence takes its place (created after the
-            // old table is gone, because the old identity sequence used the same name).
-            if (identity)
-            {
-                Execute(connection, $"CREATE SEQUENCE IF NOT EXISTS \"{name}_Id_seq\" OWNED BY \"{name}\".\"Id\";", transaction);
-                Execute(connection, $"ALTER TABLE \"{name}\" ALTER COLUMN \"Id\" SET DEFAULT nextval('\"{name}_Id_seq\"');", transaction);
-                Execute(connection, $"SELECT setval('\"{name}_Id_seq\"', GREATEST((SELECT max(\"Id\") FROM \"{name}\"), 0) + 1, false);", transaction);
-            }
-
-            var primaryKey = string.Join(", ", table.PrimaryKey.Select(column => $"\"{column}\""));
-            Execute(connection, $"ALTER TABLE \"{name}\" ADD CONSTRAINT \"PK_{name}\" PRIMARY KEY ({primaryKey});", transaction);
-            foreach (var columns in table.Indexes)
-            {
-                var indexName = "IX_" + name + "_" + string.Join("_", columns.Replace("\"", string.Empty).Split(',').Select(column => column.Trim()));
-                Execute(connection, $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{name}\" ({columns});", transaction);
-            }
+            AddKeyAndIndexes(connection, table, transaction);
 
             transaction.Commit();
             logger.LogInformation("PostgreSQL: {Table} is now partitioned by day on {Column} ({Rows} existing rows moved).", name, key, copied);
+        }
+    }
+
+    // AppLogEntries is list-partitioned on Level into AppLogWarnings (warnings and errors) and AppLogDetail (the
+    // default partition, every other level), each range-partitioned by day, so the two log windows drop whole days
+    // independently. EnsureCreated makes a plain table, and a database from before the split has one partitioned by
+    // day only; either is swapped for the split layout once, its rows moved over (the log table was kept under a
+    // 1,000,000-row cap before the split, so the move is short). Reads and writes keep using AppLogEntries.
+    private static void ConvertAppLogs(NpgsqlConnection connection, ILogger logger)
+    {
+        var table = PostgresLayout.AppLogs;
+        var name = table.Name;
+        var key = table.PartitionColumn;
+        if (PartitionStrategy(connection, name) == "l")
+        {
+            return;
+        }
+
+        var old = name + "__old";
+        using var transaction = connection.BeginTransaction();
+        Execute(connection, $"ALTER TABLE \"{name}\" RENAME TO \"{old}\";", transaction);
+        Execute(connection, $"CREATE TABLE \"{name}\" (LIKE \"{old}\" INCLUDING DEFAULTS) PARTITION BY LIST (\"Level\");", transaction);
+
+        // LIKE copies no identity, and the old default points at a sequence that belongs to the old table and goes
+        // with it. A new sequence is set up once the old table is gone (it reuses the name).
+        Execute(connection, $"ALTER TABLE \"{name}\" ALTER COLUMN \"Id\" DROP DEFAULT;", transaction);
+        var levels = string.Join(", ", PostgresLayout.WarningLevels.Select(level => $"'{level}'"));
+        Execute(connection,
+            $"CREATE TABLE \"{PostgresLayout.AppLogWarnings}\" PARTITION OF \"{name}\" FOR VALUES IN ({levels}) PARTITION BY RANGE (\"{key}\");",
+            transaction);
+        Execute(connection,
+            $"CREATE TABLE \"{PostgresLayout.AppLogDetail}\" PARTITION OF \"{name}\" DEFAULT PARTITION BY RANGE (\"{key}\");",
+            transaction);
+
+        using (var range = new NpgsqlCommand($"SELECT min(\"{key}\"), max(\"{key}\") FROM \"{old}\";", connection, transaction))
+        using (var reader = range.ExecuteReader())
+        {
+            reader.Read();
+            if (!reader.IsDBNull(0))
+            {
+                var from = PostgresPartitions.UtcDay(reader.GetDateTime(0));
+                var to = PostgresPartitions.UtcDay(reader.GetDateTime(1));
+                reader.Close();
+                foreach (var part in new[] { PostgresLayout.AppLogWarnings, PostgresLayout.AppLogDetail })
+                {
+                    for (var day = from; day <= to; day = day.AddDays(1))
+                    {
+                        Execute(connection,
+                            $"CREATE TABLE IF NOT EXISTS \"{PostgresPartitions.PartitionName(part, day)}\" PARTITION OF \"{part}\" " +
+                            $"FOR VALUES FROM ('{day:yyyy-MM-dd} 00:00:00+00') TO ('{day.AddDays(1):yyyy-MM-dd} 00:00:00+00');",
+                            transaction);
+                    }
+                }
+            }
+        }
+
+        var copied = ExecuteCount(connection, $"INSERT INTO \"{name}\" SELECT * FROM \"{old}\";", transaction);
+        Execute(connection, $"DROP TABLE \"{old}\";", transaction);
+
+        Execute(connection, $"CREATE SEQUENCE IF NOT EXISTS \"{name}_Id_seq\" OWNED BY \"{name}\".\"Id\";", transaction);
+        Execute(connection, $"ALTER TABLE \"{name}\" ALTER COLUMN \"Id\" SET DEFAULT nextval('\"{name}_Id_seq\"');", transaction);
+        Execute(connection, $"SELECT setval('\"{name}_Id_seq\"', GREATEST((SELECT max(\"Id\") FROM \"{name}\"), 0) + 1, false);", transaction);
+        AddKeyAndIndexes(connection, table, transaction);
+
+        transaction.Commit();
+        logger.LogInformation(
+            "PostgreSQL: {Table} is now split into warnings and errors ({Warnings}) and other levels ({Detail}), each partitioned by day ({Rows} existing rows moved).",
+            name, PostgresLayout.AppLogWarnings, PostgresLayout.AppLogDetail, copied);
+    }
+
+    // "r" (range), "l" (list), or null when the table is not partitioned.
+    private static string? PartitionStrategy(NpgsqlConnection connection, string table)
+    {
+        using var command = new NpgsqlCommand("SELECT partstrat::text FROM pg_partitioned_table WHERE partrelid = to_regclass(@table);", connection);
+        command.Parameters.AddWithValue("table", $"\"{table}\"");
+        return command.ExecuteScalar() as string;
+    }
+
+    private static void AddKeyAndIndexes(NpgsqlConnection connection, PostgresLayout.PartitionedTable table, NpgsqlTransaction transaction)
+    {
+        var name = table.Name;
+        var primaryKey = string.Join(", ", table.PrimaryKey.Select(column => $"\"{column}\""));
+        Execute(connection, $"ALTER TABLE \"{name}\" ADD CONSTRAINT \"PK_{name}\" PRIMARY KEY ({primaryKey});", transaction);
+        foreach (var columns in table.Indexes)
+        {
+            var indexName = "IX_" + name + "_" + string.Join("_", columns.Replace("\"", string.Empty).Split(',').Select(column => column.Trim()));
+            Execute(connection, $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{name}\" ({columns});", transaction);
         }
     }
 

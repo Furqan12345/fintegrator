@@ -14,7 +14,8 @@ namespace SimpleIPaaS.Infrastructure.Persistence;
 // flow state. PostgreSQL keeps values over ~2 KB in out-of-line TOAST storage on top of that.
 //
 // The append-only tables are range-partitioned by day, so retention drops whole days (detach + drop) instead
-// of deleting rows. FlowExecutions and StepExecutions are deliberately not partitioned: PostgreSQL requires the
+// of deleting rows. AppLogEntries is split by level first (warnings and errors, everything else), each part by day,
+// so the two parts can have different windows; reads still go through AppLogEntries. FlowExecutions and StepExecutions are deliberately not partitioned: PostgreSQL requires the
 // partition key in every unique key, and dead letters, steps and child runs reference a run by its id alone.
 public static class PostgresLayout
 {
@@ -22,6 +23,9 @@ public static class PostgresLayout
     public const string StepPacketPayloads = "StepPacketPayloads";
     public const string StepPacketLogs = "StepPacketLogs";
     public const string AppLogEntries = "AppLogEntries";
+    public const string AppLogWarnings = "AppLogEntries_warnings";
+    public const string AppLogDetail = "AppLogEntries_detail";
+    public static readonly string[] WarningLevels = { "Warning", "Error", "Critical" };
     public const string FlowExecutions = "FlowExecutions";
     public const string DeadLetterEntries = "DeadLetterEntries";
     public const string FlowExecutionPayloads = "FlowExecutionPayloads";
@@ -38,16 +42,23 @@ public static class PostgresLayout
 
     public sealed record PartitionedTable(string Name, string PartitionColumn, string[] PrimaryKey, string[] Indexes);
 
-    // Every partitioned table, its partition key and what the conversion recreates on the partitioned parent.
+    // The tables partitioned by day directly, their partition key and what the conversion recreates on the parent.
     public static readonly PartitionedTable[] PartitionedTables =
     {
         new(StepPacketLogs, "StartedAt", new[] { "Id", "StartedAt" },
             new[] { "\"StepExecutionId\", \"Sequence\"", "\"StartedAt\"" }),
         new(StepPacketPayloads, "StartedAt", new[] { "PacketId", "StartedAt" }, Array.Empty<string>()),
         new(StepExecutionPayloads, "CreatedAt", new[] { "StepExecutionId", "CreatedAt" }, Array.Empty<string>()),
-        new(AppLogEntries, "Timestamp", new[] { "Id", "Timestamp" },
-            new[] { "\"Timestamp\"", "\"FlowExecutionId\"", "\"IntegrationId\"", "\"FlowId\"" }),
     };
+
+    // AppLogEntries: list-partitioned on Level into AppLogWarnings (WarningLevels) and AppLogDetail (the default
+    // partition, every other level), each range-partitioned by day on Timestamp.
+    public static readonly PartitionedTable AppLogs = new(AppLogEntries, "Timestamp", new[] { "Id", "Timestamp", "Level" },
+        new[] { "\"Timestamp\"", "\"FlowExecutionId\"", "\"IntegrationId\"", "\"FlowId\"" });
+
+    // Every table whose children are day partitions (what EnsureRange and the drops work on).
+    public static readonly string[] DayPartitionedTables =
+        PartitionedTables.Select(table => table.Name).Concat(new[] { AppLogWarnings, AppLogDetail }).ToArray();
 
     public static bool IsPostgres(this DbContext context) => context.Database.IsNpgsql();
 

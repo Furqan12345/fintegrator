@@ -210,7 +210,9 @@ public sealed class StorageSettingsController : ControllerBase
                 SqlStore = definition.SqlStore,
                 DefaultGranularity = definition.DefaultGranularity.ToString(),
                 DefaultRetentionDays = definition.DefaultRetentionDays,
-                DefaultUseIlm = definition.DefaultUseIlm
+                DefaultUseIlm = definition.DefaultUseIlm,
+                DefaultWarningRetentionDays = StorageCatalog.IsLogs(definition.Dataset) ? StorageCatalog.DefaultLogWarningRetentionDays : null,
+                DefaultAlertRows = StorageCatalog.IsLogs(definition.Dataset) ? StorageCatalog.DefaultLogAlertRows : null
             })
             .ToList();
 
@@ -224,7 +226,11 @@ public sealed class StorageSettingsController : ControllerBase
                     UseElasticsearch = settings.UseElasticsearch,
                     Granularity = settings.Granularity.ToString(),
                     RetentionDays = settings.RetentionDays,
-                    UseIlm = settings.UseIlm
+                    UseIlm = settings.UseIlm,
+                    // The effective values, so the page shows what is applied (a row from before the settings
+                    // existed has nulls).
+                    WarningRetentionDays = StorageCatalog.IsLogs(dataset) ? StorageCatalog.LogWarningRetentionDays(settings) : null,
+                    AlertRows = StorageCatalog.IsLogs(dataset) ? StorageCatalog.LogAlertRows(settings) : null
                 };
             })
             .ToList();
@@ -251,7 +257,9 @@ public sealed class StorageSettingsController : ControllerBase
         UseElasticsearch = dto.UseElasticsearch,
         Granularity = Enum.TryParse<StorageGranularity>(dto.Granularity, ignoreCase: true, out var granularity) ? granularity : StorageGranularity.Daily,
         RetentionDays = dto.RetentionDays,
-        UseIlm = dto.UseIlm
+        UseIlm = dto.UseIlm,
+        WarningRetentionDays = dto.WarningRetentionDays,
+        AlertRows = dto.AlertRows
     };
 
     private static StorageApplyOutcomeDto ToDto(StorageApplyOutcome outcome) => new()

@@ -16,7 +16,7 @@ public interface IAppLogBatchStore
     int Prune(LogRetentionWindows windows);
 }
 
-// The original SQLite sink: one transaction of prepared INSERTs per batch, DELETE-based retention.
+// The original SQLite sink: one transaction of prepared INSERTs per batch, DELETE-based retention by age.
 public sealed class SqliteAppLogBatchStore : IAppLogBatchStore
 {
     private readonly string _connectionString;
@@ -55,8 +55,8 @@ public sealed class SqliteAppLogBatchStore : IAppLogBatchStore
     }
 }
 
-// PostgreSQL: one binary COPY per batch into the day-partitioned AppLogEntries. Retention is drop-only: whole days
-// that fell out of the window, then the oldest whole days over the row cap (see Prune).
+// PostgreSQL: one binary COPY per batch into AppLogEntries (split by level, then by day). Retention is drop-only:
+// whole days that fell out of their window (see Prune).
 public sealed class PostgresAppLogBatchStore : IAppLogBatchStore, IDisposable
 {
     private const string Columns =
@@ -117,30 +117,19 @@ public sealed class PostgresAppLogBatchStore : IAppLogBatchStore, IDisposable
 
         // Drop-only: logs leave in whole days, never row by row. A row-level age delete would empty the oldest day
         // slice by slice (the cutoff moves every pass), so every row would be deleted singly and the day dropped
-        // empty. A window therefore keeps between N and N+1 days. Both levels share one window (the longer; the
-        // settings page sets them equal); 0 for either keeps everything by age.
-        if (windows.DetailRetentionHours > 0 && windows.WarningRetentionHours > 0)
+        // empty. A window therefore keeps between N and N+1 days. Warnings and errors live in their own partitions
+        // (AppLogWarnings) with their own window; every other level is in AppLogDetail. 0 keeps that part forever.
+        // Nothing is removed because of how many logs there are: the log volume alert emails instead.
+        if (windows.DetailRetentionHours > 0)
         {
-            var longest = Math.Max(windows.DetailRetentionHours, windows.WarningRetentionHours);
-            removed += (int)PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.AppLogEntries, DateTime.UtcNow.AddHours(-longest))
+            removed += (int)PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.AppLogDetail, DateTime.UtcNow.AddHours(-windows.DetailRetentionHours))
                 .GetAwaiter().GetResult().Rows;
         }
 
-        // The row cap also drops whole days, oldest first. Only when the newest day alone is over it (a runaway log
-        // loop) does it delete rows, and then only in that day: it is a safety valve against a full disk.
-        if (windows.MaxRows > 0)
+        if (windows.WarningRetentionHours > 0)
         {
-            var cap = PostgresPartitions.DropOldestOverCapAsync(dataSource, PostgresLayout.AppLogEntries, windows.MaxRows)
-                .GetAwaiter().GetResult();
-            removed += (int)cap.Rows;
-            if (cap.KeptRows > windows.MaxRows)
-            {
-                using var connection = dataSource.OpenConnection();
-                using var byCount = new NpgsqlCommand(
-                    "DELETE FROM \"AppLogEntries\" WHERE \"Id\" <= COALESCE((SELECT max(\"Id\") FROM \"AppLogEntries\"), 0) - @maxRows;", connection);
-                byCount.Parameters.AddWithValue("maxRows", (long)windows.MaxRows);
-                removed += byCount.ExecuteNonQuery();
-            }
+            removed += (int)PostgresPartitions.DropOlderThanAsync(dataSource, PostgresLayout.AppLogWarnings, DateTime.UtcNow.AddHours(-windows.WarningRetentionHours))
+                .GetAwaiter().GetResult().Rows;
         }
 
         return removed;

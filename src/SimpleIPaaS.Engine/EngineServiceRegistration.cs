@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using SimpleIPaaS.Application.Interfaces;
@@ -85,6 +85,7 @@ public static class EngineServiceRegistration
         // Failure alerts: one digest per scan, sent through the shared email stack.
         services.AddSingleton<FailureAlertEmailBuilder>();
         services.AddScoped<FailureAlertService>();
+        services.AddScoped<LogVolumeAlertService>();
 
         // FlowRunService persists Queued FlowExecution rows. CronTriggerScheduler resolves it on
         // every tick to enqueue a run; without this registration the scheduler logs an
@@ -103,6 +104,7 @@ public static class EngineServiceRegistration
         services.AddHostedService<Workers.CronTriggerScheduler>();
         services.AddHostedService<Workers.DeadLetterWorker>();
         services.AddHostedService<Workers.FailureAlertWorker>();
+        services.AddHostedService<Workers.LogVolumeAlertWorker>();
         services.AddHostedService<Workers.DbCancellationWatcher>();
 
         return services;

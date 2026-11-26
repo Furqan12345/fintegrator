@@ -30,6 +30,8 @@ public static class DatabaseSchemaInitializer
             RemoveTenancy(sqlConnection, logger);
             EnsureSqlServerAiProviderSettingsTable(sqlConnection);
             EnsureSqlServerAlertSettingsTable(sqlConnection);
+            EnsureSqlServerColumn(sqlConnection, "AlertSettings", "LogVolumeAlertLevel", "int NOT NULL CONSTRAINT DF_AlertSettings_LogVolumeAlertLevel DEFAULT 0");
+            EnsureSqlServerColumn(sqlConnection, "AlertSettings", "LogVolumeAlertSentAt", "datetime2 NULL");
             EnsureSqlServerAiBuildJobsTable(sqlConnection);
             EnsureSqlServerAiChatTables(sqlConnection);
             EnsureSqlServerAiBuildSettingsTable(sqlConnection);
@@ -76,6 +78,8 @@ public static class DatabaseSchemaInitializer
         EnsureIdentityTables(connection);
         EnsureAiProviderSettingsTable(connection);
         EnsureAlertSettingsTable(connection);
+        EnsureColumn(connection, "AlertSettings", "LogVolumeAlertLevel", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "AlertSettings", "LogVolumeAlertSentAt", "TEXT NULL");
         EnsureAiBuildJobsTable(connection);
         EnsureAiChatTables(connection);
         EnsureAiBuildSettingsTable(connection);

@@ -47,7 +47,7 @@ public sealed class ElasticsearchIndexManager
             {
                 await client.PutIlmPolicyAsync(
                     policyName,
-                    ElasticsearchIndexTemplates.BuildIlmPolicy(dataset, datasetSettings.Granularity, datasetSettings.RetentionDays),
+                    ElasticsearchIndexTemplates.BuildIlmPolicy(dataset, datasetSettings.Granularity, StorageCatalog.IndexRetentionDays(datasetSettings)),
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -114,7 +114,7 @@ public sealed class ElasticsearchIndexManager
         CancellationToken cancellationToken = default)
     {
         var datasetSettings = settings.For(dataset);
-        if (datasetSettings.RetentionDays <= 0)
+        if (StorageCatalog.IndexRetentionDays(datasetSettings) <= 0)
         {
             return (0, 0, Array.Empty<string>());
         }
@@ -129,7 +129,7 @@ public sealed class ElasticsearchIndexManager
         foreach (var index in indices)
         {
             var period = StorageIndexNaming.PeriodOf(settings.IndexPrefix, dataset, index.Name);
-            if (period == null || !StorageIndexNaming.IsExpired(period.Value, datasetSettings.RetentionDays, now))
+            if (period == null || !StorageIndexNaming.IsExpired(period.Value, StorageCatalog.IndexRetentionDays(datasetSettings), now))
             {
                 continue;
             }
@@ -153,14 +153,14 @@ public sealed class ElasticsearchIndexManager
     public static IReadOnlyList<string> DescribeExpiredPlan(StorageSettingsSnapshot settings, string dataset, IReadOnlyList<ElasticsearchIndexInfo> indices, DateTime nowUtc)
     {
         var datasetSettings = settings.For(dataset);
-        if (datasetSettings.RetentionDays <= 0)
+        if (StorageCatalog.IndexRetentionDays(datasetSettings) <= 0)
         {
             return Array.Empty<string>();
         }
 
         return indices
             .Select(index => (Index: index, Period: StorageIndexNaming.PeriodOf(settings.IndexPrefix, dataset, index.Name)))
-            .Where(item => item.Period != null && StorageIndexNaming.IsExpired(item.Period.Value, datasetSettings.RetentionDays, nowUtc))
+            .Where(item => item.Period != null && StorageIndexNaming.IsExpired(item.Period.Value, StorageCatalog.IndexRetentionDays(datasetSettings), nowUtc))
             .Select(item => item.Index.Name)
             .ToList();
     }

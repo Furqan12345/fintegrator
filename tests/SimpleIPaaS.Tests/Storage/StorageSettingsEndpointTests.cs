@@ -218,6 +218,39 @@ public sealed class StorageSettingsEndpointTests : IDisposable
         Assert.False(executions.UseIlm);
     }
 
+    [Fact]
+    public async Task UpdateSettings_RejectsWarningsKeptShorterThanTheOtherLogs()
+    {
+        var controller = NewController();
+        var datasets = Dataset("logs", useElasticsearch: false, retentionDays: 7);
+        datasets[0].WarningRetentionDays = 3;
+
+        var result = await controller.UpdateSettings(new StorageSettingsUpdateDto { Url = "http://127.0.0.1:9210", Datasets = datasets }, CancellationToken.None);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
+        Assert.Contains("Warnings and errors cannot be kept for less time", Message(bad.Value));
+    }
+
+    [Fact]
+    public async Task UpdateSettings_StoresBothLogWindowsAndTheAlertThreshold()
+    {
+        var controller = NewController();
+        var datasets = Dataset("logs", useElasticsearch: false, retentionDays: 3);
+        datasets[0].WarningRetentionDays = 30;
+        datasets[0].AlertRows = 250_000;
+
+        var result = await controller.UpdateSettings(new StorageSettingsUpdateDto { Url = "http://127.0.0.1:9210", Datasets = datasets }, CancellationToken.None);
+
+        var payload = Assert.IsType<StorageSaveResultDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+        var logs = payload.Settings.Datasets.First(dataset => dataset.Dataset == StorageDatasets.Logs);
+        Assert.Equal(3, logs.RetentionDays);
+        Assert.Equal(30, logs.WarningRetentionDays);
+        Assert.Equal(250_000, logs.AlertRows);
+        var executions = payload.Settings.Datasets.First(dataset => dataset.Dataset == StorageDatasets.Executions);
+        Assert.Null(executions.WarningRetentionDays);
+        Assert.Null(executions.AlertRows);
+    }
+
     // ---------------- helpers ----------------
 
     private StorageOperations NewOperations(ElasticsearchClientProvider clients, IStorageSettingsProvider settings) =>

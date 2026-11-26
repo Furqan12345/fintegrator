@@ -20,8 +20,8 @@ public static class DatabaseLoggingExtensions
     // Configuration keys (all optional):
     //   Logging:Database:Enabled              bool   (default true)
     //   Logging:Database:MinimumLevel         string (default Information)
-    //   Logging:Database:RetentionHours       int    (default 72)
-    //   Logging:Database:MaxRows              int    (default 100000)
+    //   Logging:Database:RetentionHours       int    (default 72; Settings → Storage wins once loaded)
+    //   Logging:Database:WarningRetentionHours int   (default 336; likewise)
     //   Logging:Database:BatchSize            int    (default 200)
     //   Logging:Database:FlushIntervalSeconds double (default 1)
     //   Logging:Database:QueueCapacity        int    (default 20000)

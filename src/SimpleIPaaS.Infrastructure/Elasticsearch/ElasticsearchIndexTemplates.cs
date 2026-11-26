@@ -45,7 +45,7 @@ public static class ElasticsearchIndexTemplates
                 ["managed_by"] = "fusetor",
                 ["dataset"] = dataset,
                 ["granularity"] = datasetSettings.Granularity.ToString(),
-                ["retention_days"] = datasetSettings.RetentionDays,
+                ["retention_days"] = StorageCatalog.IndexRetentionDays(datasetSettings),
                 ["write_alias"] = writeAlias
             },
             ["template"] = new JsonObject

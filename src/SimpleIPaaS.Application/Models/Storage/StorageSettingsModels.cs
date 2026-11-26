@@ -44,13 +44,23 @@ public sealed class StorageDatasetSettings
     // Elasticsearch only: let an ILM policy delete expired indices instead of the app doing it.
     public bool UseIlm { get; set; } = true;
 
+    // Logs only: days to keep warnings and errors (RetentionDays then covers every other level). 0 keeps them
+    // forever; null (a row saved before this setting existed) means the same as RetentionDays.
+    public int? WarningRetentionDays { get; set; }
+
+    // Logs only: stored log lines at which the log volume alert fires (80% warns, 100% reached). It never deletes
+    // anything. 0 switches the alert off; null means the default.
+    public long? AlertRows { get; set; }
+
     public StorageDatasetSettings Clone() => new()
     {
         Dataset = Dataset,
         UseElasticsearch = UseElasticsearch,
         Granularity = Granularity,
         RetentionDays = RetentionDays,
-        UseIlm = UseIlm
+        UseIlm = UseIlm,
+        WarningRetentionDays = WarningRetentionDays,
+        AlertRows = AlertRows
     };
 }
 

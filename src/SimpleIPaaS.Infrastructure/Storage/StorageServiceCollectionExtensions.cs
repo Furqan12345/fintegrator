@@ -63,6 +63,9 @@ public static class StorageServiceCollectionExtensions
 
         services.AddScoped<StorageSettingsWriter>();
 
+        // The log volume alert measures the relational log table (both hosts: the Engine emails, the API shows it).
+        services.AddScoped<ILogVolumeProbe, RelationalLogVolumeProbe>();
+
         return services;
     }
 }

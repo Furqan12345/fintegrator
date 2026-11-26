@@ -22,10 +22,15 @@ public sealed record StorageDatasetDefinition(
 
 public static class StorageCatalog
 {
-    // Defaults for a new installation: logs keep 3 days of detail (longer for warnings and errors, handled by
-    // the relational log writer), messages and payloads 14 days, runs, steps and dead letters 30 days, and
-    // cross references forever (deleting a key would let a duplicate through). Without retention the database
-    // only grows. An existing installation keeps what it had (PreviousDefaults), and 0 always means forever.
+    // Logs: warnings and errors are kept longer than the other levels, and an alert (never a delete) fires when the
+    // stored log lines approach AlertRows.
+    public const int DefaultLogWarningRetentionDays = 14;
+    public const long DefaultLogAlertRows = 1_000_000;
+
+    // Defaults for a new installation: logs keep 3 days of detail and 14 days of warnings and errors, messages and
+    // payloads 14 days, runs, steps and dead letters 30 days, and cross references forever (deleting a key would
+    // let a duplicate through). Without retention the database only grows. An existing installation keeps what it
+    // had (PreviousDefaults), and 0 always means forever.
     public static IReadOnlyList<StorageDatasetDefinition> Definitions { get; } = new[]
     {
         new StorageDatasetDefinition(
@@ -89,10 +94,16 @@ public static class StorageCatalog
             [StorageDatasets.Executions] = 0,
         };
 
+    // Warnings and errors follow the logs window there (null), as they did before the setting existed.
     public static IReadOnlyList<StorageDatasetSettings> PreviousDefaults() =>
         Defaults().Select(settings =>
         {
             settings.RetentionDays = PreviousRetentionDays.TryGetValue(settings.Dataset, out var days) ? days : settings.RetentionDays;
+            if (IsLogs(settings.Dataset))
+            {
+                settings.WarningRetentionDays = null;
+            }
+
             return settings;
         }).ToList();
 
@@ -110,8 +121,54 @@ public static class StorageCatalog
             UseElasticsearch = false,
             Granularity = definition.DefaultGranularity,
             RetentionDays = definition.DefaultRetentionDays,
-            UseIlm = definition.DefaultUseIlm
+            UseIlm = definition.DefaultUseIlm,
+            WarningRetentionDays = IsLogs(definition.Dataset) ? DefaultLogWarningRetentionDays : null,
+            AlertRows = IsLogs(definition.Dataset) ? DefaultLogAlertRows : null
         }).ToList();
+
+    public static bool IsLogs(string dataset) => string.Equals(dataset, StorageDatasets.Logs, StringComparison.OrdinalIgnoreCase);
+
+    // Days warnings and errors are kept (0 = forever). A row saved before the setting existed follows RetentionDays.
+    public static int LogWarningRetentionDays(StorageDatasetSettings logs) => logs.WarningRetentionDays ?? logs.RetentionDays;
+
+    // The log volume alert threshold in stored lines; 0 means the alert is off.
+    public static long LogAlertRows(StorageDatasetSettings logs) => logs.AlertRows ?? DefaultLogAlertRows;
+
+    // How long an Elasticsearch index of the dataset is kept. A logs index holds every level, so it lives as long as
+    // the longer of the two log windows (0, forever, wins).
+    public static int IndexRetentionDays(StorageDatasetSettings settings)
+    {
+        if (!IsLogs(settings.Dataset))
+        {
+            return settings.RetentionDays;
+        }
+
+        var warnings = LogWarningRetentionDays(settings);
+        return settings.RetentionDays <= 0 || warnings <= 0 ? 0 : Math.Max(settings.RetentionDays, warnings);
+    }
+
+    // Null when the two log windows are consistent: warnings and errors are never kept for less time than the rest.
+    public static string? ValidateLogWindows(int retentionDays, int? warningRetentionDays)
+    {
+        if (warningRetentionDays is not { } warnings)
+        {
+            return null;
+        }
+
+        if (warnings < 0)
+        {
+            return "Retention is a number of days; use 0 to keep data forever.";
+        }
+
+        if (warnings == 0)
+        {
+            return null;
+        }
+
+        return retentionDays <= 0 || warnings < retentionDays
+            ? "Warnings and errors cannot be kept for less time than the other logs. Raise their days, or use 0 to keep them forever."
+            : null;
+    }
 
     // Tolerant read: unknown datasets are dropped and out-of-range values are clamped, so a
     // hand-edited column or an older row can never take a host down.
@@ -141,21 +198,28 @@ public static class StorageCatalog
         {
             var settings = byDataset.TryGetValue(definition.Dataset, out var stored)
                 ? stored.Clone()
-                : new StorageDatasetSettings
-                {
-                    Dataset = definition.Dataset,
-                    Granularity = definition.DefaultGranularity,
-                    RetentionDays = definition.DefaultRetentionDays,
-                    UseIlm = definition.DefaultUseIlm
-                };
+                : Defaults().First(item => item.Dataset == definition.Dataset);
 
             settings.Dataset = definition.Dataset;
             settings.UseElasticsearch = definition.CanUseElasticsearch && settings.UseElasticsearch;
             settings.UseIlm = definition.CanUseIlm && settings.UseIlm;
-            settings.RetentionDays = settings.RetentionDays < 0 ? 0 : settings.RetentionDays > 3650 ? 3650 : settings.RetentionDays;
+            settings.RetentionDays = ClampDays(settings.RetentionDays);
+            if (IsLogs(definition.Dataset))
+            {
+                settings.WarningRetentionDays = settings.WarningRetentionDays is { } warnings ? ClampDays(warnings) : null;
+                settings.AlertRows = settings.AlertRows is { } rows ? Math.Max(0, rows) : null;
+            }
+            else
+            {
+                settings.WarningRetentionDays = null;
+                settings.AlertRows = null;
+            }
+
             return settings;
         }).ToList();
     }
+
+    public static int ClampDays(int days) => days < 0 ? 0 : Math.Min(days, 3650);
 
     public static string Serialize(IEnumerable<StorageDatasetSettings> settings) =>
         JsonSerializer.Serialize(settings.Select(item => item.Clone()).ToList(), JsonOptions);
@@ -203,6 +267,7 @@ public static class StorageCatalog
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = false,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
         Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
     };
 }

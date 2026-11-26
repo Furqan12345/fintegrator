@@ -135,12 +135,13 @@ public sealed class StorageRetentionService
     {
         if (dataset == StorageDatasets.Logs)
         {
+            var warnings = StorageCatalog.LogWarningRetentionDays(settings);
             return new StorageRetentionOutcome(
                 dataset,
                 "Database",
-                settings.RetentionDays <= 0
-                    ? "Keeping every log entry (row cap still applies)"
-                    : $"Applied by the log sink every 5 minutes ({settings.RetentionDays}d)",
+                settings.RetentionDays <= 0 && warnings <= 0
+                    ? "Keeping every log entry"
+                    : $"Applied by the log sink every 5 minutes ({Days(settings.RetentionDays)}, warnings and errors {Days(warnings)})",
                 0);
         }
 
@@ -217,6 +218,8 @@ public sealed class StorageRetentionService
     // Deleting them with the run instead turned every expired run into row-by-row deletes in the partitioned tables
     // (runs cross the cutoff continuously, their day becomes droppable up to a day later), which is what the
     // partitions exist to avoid. Explicit deletes (a flow, test runs, the demo reseed) still remove them at once.
+    private static string Days(int days) => days <= 0 ? "forever" : $"{days}d";
+
     internal static int EffectivePacketRetentionDays(int packetRetentionDays, int runRetentionDays) =>
         packetRetentionDays > 0 && runRetentionDays > 0
             ? Math.Min(packetRetentionDays, runRetentionDays)

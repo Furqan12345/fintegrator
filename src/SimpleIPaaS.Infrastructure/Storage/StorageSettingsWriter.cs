@@ -151,7 +151,7 @@ public sealed class StorageSettingsWriter
         {
             var definition = StorageCatalog.Definition(dataset.Dataset);
 
-            if (dataset.RetentionDays > 3650)
+            if (dataset.RetentionDays > 3650 || dataset.WarningRetentionDays > 3650)
             {
                 notes.Add($"Retention for {definition.Name} was capped at 3,650 days (10 years).");
             }
@@ -184,13 +184,18 @@ public sealed class StorageSettingsWriter
                 }
 
                 var definition = StorageCatalog.Definition(defaults.Dataset);
+                var logs = StorageCatalog.IsLogs(defaults.Dataset);
                 return new StorageDatasetSettings
                 {
                     Dataset = defaults.Dataset,
                     UseElasticsearch = definition.CanUseElasticsearch && incoming.UseElasticsearch,
                     Granularity = incoming.Granularity,
-                    RetentionDays = incoming.RetentionDays < 0 ? 0 : Math.Min(incoming.RetentionDays, 3650),
-                    UseIlm = definition.CanUseIlm && incoming.UseIlm
+                    RetentionDays = StorageCatalog.ClampDays(incoming.RetentionDays),
+                    UseIlm = definition.CanUseIlm && incoming.UseIlm,
+                    // A client that does not send the log fields keeps the documented behaviour: warnings follow the
+                    // logs window (null) and the alert threshold takes its default.
+                    WarningRetentionDays = logs && incoming.WarningRetentionDays is { } warnings ? StorageCatalog.ClampDays(warnings) : null,
+                    AlertRows = logs ? Math.Max(0, incoming.AlertRows ?? StorageCatalog.DefaultLogAlertRows) : null
                 };
             })
             .ToList();
@@ -227,6 +232,19 @@ public sealed class StorageSettingsWriter
             if (dataset.RetentionDays < 0)
             {
                 return "Retention is a number of days; use 0 to keep data forever.";
+            }
+
+            if (StorageCatalog.IsLogs(dataset.Dataset))
+            {
+                if (StorageCatalog.ValidateLogWindows(dataset.RetentionDays, dataset.WarningRetentionDays) is { } windowProblem)
+                {
+                    return windowProblem;
+                }
+
+                if (dataset.AlertRows < 0)
+                {
+                    return "The log volume alert is a number of stored log lines; use 0 to switch it off.";
+                }
             }
         }
 

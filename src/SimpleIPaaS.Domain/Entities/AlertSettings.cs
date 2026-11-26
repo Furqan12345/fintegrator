@@ -17,4 +17,10 @@ public sealed class AlertSettings
     public DateTime? EnabledAt { get; set; }
     public DateTime? LastSentAt { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    // Log volume alert state, written by the Engine (LogVolumeAlertService): the level last emailed or recorded
+    // (0 normal, 1 approaching, 2 reached) and when the last email went out. The same recipients get it, whether
+    // failure alerts are on or not; its threshold is set with the log retention in Settings → Storage.
+    public int LogVolumeAlertLevel { get; set; }
+    public DateTime? LogVolumeAlertSentAt { get; set; }
 }

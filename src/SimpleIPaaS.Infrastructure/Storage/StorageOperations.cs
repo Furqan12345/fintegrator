@@ -177,7 +177,7 @@ public sealed class StorageOperations : IStorageOperations
                                 index.Size,
                                 index.CreatedAtUtc,
                                 StorageIndexNaming.AgeInDays(index.CreatedAtUtc, now),
-                                period != null && StorageIndexNaming.IsExpired(period.Value, datasetSettings.RetentionDays, now)));
+                                period != null && StorageIndexNaming.IsExpired(period.Value, StorageCatalog.IndexRetentionDays(datasetSettings), now)));
                         }
 
                         documentCount = indices.Sum(index => index.DocumentCount);

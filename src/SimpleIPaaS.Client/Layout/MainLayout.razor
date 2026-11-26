@@ -135,6 +135,23 @@
             </div>
         </header>
 
+        @if (_logVolume is { Level: "Approaching" or "Reached" } volume && _logVolumeDismissedLevel != volume.Level)
+        {
+            <div class="app-banner @(volume.Level == "Reached" ? "is-danger" : string.Empty)" role="status" aria-live="polite">
+                <span class="app-banner-text">
+                    <strong>@(volume.Level == "Reached" ? "Stored logs passed the alert limit." : "Stored logs are close to the alert limit.")</strong>
+                    @volume.StoredLines.ToString("N0") of @volume.AlertRows.ToString("N0") lines@(volume.StoredBytes is { } bytes ? $" ({FormatBytes(bytes)})" : string.Empty);
+                    @volume.LastDayLines.ToString("N0") in the last 24 hours@(volume.TopCategories.FirstOrDefault() is { } top && volume.LastDayLines > 0 ? $", {top.Lines * 100 / volume.LastDayLines}% from {top.Name}" : string.Empty)@(volume.TopFlows.FirstOrDefault() is { } flow ? $"; busiest flow: {flow.Name}" : string.Empty).
+                    Nothing is deleted because of it; logs leave by age only.
+                </span>
+                <span class="app-banner-actions">
+                    <a class="btn btn-sm btn-outline" href="logs">Debug Logs</a>
+                    <a class="btn btn-sm btn-outline" href="settings">Settings</a>
+                    <button type="button" class="btn btn-sm btn-soft" @onclick="() => _logVolumeDismissedLevel = volume.Level">Dismiss</button>
+                </span>
+            </div>
+        }
+
         <!-- Page content -->
         <main class="app-content">
             <ErrorBoundary @ref="_errorBoundary">
@@ -163,6 +180,9 @@
     private bool _isDarkTheme;
     private bool _sidebarCollapsed;
     private System.Threading.Timer? _healthTimer;
+    private System.Threading.Timer? _logVolumeTimer;
+    private LogVolumeDto? _logVolume;
+    private string? _logVolumeDismissedLevel;
 
     private string SidebarLayoutClass => _sidebarCollapsed ? "sidebar-collapsed" : string.Empty;
     private string SidebarToggleLabel => _sidebarCollapsed ? "Show navigation" : "Hide navigation";
@@ -222,6 +242,46 @@
         await LoadSidebarAsync();
         await CheckHealthAsync();
         _healthTimer = new System.Threading.Timer(_ => { if (Visibility.IsVisible) _ = InvokeAsync(CheckHealthAsync); }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+
+        // The log volume alert (admins only): the same check the Engine emails about.
+        if (Auth.IsAdmin)
+        {
+            await CheckLogVolumeAsync();
+            _logVolumeTimer = new System.Threading.Timer(_ => { if (Visibility.IsVisible) _ = InvokeAsync(CheckLogVolumeAsync); }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+        }
+    }
+
+    private async Task CheckLogVolumeAsync()
+    {
+        try
+        {
+            using var response = await Http.GetAsync("api/logs/volume");
+            if (!response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            _logVolume = await response.Content.ReadFromJsonAsync<LogVolumeDto>();
+            StateHasChanged();
+        }
+        catch (Exception)
+        {
+            // The banner is advisory; the health indicator already reports an unreachable API.
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return $"{value:0.#} {units[unit]}";
     }
 
     private async Task LoadThemeAsync()
@@ -371,5 +431,7 @@
         NavigationManager.LocationChanged -= OnLocationChanged;
         _healthTimer?.Dispose();
         _healthTimer = null;
+        _logVolumeTimer?.Dispose();
+        _logVolumeTimer = null;
     }
 }

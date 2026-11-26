@@ -6,11 +6,11 @@ namespace SimpleIPaaS.Infrastructure.Storage;
 
 // Effective retention windows for the relational log table.
 //
-// Configured on the settings page as one number of days for the logs dataset, applied to every log
-// level: an operator who asks for three days gets three days, rather than discovering that warnings
-// quietly follow a different rule. 0 means "keep everything by age"; the row cap stays as a safety
-// valve so a runaway log loop cannot fill the disk either way.
-public sealed record LogRetentionWindows(int DetailRetentionHours, int WarningRetentionHours, int MaxRows);
+// Configured on the settings page as two numbers of days for the logs dataset: one for warnings and errors, one for
+// every other level. 0 keeps that part forever. A row saved before the warnings setting existed applies the logs
+// window to both. Logs leave by age only: nothing is removed because of how many there are (the log volume alert
+// emails instead).
+public sealed record LogRetentionWindows(int DetailRetentionHours, int WarningRetentionHours);
 
 public sealed class SettingsLogRetentionPolicy : ILogRetentionPolicy
 {
@@ -28,13 +28,9 @@ public sealed class SettingsLogRetentionPolicy : ILogRetentionPolicy
             return fallback;
         }
 
-        var days = snapshot.For(StorageDatasets.Logs).RetentionDays;
-        if (days <= 0)
-        {
-            return fallback with { DetailRetentionHours = 0, WarningRetentionHours = 0 };
-        }
-
-        var hours = days * 24;
-        return fallback with { DetailRetentionHours = hours, WarningRetentionHours = hours };
+        var logs = snapshot.For(StorageDatasets.Logs);
+        return new LogRetentionWindows(
+            Math.Max(0, logs.RetentionDays) * 24,
+            Math.Max(0, StorageCatalog.LogWarningRetentionDays(logs)) * 24);
     }
 }

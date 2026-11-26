@@ -51,7 +51,7 @@ public static class PostgresPartitions
         NpgsqlConnection connection, DateOnly from, DateOnly to, TimeSpan? lockTimeout = null, CancellationToken cancellationToken = default)
     {
         var skipped = new List<string>();
-        foreach (var table in PostgresLayout.PartitionedTables)
+        foreach (var table in PostgresLayout.DayPartitionedTables)
         {
             await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             await using (var lockCommand = new NpgsqlCommand($"SELECT pg_advisory_xact_lock({MaintenanceLockKey});", connection, transaction))
@@ -68,17 +68,17 @@ public static class PostgresPartitions
 
             try
             {
-                var existing = await ListAsync(connection, transaction, table.Name, cancellationToken).ConfigureAwait(false);
+                var existing = await ListAsync(connection, transaction, table, cancellationToken).ConfigureAwait(false);
                 for (var day = from; day <= to; day = day.AddDays(1))
                 {
-                    var name = PartitionName(table.Name, day);
+                    var name = PartitionName(table, day);
                     if (existing.Contains(name))
                     {
                         continue;
                     }
 
                     var sql =
-                        $"CREATE TABLE IF NOT EXISTS \"{name}\" PARTITION OF \"{table.Name}\" " +
+                        $"CREATE TABLE IF NOT EXISTS \"{name}\" PARTITION OF \"{table}\" " +
                         $"FOR VALUES FROM ('{Bound(day)}') TO ('{Bound(day.AddDays(1))}');";
                     await using var create = new NpgsqlCommand(sql, connection, transaction);
                     await create.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -89,7 +89,7 @@ public static class PostgresPartitions
             catch (PostgresException exception) when (lockTimeout != null && exception.SqlState == PostgresErrorCodes.LockNotAvailable)
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                skipped.Add(table.Name);
+                skipped.Add(table);
             }
         }
 
@@ -103,7 +103,7 @@ public static class PostgresPartitions
         NpgsqlDataSource dataSource, string table, DateTime cutoffUtc, CancellationToken cancellationToken = default)
     {
         var cutoffDay = UtcDay(cutoffUtc);
-        var result = await WithDropLockAsync(dataSource, async connection =>
+        return await WithDropLockAsync(dataSource, async connection =>
         {
             var dropped = 0;
             long rows = 0;
@@ -124,62 +124,21 @@ public static class PostgresPartitions
                 }
             }
 
-            return (dropped, rows, 0L);
+            return (dropped, rows);
         }, cancellationToken).ConfigureAwait(false);
-
-        return (result.Partitions, result.Rows);
     }
 
-    // A row cap applied in whole days: keeps the newest days whose rows add up to at most maxRows and drops every
-    // older day. Today, future days and the newest day holding rows are always kept. Returns what was dropped and the
-    // rows kept; kept is over maxRows only when the kept days alone exceed it (the caller decides what to do then).
-    // (0, 0, 0) when the other host holds the drop lock.
-    public static Task<(int Partitions, long Rows, long KeptRows)> DropOldestOverCapAsync(
-        NpgsqlDataSource dataSource, string table, long maxRows, CancellationToken cancellationToken = default) =>
-        WithDropLockAsync(dataSource, async connection =>
-        {
-            var today = UtcDay(DateTime.UtcNow);
-            var dropped = 0;
-            long rows = 0;
-            long kept = 0;
-            var overCap = false;
-            var partitions = (await ListAsync(connection, null, table, cancellationToken).ConfigureAwait(false))
-                .Select(name => (Name: name, Parsed: TryParseDay(table, name, out var day), Day: day))
-                .Where(partition => partition.Parsed)
-                .OrderByDescending(partition => partition.Day)
-                .ToList();
-            foreach (var partition in partitions)
-            {
-                var count = await CountRowsAsync(connection, partition.Name, cancellationToken).ConfigureAwait(false);
-                overCap = overCap || (partition.Day < today && kept > 0 && kept + count > maxRows);
-                if (!overCap)
-                {
-                    kept += count;
-                    continue;
-                }
-
-                // This day and every older one go.
-                if (await DropPartitionAsync(connection, table, partition.Name, cancellationToken).ConfigureAwait(false))
-                {
-                    rows += count;
-                    dropped++;
-                }
-            }
-
-            return (dropped, rows, kept);
-        }, cancellationToken);
-
     // Only the host holding this lock drops: the other host's DETACH would be refused and it would fall back to a
-    // plain DROP, which locks the whole table. The other host skips the pass and gets (0, 0, 0).
-    private static async Task<(int Partitions, long Rows, long KeptRows)> WithDropLockAsync(
-        NpgsqlDataSource dataSource, Func<NpgsqlConnection, Task<(int, long, long)>> drop, CancellationToken cancellationToken)
+    // plain DROP, which locks the whole table. The other host skips the pass and gets (0, 0).
+    private static async Task<(int Partitions, long Rows)> WithDropLockAsync(
+        NpgsqlDataSource dataSource, Func<NpgsqlConnection, Task<(int, long)>> drop, CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using (var tryLock = new NpgsqlCommand($"SELECT pg_try_advisory_lock({DropLockKey});", connection))
         {
             if (!(bool)(await tryLock.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
             {
-                return (0, 0, 0);
+                return (0, 0);
             }
         }
 
@@ -283,20 +242,6 @@ public static class PostgresPartitions
         await using var command = new NpgsqlCommand("SELECT GREATEST(reltuples, 0)::bigint FROM pg_class WHERE oid = to_regclass(@name);", connection);
         command.Parameters.AddWithValue("name", $"\"{partition}\"");
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long value ? value : 0;
-    }
-
-    // The planner's estimate, or an exact count for a partition never analyzed yet (usually today's, still filling).
-    private static async Task<long> CountRowsAsync(NpgsqlConnection connection, string partition, CancellationToken cancellationToken)
-    {
-        await using var estimate = new NpgsqlCommand("SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass(@name);", connection);
-        estimate.Parameters.AddWithValue("name", $"\"{partition}\"");
-        if (await estimate.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long value && value >= 0)
-        {
-            return value;
-        }
-
-        await using var count = new NpgsqlCommand($"SELECT count(*) FROM \"{partition}\";", connection);
-        return (long)(await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
     private static async Task ExecuteAsync(NpgsqlConnection connection, string sql, CancellationToken cancellationToken)

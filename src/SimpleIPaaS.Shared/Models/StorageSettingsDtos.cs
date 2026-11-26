@@ -46,6 +46,13 @@ public sealed class StorageDatasetSettingsDto
 
     // Elasticsearch only: let the ILM policy delete expired indices instead of the application.
     public bool UseIlm { get; set; } = true;
+
+    // Logs only: days to keep warnings and errors (RetentionDays covers the other levels); 0 keeps them forever,
+    // null follows RetentionDays.
+    public int? WarningRetentionDays { get; set; }
+
+    // Logs only: stored log lines at which the log volume alert emails (it never deletes); 0 switches it off.
+    public long? AlertRows { get; set; }
 }
 
 public sealed class StorageDatasetCatalogDto
@@ -69,6 +76,43 @@ public sealed class StorageDatasetCatalogDto
     public int DefaultRetentionDays { get; set; }
 
     public bool DefaultUseIlm { get; set; } = true;
+
+    // Logs only.
+    public int? DefaultWarningRetentionDays { get; set; }
+
+    public long? DefaultAlertRows { get; set; }
+}
+
+// The log volume alert as the app banner shows it. Level is Off (no threshold, or logs in Elasticsearch), Normal,
+// Approaching (80% of the threshold) or Reached.
+public sealed class LogVolumeDto
+{
+    public string Level { get; set; } = "Normal";
+
+    public long StoredLines { get; set; }
+
+    public long AlertRows { get; set; }
+
+    public long? StoredBytes { get; set; }
+
+    public long LastDayLines { get; set; }
+
+    public int RetentionDays { get; set; }
+
+    public int WarningRetentionDays { get; set; }
+
+    public List<LogVolumeSourceDto> TopCategories { get; set; } = new();
+
+    public List<LogVolumeSourceDto> TopFlows { get; set; } = new();
+
+    public DateTime CheckedAtUtc { get; set; }
+}
+
+public sealed class LogVolumeSourceDto
+{
+    public string Name { get; set; } = string.Empty;
+
+    public long Lines { get; set; }
 }
 
 public sealed class StorageSettingsUpdateDto
