@@ -158,6 +158,24 @@
         }
         else
         {
+            @if (_selected.Count > 0)
+            {
+                <div class="tx-selection-bar" role="region" aria-label="Selected transactions">
+                    <span><strong>@_selected.Count</strong> transaction@(_selected.Count == 1 ? "" : "s") selected</span>
+                    @if (_selected.Count > MaxBulkTests)
+                    {
+                        <span class="text-muted">Select at most @MaxBulkTests at a time.</span>
+                    }
+                    <span class="tx-selection-actions">
+                        <button class="btn btn-sm btn-primary" @onclick="CreateTestsAsync" disabled="@(_creatingTests || _selected.Count > MaxBulkTests)"
+                                title="Save one test scenario per selected transaction, in its own flow">
+                            @(_creatingTests ? "Creating tests…" : $"Create tests ({_selected.Count})")
+                        </button>
+                        <button class="btn btn-sm btn-outline" @onclick="() => _selected.Clear()" disabled="@_creatingTests">Clear selection</button>
+                    </span>
+                </div>
+            }
+
             <div class="table-wrap tx-table-wrap">
                 @* Keyboard-scrollable: the horizontal scroll container takes focus so a keyboard
                    user can pan a table that is wider than the content area. *@
@@ -174,7 +192,14 @@
                         </colgroup>
                         <thead>
                             <tr>
-                                <th scope="col">Transaction<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
+                                <th scope="col">
+                                    <span class="tx-select-head">
+                                        <input type="checkbox" class="tx-select" aria-label="Select every real transaction on this page"
+                                               title="Select every real transaction on this page (test runs can't be used)"
+                                               checked="@AllSelectableOnPageSelected" disabled="@(!SelectableOnPage.Any())"
+                                               @onchange="ToggleAllOnPage" />
+                                        Transaction
+                                    </span><span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
                                 <th scope="col">Flow<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
                                 <th scope="col" class="col-identifier">Identifier<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
                                 <th scope="col" class="col-message">Message<span class="col-resizer" title="Drag to resize · double-click to reset"></span></th>
@@ -191,6 +216,16 @@
                                         @* The whole id is in the cell; the column is wide enough for it, and
                                            the tooltip plus the copy button cover the narrow cases. *@
                                         <span class="tx-id">
+                                            @if (transaction.IsTest)
+                                            {
+                                                <input type="checkbox" class="tx-select" disabled title="A test run can't become a scenario" aria-label="Test run, can't be selected" />
+                                            }
+                                            else
+                                            {
+                                                <input type="checkbox" class="tx-select" checked="@_selected.Contains(transaction.Id)"
+                                                       aria-label="@($"Select transaction {transaction.Id}")"
+                                                       @onchange="e => ToggleSelected(transaction.Id, e)" />
+                                            }
                                             <span class="tx-id-text" title="@transaction.Id">@transaction.Id</span>
                                             <button type="button" class="tx-id-copy"
                                                     title="Copy the full transaction id"
@@ -247,8 +282,111 @@
     </div>
 </div>
 
+@if (_bulkResult != null)
+{
+    <div class="modal-overlay" @onclick="() => _bulkResult = null">
+        <div class="modal-container tx-bulk-modal" role="dialog" aria-label="Tests created" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title">@(_bulkResult.Created.Count == 0 ? "No tests created" : $"{_bulkResult.Created.Count} test scenario{(_bulkResult.Created.Count == 1 ? "" : "s")} created")</h3>
+                    <p class="modal-subtitle">Each scenario replays its transaction: the trigger payload, the recorded HTTP responses as mocks, and checks for the result. Review them in the flow’s test mode.</p>
+                </div>
+                <button class="modal-close-btn" @onclick="() => _bulkResult = null" aria-label="Close">×</button>
+            </div>
+            <div class="modal-body modal-body-scroll">
+                @foreach (var flow in _bulkResult.Created.GroupBy(item => (item.FlowId, item.FlowName)))
+                {
+                    <div class="tx-bulk-flow">
+                        <div class="tx-bulk-flow-head">
+                            <strong>@flow.Key.FlowName</strong>
+                            <a class="btn btn-sm btn-outline" href="@($"flow/{flow.Key.FlowId}?mode=test")">Open tests</a>
+                        </div>
+                        <ul>
+                            @foreach (var created in flow)
+                            {
+                                <li>
+                                    @created.Name
+                                    @foreach (var warning in created.Warnings)
+                                    {
+                                        <div class="text-muted tx-bulk-warning">@warning</div>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+                @if (_bulkResult.Skipped.Count > 0)
+                {
+                    <div class="tx-bulk-skipped">
+                        <strong>Skipped (@_bulkResult.Skipped.Count)</strong>
+                        <ul>
+                            @foreach (var skipped in _bulkResult.Skipped)
+                            {
+                                <li><span class="mono">@skipped.ExecutionId.ToString()[..8]</span>@(string.IsNullOrWhiteSpace(skipped.FlowName) ? "" : $" ({skipped.FlowName})"): @skipped.Reason</li>
+                            }
+                        </ul>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" @onclick="() => _bulkResult = null">Done</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private const int PageSize = 50;
+
+    // "Create tests": selected real transactions, kept across pages until cleared or created.
+    private const int MaxBulkTests = 100;
+    private readonly HashSet<Guid> _selected = new();
+    private bool _creatingTests;
+    private BulkTestCasesFromExecutionsResultDto? _bulkResult;
+
+    private IEnumerable<Guid> SelectableOnPage => ExecutionState.Value.Executions.Where(item => !item.IsTest).Select(item => item.Id);
+
+    private bool AllSelectableOnPageSelected => SelectableOnPage.Any() && SelectableOnPage.All(_selected.Contains);
+
+    private void ToggleSelected(Guid id, ChangeEventArgs args)
+    {
+        if (args.Value is true) _selected.Add(id);
+        else _selected.Remove(id);
+    }
+
+    private void ToggleAllOnPage(ChangeEventArgs args)
+    {
+        var ids = SelectableOnPage.ToList();
+        if (args.Value is true) _selected.UnionWith(ids);
+        else _selected.ExceptWith(ids);
+    }
+
+    private async Task CreateTestsAsync()
+    {
+        if (_selected.Count == 0 || _selected.Count > MaxBulkTests) return;
+        _creatingTests = true;
+        try
+        {
+            using var response = await Http.PostAsJsonAsync("api/integrationflow/test-cases/from-executions",
+                new BulkTestCasesFromExecutionsRequestDto { ExecutionIds = _selected.ToList() });
+            if (!response.IsSuccessStatusCode)
+            {
+                Dispatcher.Dispatch(new ShowToastAction { Message = await SafeFetch.DescribeFailureAsync(response, "Could not create the tests."), Level = "error" });
+                return;
+            }
+
+            _bulkResult = await response.Content.ReadFromJsonAsync<BulkTestCasesFromExecutionsResultDto>() ?? new();
+            _selected.Clear();
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.Dispatch(new ShowToastAction { Message = $"Could not create the tests. {ErrorText.Describe(ex)}", Level = "error" });
+        }
+        finally
+        {
+            _creatingTests = false;
+        }
+    }
 
     /// <summary>Deep links from an integration's page seed the filters (see /integrations/{id}).</summary>
     [SupplyParameterFromQuery(Name = "integrationId")]

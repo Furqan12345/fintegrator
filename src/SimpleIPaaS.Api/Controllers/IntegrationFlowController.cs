@@ -642,11 +642,108 @@ public class IntegrationFlowController : ControllerBase
     {
         var flow = await _repository.GetByIdAsync(flowId);
         if (flow == null) return NotFound();
+        var (draft, error) = await BuildDraftFromExecutionAsync(flow, executionId);
+        return draft == null ? BadRequest(error) : Ok(draft);
+    }
+
+    // Saves one scenario per selected transaction, in that transaction's flow (Transaction History, "Create tests").
+    // Test runs, runs whose flow is gone and runs that already have a scenario are skipped with a reason.
+    public const int MaxBulkTestTransactions = 100;
+
+    [HttpPost("test-cases/from-executions")]
+    public async Task<IActionResult> CreateTestCasesFromExecutions([FromBody] BulkTestCasesFromExecutionsRequestDto request)
+    {
+        var executionIds = (request?.ExecutionIds ?? new List<Guid>()).Where(id => id != Guid.Empty).Distinct().ToList();
+        if (executionIds.Count == 0) return BadRequest("Select at least one transaction.");
+        if (executionIds.Count > MaxBulkTestTransactions)
+            return BadRequest($"Select at most {MaxBulkTestTransactions} transactions at a time.");
+
+        var result = new BulkTestCasesFromExecutionsResultDto();
+        var flows = new Dictionary<Guid, Domain.Entities.IntegrationFlow?>();
+        var existingByFlow = new Dictionary<Guid, List<Domain.Entities.FlowTestCase>>();
+        foreach (var executionId in executionIds)
+        {
+            var execution = await _executionRepository.GetFlowExecutionAsync(executionId);
+            if (execution == null)
+            {
+                result.Skipped.Add(new BulkTestCaseSkipDto { ExecutionId = executionId, Reason = "The transaction no longer exists." });
+                continue;
+            }
+
+            if (!flows.TryGetValue(execution.FlowId, out var flow))
+            {
+                flow = await _repository.GetByIdAsync(execution.FlowId);
+                flows[execution.FlowId] = flow;
+            }
+
+            if (flow == null)
+            {
+                result.Skipped.Add(new BulkTestCaseSkipDto { ExecutionId = executionId, FlowName = execution.FlowName, Reason = "Its flow no longer exists." });
+                continue;
+            }
+
+            if (!existingByFlow.TryGetValue(flow.Id, out var existing))
+            {
+                existing = (await _flowTestRepository.GetByFlowIdAsync(flow.Id)).ToList();
+                existingByFlow[flow.Id] = existing;
+            }
+
+            var source = SourceDescription(executionId);
+            if (existing.FirstOrDefault(test => test.Description == source) is { } already)
+            {
+                result.Skipped.Add(new BulkTestCaseSkipDto
+                {
+                    ExecutionId = executionId, FlowId = flow.Id, FlowName = flow.Name,
+                    Reason = $"It already has a scenario (\"{already.Name}\")."
+                });
+                continue;
+            }
+
+            var (draft, error) = await BuildDraftFromExecutionAsync(flow, executionId);
+            if (draft == null)
+            {
+                result.Skipped.Add(new BulkTestCaseSkipDto { ExecutionId = executionId, FlowId = flow.Id, FlowName = flow.Name, Reason = error ?? "It could not be read." });
+                continue;
+            }
+
+            // Scenario names are unique per flow.
+            var name = draft.Name;
+            for (var copy = 2; existing.Any(test => string.Equals(test.Name, name, StringComparison.OrdinalIgnoreCase)); copy++)
+                name = $"{draft.Name} ({copy})";
+
+            var testCase = new Domain.Entities.FlowTestCase
+            {
+                Id = Guid.NewGuid(),
+                FlowId = flow.Id,
+                Name = name,
+                Description = draft.Description,
+                Enabled = true,
+                RequiredForPublish = false,
+                DefinitionJson = JsonSerializer.Serialize(draft.Definition),
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            await _flowTestRepository.AddAsync(testCase);
+            existing.Add(testCase);
+            result.Created.Add(new BulkTestCaseCreatedDto
+            {
+                ExecutionId = executionId, FlowId = flow.Id, FlowName = flow.Name, TestCaseId = testCase.Id, Name = name, Warnings = draft.Warnings
+            });
+        }
+
+        return Ok(result);
+    }
+
+    private static string SourceDescription(Guid executionId) => $"Built from {executionId}";
+
+    private async Task<(FlowTestCaseDto? Draft, string? Error)> BuildDraftFromExecutionAsync(Domain.Entities.IntegrationFlow flow, Guid executionId)
+    {
+        var flowId = flow.Id;
         var execution = await _executionRepository.GetFlowExecutionAsync(executionId);
         if (execution == null || execution.FlowId != flowId)
-            return BadRequest("The transaction does not belong to this flow.");
+            return (null, "The transaction does not belong to this flow.");
         if (execution.IsTest)
-            return BadRequest("A test run cannot be used as the source of a scenario.");
+            return (null, "A test run cannot be used as the source of a scenario.");
 
         var steps = (await _executionRepository.GetStepExecutionsAsync(executionId))
             .OrderBy(step => step.StartedAt).ToList();
@@ -750,17 +847,17 @@ public class IntegrationFlowController : ControllerBase
         var label = string.IsNullOrWhiteSpace(execution.Identifier)
             ? execution.CompletedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm")
             : execution.Identifier!;
-        return Ok(new FlowTestCaseDto
+        return (new FlowTestCaseDto
         {
             Id = Guid.Empty,
             FlowId = flowId,
             Name = $"From transaction {executionId.ToString()[..8]} ({label})",
-            Description = $"Built from {executionId}",
+            Description = SourceDescription(executionId),
             Enabled = true,
             RequiredForPublish = false,
             Definition = definition,
             Warnings = warnings
-        });
+        }, null);
     }
 
     private static bool IsJson(string value)

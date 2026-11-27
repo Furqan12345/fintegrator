@@ -7,9 +7,9 @@
 
 const MIN_WIDTH = 88;
 const MAX_WIDTH = 1400;
-// Fixed-width columns: a full GUID, the status badge, the timestamp and the two
+// Fixed-width columns: a full GUID with its select box, the status badge, the timestamp and the two
 // action buttons. The Action column is always last and never receives spare width.
-const FIXED = { transaction: 292, status: 132, runAt: 140, action: 190 };
+const FIXED = { transaction: 314, status: 132, runAt: 140, action: 190 };
 const FLEX = { 1: 0.34, 2: 0.30, 3: 0.36 };
 const ACTION_INDEX = 6;
 const MESSAGE_INDEX = 3;

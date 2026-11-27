@@ -200,3 +200,32 @@ public class FlowTestSuiteScenarioDto
     public string Headline { get; set; } = string.Empty;
     public string? Error { get; set; }
 }
+// Transaction History, "Create tests": one saved scenario per selected real transaction, in its own flow.
+public class BulkTestCasesFromExecutionsRequestDto
+{
+    public List<Guid> ExecutionIds { get; set; } = new();
+}
+
+public class BulkTestCasesFromExecutionsResultDto
+{
+    public List<BulkTestCaseCreatedDto> Created { get; set; } = new();
+    public List<BulkTestCaseSkipDto> Skipped { get; set; } = new();
+}
+
+public class BulkTestCaseCreatedDto
+{
+    public Guid ExecutionId { get; set; }
+    public Guid FlowId { get; set; }
+    public string FlowName { get; set; } = string.Empty;
+    public Guid TestCaseId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public List<string> Warnings { get; set; } = new();
+}
+
+public class BulkTestCaseSkipDto
+{
+    public Guid ExecutionId { get; set; }
+    public Guid? FlowId { get; set; }
+    public string? FlowName { get; set; }
+    public string Reason { get; set; } = string.Empty;
+}

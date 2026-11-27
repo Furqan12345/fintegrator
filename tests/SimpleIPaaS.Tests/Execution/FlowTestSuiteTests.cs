@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
@@ -347,6 +347,73 @@ public sealed class FlowTestSuiteTests
         Assert.DoesNotContain("X-Api-Key", fixture.Headers.Keys);
         Assert.DoesNotContain("X-Secret", fixture.Headers.Keys);
         Assert.DoesNotContain("Credential-Token", fixture.Headers.Keys);
+    }
+
+    [Fact]
+    public async Task BulkCreateSavesOneScenarioPerRealTransactionAcrossFlowsAndSkipsTheRest()
+    {
+        var flows = new StubIntegrationRepository();
+        var executions = new StubExecutionRepository();
+        var tests = new StubFlowTestRepository();
+        (IntegrationFlow Flow, IntegrationStep Node) NewFlow(string name)
+        {
+            var node = new IntegrationStep { NodeName = "Call", StepType = StepType.HttpAction, EndpointUrl = "https://example.test/x" };
+            var flow = new IntegrationFlow { Name = name };
+            flow.Nodes.Add(node);
+            flows.Seed(flow);
+            return (flow, node);
+        }
+
+        FlowExecution Run((IntegrationFlow Flow, IntegrationStep Node) source, bool isTest = false, string? identifier = null)
+        {
+            var execution = new FlowExecution
+            {
+                FlowId = source.Flow.Id, FlowName = source.Flow.Name, Status = ExecutionStatus.Success,
+                TriggerPayloadJson = "{}", IsTest = isTest, Identifier = identifier, CompletedAt = DateTime.UtcNow
+            };
+            executions.Seed(execution);
+            var step = new StepExecution { FlowExecutionId = execution.Id, StepId = source.Node.Id, NodeName = "Call", Status = ExecutionStatus.Success, ResponsePayload = "{\"ok\":true}", StartedAt = DateTime.UtcNow };
+            executions.StepExecutions.Add(step);
+            executions.StepPacketLogs.Add(new StepPacketLog { StepExecutionId = step.Id, Kind = "Response", StatusCode = 200, ResponseBody = "{\"ok\":true}" });
+            return execution;
+        }
+
+        var orders = NewFlow("Orders");
+        var invoices = NewFlow("Invoices");
+        var a = Run(orders, identifier: "SO-1");
+        var b = Run(orders, identifier: "SO-2");
+        var c = Run(invoices);
+        var testRun = Run(orders, isTest: true);
+        var missing = Guid.NewGuid();
+        var controller = new IntegrationFlowController(
+            flows, null!, null!, null!, null!, tests, executions,
+            null!, NullLogger<IntegrationFlowController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var first = Assert.IsType<BulkTestCasesFromExecutionsResultDto>(Assert.IsType<OkObjectResult>(
+            await controller.CreateTestCasesFromExecutions(new BulkTestCasesFromExecutionsRequestDto { ExecutionIds = { a.Id, b.Id, c.Id, testRun.Id, missing } })).Value);
+
+        Assert.Equal(new[] { a.Id, b.Id, c.Id }, first.Created.Select(item => item.ExecutionId));
+        Assert.Equal(2, (await tests.GetByFlowIdAsync(orders.Flow.Id)).Count);
+        var invoiceScenario = Assert.Single(await tests.GetByFlowIdAsync(invoices.Flow.Id));
+        Assert.Contains("HttpResponses", invoiceScenario.DefinitionJson);
+        Assert.Contains(first.Skipped, skip => skip.ExecutionId == testRun.Id && skip.Reason.Contains("test run"));
+        Assert.Contains(first.Skipped, skip => skip.ExecutionId == missing && skip.Reason.Contains("no longer exists"));
+
+        // Again: the same transactions already have scenarios, so nothing is duplicated.
+        var second = Assert.IsType<BulkTestCasesFromExecutionsResultDto>(Assert.IsType<OkObjectResult>(
+            await controller.CreateTestCasesFromExecutions(new BulkTestCasesFromExecutionsRequestDto { ExecutionIds = { a.Id, c.Id } })).Value);
+        Assert.Empty(second.Created);
+        Assert.All(second.Skipped, skip => Assert.Contains("already has a scenario", skip.Reason));
+
+        // Nothing selected, or too many, is refused.
+        Assert.IsType<BadRequestObjectResult>(await controller.CreateTestCasesFromExecutions(new BulkTestCasesFromExecutionsRequestDto()));
+        Assert.IsType<BadRequestObjectResult>(await controller.CreateTestCasesFromExecutions(new BulkTestCasesFromExecutionsRequestDto
+        {
+            ExecutionIds = Enumerable.Range(0, IntegrationFlowController.MaxBulkTestTransactions + 1).Select(_ => Guid.NewGuid()).ToList()
+        }));
     }
 
     [Fact]
