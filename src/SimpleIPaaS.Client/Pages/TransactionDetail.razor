@@ -19,6 +19,13 @@
         <p class="subtitle">Every card in this run, with the payload it received and the response it returned.</p>
     </div>
     <div class="header-right">
+        @if (CanCreateTest)
+        {
+            <a class="btn btn-primary" href="@($"flow/{_execution!.FlowId}?mode=test&fromExecution={TransactionId}")"
+               title="Open the flow in test mode with a scenario drafted from this run: its trigger payload, recorded HTTP responses and checks">
+                Create test
+            </a>
+        }
         <button class="btn btn-outline" @onclick="GoBack">← Back to history</button>
     </div>
 </div>
@@ -175,6 +182,9 @@
             _isLoading = false;
         }
     }
+
+    // A scenario can be drafted from a real (non-test) run of a flow that still exists.
+    private bool CanCreateTest => !_isLoading && _execution is { IsTest: false } && _flow != null;
 
     private IntegrationStepDto? FindNode(Guid stepId)
     {

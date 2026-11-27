@@ -680,6 +680,11 @@
     [SupplyParameterFromQuery(Name = "mode")]
     public string? ModeQuery { get; set; }
 
+    // "Create test" on a transaction: open test mode with a scenario drafted from that run (used once).
+    [SupplyParameterFromQuery(Name = "fromExecution")]
+    public Guid? FromExecutionQuery { get; set; }
+    private Guid? _consumedFromExecution;
+
     private bool _testMode;
     private FlowTestSession? _testSession;
     private FlowTestSuiteStatusDto? _testStatus;
@@ -1283,8 +1288,18 @@
             _fitTestAfterRender = true;
         }
 
+        var draftFrom = FromExecutionQuery is Guid fromExecution && fromExecution != _consumedFromExecution ? fromExecution : (Guid?)null;
+        if (draftFrom is Guid executionId && restoreState == null)
+        {
+            _consumedFromExecution = executionId;
+            _scenarioPanelUserChoice = true;
+            _testSession.SetPanelOpen(true);
+            await _testSession.StartFromExecutionAsync(executionId);
+        }
+
         ApplyTestModeToDiagram();
-        if (restoreState != null || !NavigationManager.Uri.Contains("mode=test", StringComparison.OrdinalIgnoreCase))
+        // The fromExecution parameter is dropped from the address once used, so a reload does not draft it again.
+        if (restoreState != null || draftFrom != null || !NavigationManager.Uri.Contains("mode=test", StringComparison.OrdinalIgnoreCase))
         {
             _allowTestNavigation = true;
             NavigationManager.NavigateTo($"flow/{flow.Id}?mode=test", replace: true);

@@ -20,5 +20,8 @@ public interface IFlowTestRepository
     Task<IReadOnlyList<FlowTestRun>> GetInterruptedRunsAsync();
     Task UpdateRunAsync(FlowTestRun run);
     Task RecordRunTimestampsAsync(Guid testCaseId, DateTime at, bool passed);
-    Task TrimRunsAsync(Guid testCaseId, int keep = 20);
+    // The newest runs kept per test case: enough to compare the last run with the ones before it.
+    public const int KeptRunsPerTestCase = 3;
+
+    Task TrimRunsAsync(Guid testCaseId, int keep = KeptRunsPerTestCase);
 }

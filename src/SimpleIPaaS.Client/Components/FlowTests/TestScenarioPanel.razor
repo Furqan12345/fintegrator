@@ -22,6 +22,9 @@
 
     <div class="test-scenario-actions">
         <button class="btn btn-outline btn-sm" @onclick="OnNew"><AppIcon Name="plus" Class="icon icon-xs" /> New</button>
+        <button class="btn btn-outline btn-sm" @onclick="OpenTransactions" title="Build a scenario from a real run of this flow">
+            <AppIcon Name="transactions" Class="icon icon-xs" /> From transaction…
+        </button>
         <button class="btn btn-outline btn-sm" @onclick="OnDuplicate" disabled="@(Session.SelectedTest == null)">
             <AppIcon Name="copy" Class="icon icon-xs" /> Duplicate
         </button>
@@ -50,7 +53,7 @@
                 {
                     <div class="test-scenario-menu">
                         <button @onclick="() => DuplicateFromMenu(test)">Duplicate</button>
-                        <button @onclick="() => OpenTransactions(test)">Create from transaction…</button>
+                        <button @onclick="OpenTransactions">Create from transaction…</button>
                         <button class="danger" @onclick="() => _deleteId = test.Id">Delete…</button>
                     </div>
                 }
@@ -283,7 +286,7 @@
         await Session.DeleteScenarioAsync(test);
     }
 
-    private async Task OpenTransactions(FlowTestCaseDto test)
+    private async Task OpenTransactions()
     {
         _menuId = null;
         _showTransactions = true;

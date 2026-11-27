@@ -92,7 +92,7 @@ public sealed class FlowTestRepository : IFlowTestRepository
         });
     }
 
-    public async Task TrimRunsAsync(Guid testCaseId, int keep = 20)
+    public async Task TrimRunsAsync(Guid testCaseId, int keep = IFlowTestRepository.KeptRunsPerTestCase)
     {
         var stale = await _context.FlowTestRuns.Where(run => run.TestCaseId == testCaseId)
             .OrderByDescending(run => run.StartedAt).Skip(keep).ToListAsync();

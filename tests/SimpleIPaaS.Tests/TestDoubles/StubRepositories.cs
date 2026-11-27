@@ -618,7 +618,7 @@ public sealed class StubFlowTestRepository : IFlowTestRepository
         return Task.CompletedTask;
     }
 
-    public Task TrimRunsAsync(Guid testCaseId, int keep = 20)
+    public Task TrimRunsAsync(Guid testCaseId, int keep = IFlowTestRepository.KeptRunsPerTestCase)
     {
         if (TrimException != null) throw TrimException;
         var stale = _runs.Where(run => run.TestCaseId == testCaseId)

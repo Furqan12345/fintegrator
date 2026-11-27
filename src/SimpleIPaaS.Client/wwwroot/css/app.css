@@ -5411,6 +5411,7 @@ body.col-resizing * {
 
 .test-scenario-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
     padding: var(--space-3) var(--space-4) var(--space-2);
 }

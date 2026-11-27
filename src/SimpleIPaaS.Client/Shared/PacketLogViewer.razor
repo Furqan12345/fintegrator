@@ -183,7 +183,7 @@
     private StepPayloadDto? _payload;
     private const string ExpiredText =
         "Details expired. A card's input and output are kept for the runs window on Settings → Storage; this run is older. " +
-        "Test runs stay listed (the latest 20 per test case) after their details expire.";
+        "Test runs stay listed (the latest 3 per test case) after their details expire.";
     private bool _payloadLoading;
     private Guid _loadedPayloadStepId;
     private readonly Dictionary<Guid, StepPacketBodyDto> _packetBodies = new();
